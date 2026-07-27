@@ -1,12 +1,12 @@
-# Contributing to RouterBot
+# Contributing to PARAGON
 
-Thanks for helping improve RouterBot.
+Thanks for helping improve PARAGON.
 
 ## Development setup
 
 ```bash
-git clone https://github.com/YOUR_ORG/RouterBot.git
-cd RouterBot
+git clone https://github.com/YOUR_ORG/paragon.git
+cd paragon
 npm install
 npm start
 ```

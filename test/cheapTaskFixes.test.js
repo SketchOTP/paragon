@@ -145,7 +145,7 @@ test("logRoutingDecision stores execution failure fields", async () => {
 });
 
 test("readConfig reflects on-disk config changes", async () => {
-  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "routerbot-cfg-"));
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "paragon-cfg-"));
   const prev = process.cwd();
   process.chdir(tmp);
   try {
@@ -184,7 +184,7 @@ test("active smartRoute mode uses model intelligence winner over antigravity", a
           available: true,
           tier: "cheap",
           pricing: { input_per_1m: 1000, output_per_1m: 4000, pricing_source: "manual" },
-          benchmarks: { benchmark_confidence: 0.5, routerbot_eval: { rewrite: 0.5 } },
+          benchmarks: { benchmark_confidence: 0.5, paragon_eval: { rewrite: 0.5 } },
           health: { success_rate_24h: 0.95, healthy: true }
         },
         {
@@ -194,7 +194,7 @@ test("active smartRoute mode uses model intelligence winner over antigravity", a
           available: true,
           tier: "mid",
           pricing: { input_per_1m: 0.01, output_per_1m: 0.04, pricing_source: "manual" },
-          benchmarks: { benchmark_confidence: 0.9, routerbot_eval: { rewrite: 0.95 } },
+          benchmarks: { benchmark_confidence: 0.9, paragon_eval: { rewrite: 0.95 } },
           health: { success_rate_24h: 0.98 }
         }
       ],
@@ -240,7 +240,7 @@ test("active smartRoute mode uses model intelligence winner over antigravity", a
 
       const decision = await routeRequest(
         {
-          model: "routerbot-local",
+          model: "paragon",
           messages: [{ role: "user", content: "Rewrite this text please" }]
         },
         {},

@@ -135,7 +135,7 @@ export function buildResponseObject({ model, content, provider, routedProvider, 
       output_tokens: 0,
       total_tokens: 0
     },
-    routerbot: {
+    paragon: {
       durationMs,
       provider,
       routedProvider,

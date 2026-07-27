@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Quick Cloudflare Tunnel (trycloudflare.com) → RouterBot. No account required.
+# Quick Cloudflare Tunnel (trycloudflare.com) → PARAGON. No account required.
 set -euo pipefail
 
 # shellcheck source=tunnel-common.sh
@@ -35,7 +35,7 @@ cf_start_bg() {
     return 0
   fi
   rm -f "$CF_LOG"
-  nohup "$CF_BIN" tunnel --url "$ROUTERBOT_LOCAL_URL" --no-autoupdate >"$CF_LOG" 2>&1 &
+  nohup "$CF_BIN" tunnel --url "$PARAGON_LOCAL_URL" --no-autoupdate >"$CF_LOG" 2>&1 &
   echo $! >"$CF_PID"
   echo "Starting cloudflared (pid $(cat "$CF_PID"))..."
 
@@ -86,7 +86,7 @@ case "${1:-start}" in
   stop) cf_stop; echo "cloudflared stopped" ;;
   status) cf_status ;;
   foreground)
-    exec "$CF_BIN" tunnel --url "$ROUTERBOT_LOCAL_URL" --no-autoupdate
+    exec "$CF_BIN" tunnel --url "$PARAGON_LOCAL_URL" --no-autoupdate
     ;;
   *)
     echo "Usage: $0 [start|stop|status|foreground]" >&2

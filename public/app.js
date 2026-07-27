@@ -13,7 +13,7 @@ const taskOrder = [
   "docs",
   "quick"
 ];
-const API_KEY_STORAGE = "routerbot-api-key";
+const API_KEY_STORAGE = "paragon-api-key";
 
 const TASK_ICONS = {
   ask: "?",
@@ -91,7 +91,7 @@ const els = {
   logs: document.querySelector("#logs"),
   save: document.querySelector("#save"),
   refreshStatus: document.querySelector("#refresh-status"),
-  routerbotBaseUrl: document.querySelector("#routerbot-base-url"),
+  paragonBaseUrl: document.querySelector("#paragon-base-url"),
   modelName: document.querySelector("#model-name"),
   apiKey: document.querySelector("#api-key"),
   healthGauge: document.querySelector("#health-gauge"),
@@ -114,7 +114,7 @@ const els = {
   settingTailscaleHost: document.querySelector("#setting-tailscale-host"),
   settingServePort: document.querySelector("#setting-serve-port"),
   settingFunnelPort: document.querySelector("#setting-funnel-port"),
-  settingRouterbotBase: document.querySelector("#setting-routerbot-base"),
+  settingParagonBase: document.querySelector("#setting-paragon-base"),
   settingExposedModel: document.querySelector("#setting-exposed-model"),
   settingApiKey: document.querySelector("#setting-api-key"),
   settingNgrokAuthtoken: document.querySelector("#setting-ngrok-authtoken"),
@@ -148,7 +148,30 @@ const els = {
   emojiPreview: document.querySelector("#emoji-preview"),
   emojiCustom: document.querySelector("#emoji-custom"),
   emojiCancel: document.querySelector("#emoji-cancel"),
-  emojiApply: document.querySelector("#emoji-apply")
+  emojiApply: document.querySelector("#emoji-apply"),
+  orchModeBadge: document.querySelector("#orch-mode-badge"),
+  orchMode: document.querySelector("#orch-mode"),
+  orchClassifierProvider: document.querySelector("#orch-classifier-provider"),
+  orchConfidenceThreshold: document.querySelector("#orch-confidence-threshold"),
+  orchCanaryEnabled: document.querySelector("#orch-canary-enabled"),
+  orchCanaryPercent: document.querySelector("#orch-canary-percent"),
+  orchSavePolicy: document.querySelector("#orch-save-policy"),
+  orchContextWarning: document.querySelector("#orch-context-warning"),
+  orchForcedRollover: document.querySelector("#orch-forced-rollover"),
+  orchContextCeiling: document.querySelector("#orch-context-ceiling"),
+  orchSessionRolloverMin: document.querySelector("#orch-session-rollover-min"),
+  orchSaveSession: document.querySelector("#orch-save-session"),
+  orchSubagentDefault: document.querySelector("#orch-subagent-default"),
+  orchSubagentMaxParallel: document.querySelector("#orch-subagent-max-parallel"),
+  orchSubagentMaxTotal: document.querySelector("#orch-subagent-max-total"),
+  orchSubagentRecursive: document.querySelector("#orch-subagent-recursive"),
+  orchSaveSubagent: document.querySelector("#orch-save-subagent"),
+  orchRankingsTask: document.querySelector("#orch-rankings-task"),
+  orchRefreshRankings: document.querySelector("#orch-refresh-rankings"),
+  orchRankings: document.querySelector("#orch-rankings"),
+  orchRefreshShadow: document.querySelector("#orch-refresh-shadow"),
+  orchShadowSummary: document.querySelector("#orch-shadow-summary"),
+  orchDecisions: document.querySelector("#orch-decisions")
 };
 
 function seedApiKeyFromUrl() {
@@ -277,6 +300,7 @@ render();
 connectLogs();
 bindProviderInteractionLock();
 refreshStatus();
+initOrchestration();
 
 els.save.addEventListener("click", () => saveConfig({ notify: true }));
 els.refreshStatus.addEventListener("click", () => refreshStatus({ manual: true }));
@@ -301,7 +325,7 @@ els.addProviderForm.addEventListener("submit", addProvider);
 els.settingTailscaleHost.addEventListener("input", updateServerFromSettings);
 els.settingServePort.addEventListener("input", updateServerFromSettings);
 els.settingFunnelPort.addEventListener("input", updateServerFromSettings);
-els.settingRouterbotBase.addEventListener("input", updateServerFromSettings);
+els.settingParagonBase.addEventListener("input", updateServerFromSettings);
 els.settingExposedModel.addEventListener("input", updateServerFromSettings);
 els.settingApiKey.addEventListener("input", updateServerFromSettings);
 els.toggleSettings.addEventListener("click", () => {
@@ -436,7 +460,7 @@ function tailscaleFromConfig(server) {
   const funnelPort = server.tailscaleFunnelPort ?? 10000;
   const base = `https://${host}`;
   return {
-    routerbotBase: `${base}:${funnelPort}/v1`
+    paragonBase: `${base}:${funnelPort}/v1`
   };
 }
 
@@ -444,15 +468,15 @@ function renderConnectionBanner() {
   const localBase = `${location.protocol}//127.0.0.1:${config.server.port ?? 4117}/v1`;
   const ts = tailscaleFromConfig(config.server);
   const override = (config.server.cursorBaseUrl || "").trim();
-  const routerbotBase = override || ts?.routerbotBase || localBase;
+  const paragonBase = override || ts?.paragonBase || localBase;
 
-  els.routerbotBaseUrl.textContent = routerbotBase.replace(/^https?:\/\//, "").slice(0, 42);
+  els.paragonBaseUrl.textContent = paragonBase.replace(/^https?:\/\//, "").slice(0, 42);
   const activeTunnel = tunnelStatus?.effectiveCursorBaseUrl;
-  els.routerbotBaseUrl.title =
-    activeTunnel && activeTunnel !== routerbotBase
-      ? `${routerbotBase}\nActive tunnel: ${activeTunnel}`
-      : routerbotBase;
-  els.modelName.textContent = config.server.exposedModel || "routerbot-local";
+  els.paragonBaseUrl.title =
+    activeTunnel && activeTunnel !== paragonBase
+      ? `${paragonBase}\nActive tunnel: ${activeTunnel}`
+      : paragonBase;
+  els.modelName.textContent = config.server.exposedModel || "paragon";
   els.apiKey.textContent = config.server.apiKey ? "••••••••" : "—";
 }
 
@@ -516,7 +540,7 @@ function render() {
   els.settingTailscaleHost.value = config.server.tailscaleHost ?? "";
   els.settingServePort.value = config.server.tailscaleServePort ?? 9420;
   els.settingFunnelPort.value = config.server.tailscaleFunnelPort ?? 10000;
-  els.settingRouterbotBase.value = config.server.cursorBaseUrl ?? "";
+  els.settingParagonBase.value = config.server.cursorBaseUrl ?? "";
   els.settingExposedModel.value = config.server.exposedModel ?? "";
   els.settingApiKey.value = config.server.apiKey ?? "";
   els.settingNgrokAuthtoken.value = config.server.tunnels.ngrokAuthtoken ?? "";
@@ -613,7 +637,7 @@ function useTunnelAsBaseUrl(cursorBaseUrl) {
     flashNotice("No tunnel URL yet — start the tunnel first", { type: "error" });
     return;
   }
-  els.settingRouterbotBase.value = cursorBaseUrl;
+  els.settingParagonBase.value = cursorBaseUrl;
   updateServerFromSettings();
   flashNotice("Base URL updated — click Save");
 }
@@ -636,7 +660,7 @@ function updateServerFromSettings() {
   config.server.tailscaleHost = els.settingTailscaleHost.value.trim();
   config.server.tailscaleServePort = Number(els.settingServePort.value);
   config.server.tailscaleFunnelPort = Number(els.settingFunnelPort.value);
-  config.server.cursorBaseUrl = els.settingRouterbotBase.value.trim();
+  config.server.cursorBaseUrl = els.settingParagonBase.value.trim();
   config.server.exposedModel = els.settingExposedModel.value.trim();
   config.server.apiKey = els.settingApiKey.value;
   config.server.tunnels.ngrokAuthtoken = els.settingNgrokAuthtoken.value.trim();
@@ -1546,3 +1570,236 @@ function escapeHtml(value) {
 }
 
 toggleNewProviderFields();
+
+// --- Orchestration dashboard (PARAGON adaptive routing, shadow-first) ----
+
+const ORCH_TASKS = [
+  "chat",
+  "code",
+  "debug",
+  "review",
+  "plan",
+  "explain",
+  "docs",
+  "quick",
+  "rewrite",
+  "summarize",
+  "extract"
+];
+
+function initOrchestration() {
+  for (const task of ORCH_TASKS) {
+    const opt = document.createElement("option");
+    opt.value = task;
+    opt.textContent = task;
+    els.orchRankingsTask.appendChild(opt);
+  }
+
+  els.orchSavePolicy.addEventListener("click", () => saveOrchestrationPolicy());
+  els.orchSaveSession.addEventListener("click", () => saveOrchestrationSession());
+  els.orchSaveSubagent.addEventListener("click", () => saveOrchestrationSubagent());
+  els.orchRefreshRankings.addEventListener("click", () => loadOrchRankings());
+  els.orchRankingsTask.addEventListener("change", () => loadOrchRankings());
+  els.orchRefreshShadow.addEventListener("click", () => loadOrchShadowReport());
+
+  loadOrchestrationSettings();
+  loadOrchRankings();
+  loadOrchShadowReport();
+}
+
+async function loadOrchestrationSettings() {
+  try {
+    const response = await apiFetch("/api/orchestration/settings");
+    if (!response.ok) return;
+    const { smartRoute, orchestration } = await response.json();
+
+    els.orchMode.value = smartRoute.mode ?? "shadow_test";
+    els.orchClassifierProvider.value = smartRoute.classifierProvider ?? "";
+    els.orchConfidenceThreshold.value = smartRoute.confidenceThreshold ?? 0.55;
+    els.orchCanaryEnabled.checked = Boolean(smartRoute.canary?.enabled);
+    els.orchCanaryPercent.value = smartRoute.canary?.percent ?? 10;
+
+    els.orchModeBadge.textContent = smartRoute.mode ?? "shadow_test";
+    els.orchModeBadge.classList.toggle("live", smartRoute.mode === "balanced_live");
+
+    const sg = orchestration?.sessionGovernor ?? {};
+    els.orchContextWarning.value = sg.contextWarningTokens ?? "";
+    els.orchForcedRollover.value = sg.forcedRolloverTokens ?? "";
+    els.orchContextCeiling.value = sg.absoluteContextCeilingTokens ?? "";
+    els.orchSessionRolloverMin.value = sg.forcedSessionRolloverMinutes ?? "";
+
+    const ag = orchestration?.subagentGovernor ?? {};
+    els.orchSubagentDefault.value = ag.defaultSubagentCount ?? "";
+    els.orchSubagentMaxParallel.value = ag.maxParallelSubagents ?? "";
+    els.orchSubagentMaxTotal.value = ag.maxTotalSubagentsPerJob ?? "";
+    els.orchSubagentRecursive.checked = Boolean(ag.recursiveSpawningEnabled);
+  } catch (error) {
+    console.warn("Failed to load orchestration settings", error);
+  }
+}
+
+async function putOrchestrationSettings(patch) {
+  const response = await apiFetch("/api/orchestration/settings", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch)
+  });
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new Error(body?.error?.message || "Save failed");
+  }
+  return response.json();
+}
+
+async function saveOrchestrationPolicy() {
+  try {
+    await putOrchestrationSettings({
+      smartRoute: {
+        mode: els.orchMode.value,
+        classifierProvider: els.orchClassifierProvider.value.trim(),
+        confidenceThreshold: Number(els.orchConfidenceThreshold.value) || 0,
+        canary: {
+          enabled: els.orchCanaryEnabled.checked,
+          percent: Number(els.orchCanaryPercent.value) || 0
+        }
+      }
+    });
+    els.orchModeBadge.textContent = els.orchMode.value;
+    els.orchModeBadge.classList.toggle("live", els.orchMode.value === "balanced_live");
+    flashNotice("Routing policy saved");
+  } catch (error) {
+    flashNotice(error.message || "Save failed", { type: "error", ms: 4000 });
+  }
+}
+
+async function saveOrchestrationSession() {
+  try {
+    await putOrchestrationSettings({
+      orchestration: {
+        sessionGovernor: {
+          contextWarningTokens: Number(els.orchContextWarning.value) || 0,
+          forcedRolloverTokens: Number(els.orchForcedRollover.value) || 0,
+          absoluteContextCeilingTokens: Number(els.orchContextCeiling.value) || 0,
+          forcedSessionRolloverMinutes: Number(els.orchSessionRolloverMin.value) || 0
+        }
+      }
+    });
+    flashNotice("Session governor saved");
+  } catch (error) {
+    flashNotice(error.message || "Save failed", { type: "error", ms: 4000 });
+  }
+}
+
+async function saveOrchestrationSubagent() {
+  try {
+    await putOrchestrationSettings({
+      orchestration: {
+        subagentGovernor: {
+          defaultSubagentCount: Number(els.orchSubagentDefault.value) || 0,
+          maxParallelSubagents: Number(els.orchSubagentMaxParallel.value) || 0,
+          maxTotalSubagentsPerJob: Number(els.orchSubagentMaxTotal.value) || 0,
+          recursiveSpawningEnabled: els.orchSubagentRecursive.checked
+        }
+      }
+    });
+    flashNotice("Subagent governor saved");
+  } catch (error) {
+    flashNotice(error.message || "Save failed", { type: "error", ms: 4000 });
+  }
+}
+
+async function loadOrchRankings() {
+  const task = els.orchRankingsTask.value || ORCH_TASKS[0];
+  els.orchRankings.innerHTML = '<p class="orch-empty">Loading…</p>';
+  try {
+    const response = await apiFetch(`/api/orchestration/rankings?task=${encodeURIComponent(task)}`);
+    if (!response.ok) throw new Error("Failed to load rankings");
+    const { rankings, registrySize } = await response.json();
+    const rows = rankings?.[task] ?? [];
+    if (!registrySize) {
+      els.orchRankings.innerHTML =
+        '<p class="orch-empty">No model registry snapshot yet — run smartRouteModelRefresh.js to populate rankings.</p>';
+      return;
+    }
+    if (!rows.length) {
+      els.orchRankings.innerHTML = '<p class="orch-empty">No candidates passed the floor for this task.</p>';
+      return;
+    }
+    const table = document.createElement("table");
+    table.innerHTML = `<thead><tr><th>#</th><th>Model</th><th>Provider</th><th>Score</th><th>Tier</th></tr></thead>`;
+    const tbody = document.createElement("tbody");
+    rows.slice(0, 15).forEach((row, index) => {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `<td>${index + 1}</td><td>${escapeHtml(row.model ?? row.id ?? "")}</td><td>${escapeHtml(
+        row.provider ?? ""
+      )}</td><td>${(row.score ?? 0).toFixed?.(3) ?? row.score}</td><td>${escapeHtml(row.tier ?? "")}</td>`;
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    els.orchRankings.innerHTML = "";
+    els.orchRankings.appendChild(table);
+  } catch (error) {
+    els.orchRankings.innerHTML = `<p class="orch-empty">${escapeHtml(error.message)}</p>`;
+  }
+}
+
+async function loadOrchShadowReport() {
+  els.orchShadowSummary.innerHTML = '<p class="orch-empty">Loading…</p>';
+  els.orchDecisions.innerHTML = "";
+  try {
+    const [reportRes, decisionsRes] = await Promise.all([
+      apiFetch("/api/orchestration/shadow-report"),
+      apiFetch("/api/orchestration/decisions?limit=25")
+    ]);
+    if (!reportRes.ok || !decisionsRes.ok) throw new Error("Failed to load shadow report");
+    const report = await reportRes.json();
+    const { decisions } = await decisionsRes.json();
+
+    const stats = [
+      ["Requests observed", report.total_requests ?? 0],
+      ["Shadow match rate", formatPercent(report.match_rate)],
+      ["Shadow diff rate", formatPercent(report.diff_rate)],
+      ["Est. savings", `$${(report.estimated_savings_usd ?? 0).toFixed(2)}`],
+      ["Fallback rate", formatPercent(report.total_fallback_rate)]
+    ];
+    els.orchShadowSummary.innerHTML = stats
+      .map(
+        ([label, value]) =>
+          `<div class="orch-stat"><span class="orch-stat-label">${escapeHtml(label)}</span><span class="orch-stat-value">${escapeHtml(
+            String(value)
+          )}</span></div>`
+      )
+      .join("");
+
+    if (!decisions?.length) {
+      els.orchDecisions.innerHTML = '<p class="orch-empty">No routing decisions logged yet.</p>';
+      return;
+    }
+    const table = document.createElement("table");
+    table.innerHTML = `<thead><tr><th>Time</th><th>Legacy</th><th>Smart</th><th>Match</th><th>Task</th></tr></thead>`;
+    const tbody = document.createElement("tbody");
+    decisions
+      .slice()
+      .reverse()
+      .slice(0, 25)
+      .forEach((entry) => {
+        const tr = document.createElement("tr");
+        const time = entry.timestamp ? new Date(entry.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "—";
+        const match = entry.shadow_match === true ? "match" : entry.shadow_match === false ? "diff" : "—";
+        tr.innerHTML = `<td>${time}</td><td>${escapeHtml(entry.legacy_provider ?? "—")}</td><td>${escapeHtml(
+          entry.smart_provider ?? "—"
+        )}</td><td>${match}</td><td>${escapeHtml(entry.task_type ?? "—")}</td>`;
+        tbody.appendChild(tr);
+      });
+    table.appendChild(tbody);
+    els.orchDecisions.innerHTML = "";
+    els.orchDecisions.appendChild(table);
+  } catch (error) {
+    els.orchShadowSummary.innerHTML = `<p class="orch-empty">${escapeHtml(error.message)}</p>`;
+  }
+}
+
+function formatPercent(value) {
+  if (typeof value !== "number" || Number.isNaN(value)) return "—";
+  return `${Math.round(value * 100)}%`;
+}

@@ -21,6 +21,16 @@ test("listNamedRouteModels exposes all four ids", () => {
   );
 });
 
-test("default config has no smartRoute section", () => {
-  assert.equal(defaultConfig.routing.smartRoute, undefined);
+test("default config's smartRoute section defaults to shadow mode, never serving live", () => {
+  // PARAGON-D-001 stage 3 (shadow scheduling): smartRoute is instrumented
+  // and observed by default, but must never be allowed to serve a live
+  // request until an operator explicitly opts into a serving mode.
+  assert.equal(defaultConfig.routing.smartRoute.mode, "shadow_test");
+  assert.equal(defaultConfig.routing.smartRoute.canary.enabled, false);
+});
+
+test("default config's taskRoutes still cover every classifiable task (legacy path unchanged)", () => {
+  for (const task of Object.keys(defaultConfig.routing.taskPatterns)) {
+    assert.ok(defaultConfig.routing.taskRoutes[task], `no legacy taskRoute for ${task}`);
+  }
 });

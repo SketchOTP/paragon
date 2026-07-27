@@ -7,7 +7,7 @@ import path from "node:path";
  * Always sets NODE_ENV=test so production write guards stay active.
  */
 export async function withIsolatedDataDir(fn) {
-  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "routerbot-data-"));
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "paragon-data-"));
   const prevDataDir = process.env.SMARTROUTE_DATA_DIR;
   const prevNodeEnv = process.env.NODE_ENV;
   process.env.SMARTROUTE_DATA_DIR = tmp;

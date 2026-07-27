@@ -19,7 +19,7 @@ echo "=== ngrok (requires NGROK_AUTHTOKEN) ==="
 if [[ -n "${NGROK_AUTHTOKEN:-}" ]]; then
   "$DIR/tunnel-ngrok.sh" start
 else
-  echo "SKIP: set NGROK_AUTHTOKEN in .env or /etc/routerbot/environment, then run:"
+  echo "SKIP: set NGROK_AUTHTOKEN in .env or /etc/paragon/environment (or legacy /etc/routerbot/environment), then run:"
   echo "  ./scripts/tunnel-ngrok.sh start"
 fi
 

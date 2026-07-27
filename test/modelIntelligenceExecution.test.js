@@ -22,7 +22,7 @@ const haikuModel = {
   pricing: { input_per_1m: 0.8, output_per_1m: 4, pricing_source: "official_anthropic" },
   benchmarks: {
     benchmark_confidence: 0.9,
-    routerbot_eval: { chat: 0.85, rewrite: 0.88, summarize: 0.9, extract: 0.87 }
+    paragon_eval: { chat: 0.85, rewrite: 0.88, summarize: 0.9, extract: 0.87 }
   },
   health: { success_rate_24h: 0.98, response_ok: true },
   capabilities: { json_mode: true, tool_calling: true, context_tokens: 200000 }
@@ -37,7 +37,7 @@ const antigravityModel = {
   pricing: { input_per_1m: 0.1, output_per_1m: 0.2, pricing_source: "manual" },
   benchmarks: {
     benchmark_confidence: 0.5,
-    routerbot_eval: { chat: 0.55, rewrite: 0.5, summarize: 0.52, extract: 0.5 }
+    paragon_eval: { chat: 0.55, rewrite: 0.5, summarize: 0.52, extract: 0.5 }
   },
   health: {
     success_rate_24h: 0.5,
@@ -68,7 +68,7 @@ const baseConfig = {
 };
 
 async function withIsolatedSnapshot(snapshot, fn) {
-  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "routerbot-intel-"));
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "paragon-intel-"));
   const prevDataDir = process.env.SMARTROUTE_DATA_DIR;
   const prevNodeEnv = process.env.NODE_ENV;
   process.env.SMARTROUTE_DATA_DIR = tmp;

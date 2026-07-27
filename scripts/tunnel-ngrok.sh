@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ngrok tunnel → RouterBot. Requires NGROK_AUTHTOKEN (free account).
+# ngrok tunnel → PARAGON. Requires NGROK_AUTHTOKEN (free account).
 set -euo pipefail
 
 # shellcheck source=tunnel-common.sh
@@ -32,7 +32,7 @@ ERROR: NGROK_AUTHTOKEN is not set.
 
 1. Sign up: https://dashboard.ngrok.com/signup
 2. Copy token: https://dashboard.ngrok.com/get-started/your-authtoken
-3. Add to RouterBot .env or /etc/routerbot/environment:
+3. Add to PARAGON .env or /etc/paragon/environment:
      NGROK_AUTHTOKEN=your_token_here
 4. Re-run: ./scripts/tunnel-ngrok.sh start
 EOF
@@ -67,7 +67,7 @@ ngrok_start_bg() {
 
   rm -f "$NGROK_LOG"
   nohup env NGROK_AUTHTOKEN="$NGROK_AUTHTOKEN" \
-    "$NGROK_BIN" http "$ROUTERBOT_PORT" --log=stdout >"$NGROK_LOG" 2>&1 &
+    "$NGROK_BIN" http "$PARAGON_PORT" --log=stdout >"$NGROK_LOG" 2>&1 &
   echo $! >"$NGROK_PID"
   echo "Starting ngrok (pid $(cat "$NGROK_PID"))..."
 
@@ -128,7 +128,7 @@ case "${1:-start}" in
     NGROK_BIN="$(tunnel_ngrok_bin)"
     ngrok_require_token
     exec env NGROK_AUTHTOKEN="$NGROK_AUTHTOKEN" \
-      "$NGROK_BIN" http "$ROUTERBOT_PORT"
+      "$NGROK_BIN" http "$PARAGON_PORT"
     ;;
   *)
     echo "Usage: $0 [start|stop|status|foreground]" >&2

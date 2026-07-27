@@ -12,7 +12,7 @@ const limit = limitIdx >= 0 ? Number(args[limitIdx + 1]) : 30;
 const baseIdx = args.indexOf("--base");
 const baseUrl = baseIdx >= 0 ? args[baseIdx + 1] : "http://127.0.0.1:4117";
 const keyIdx = args.indexOf("--key");
-const apiKey = keyIdx >= 0 ? args[keyIdx + 1] : "routerbot";
+const apiKey = keyIdx >= 0 ? args[keyIdx + 1] : (process.env.PARAGON_API_KEY ?? process.env.ROUTERBOT_API_KEY ?? "paragon");
 
 const TRIAL_PROMPTS = [
   { id: "chat-1", category: "simple_chat", message: "Say hello in one friendly sentence." },
@@ -180,7 +180,7 @@ const resultsPath = path.resolve("data/smart-route-trial-results.jsonl");
 
 async function sendPrompt(promptDef, index) {
   const body = {
-    model: "routerbot-local",
+    model: "paragon",
     messages: [{ role: "user", content: promptDef.message }],
     max_tokens: 512,
     stream: false
@@ -211,8 +211,8 @@ async function sendPrompt(promptDef, index) {
     }
 
     const content = json?.choices?.[0]?.message?.content ?? "";
-    const routerbot = json?.routerbot ?? {};
-    const smartRoute = routerbot.smartRoute ?? null;
+    const paragon = json?.paragon ?? {};
+    const smartRoute = paragon.smartRoute ?? null;
 
     return {
       index,
@@ -221,9 +221,9 @@ async function sendPrompt(promptDef, index) {
       ok: response.ok,
       status: response.status,
       duration_ms: durationMs,
-      provider: routerbot.provider ?? null,
-      routed_provider: routerbot.routedProvider ?? null,
-      fallback: routerbot.fallback ?? false,
+      provider: paragon.provider ?? null,
+      routed_provider: paragon.routedProvider ?? null,
+      fallback: paragon.fallback ?? false,
       smart_route: smartRoute,
       content_preview: String(content).slice(0, 120),
       error: json?.error?.message ?? null

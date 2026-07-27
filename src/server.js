@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { AUTH_FLOWS } from "./authFlows.js";
 import { createAuthMiddleware } from "./auth.js";
 import { readConfig, writeConfig, syncCursorBaseUrl, getConfigPath } from "./configStore.js";
+import { getEnv } from "./env.js";
 
 import { getLogs, subscribeLogs, addLog } from "./logStore.js";
 import { registerOpenAiRoutes } from "./openaiApi.js";
@@ -18,6 +19,10 @@ import {
   stopNgrok
 } from "./tunnelManager.js";
 import { tailscaleUrls } from "./tailscaleUrls.js";
+import { loadModelRegistry } from "./smartRoute/registry.js";
+import { rankAllTasks } from "./smartRoute/modelRanker.js";
+import { readRecentDecisions, readAllDecisions } from "./smartRoute/decisionLog.js";
+import { buildShadowReport } from "./smartRoute/shadowReport.js";
 
 
 
@@ -113,6 +118,74 @@ app.put("/api/config", async (req, res) => {
   res.json(cachedConfig);
 });
 
+// --- PARAGON orchestration dashboard (directive §16) ---------------------
+// Routing policy, model rankings, decision log / shadow analysis, and
+// session/subagent governor settings. All read-mostly views over the
+// existing src/smartRoute/ engine + config — no new state introduced here.
+
+app.get("/api/orchestration/settings", async (_req, res) => {
+  const config = await getConfig();
+  res.json({
+    smartRoute: config.routing.smartRoute,
+    orchestration: config.orchestration
+  });
+});
+
+app.put("/api/orchestration/settings", async (req, res) => {
+  const config = await getConfig();
+  const next = {
+    ...config,
+    routing: {
+      ...config.routing,
+      smartRoute: { ...config.routing.smartRoute, ...req.body?.smartRoute }
+    },
+    orchestration: { ...config.orchestration, ...req.body?.orchestration }
+  };
+  cachedConfig = await writeConfig(next);
+  try {
+    configMtimeMs = (await fs.stat(getConfigPath())).mtimeMs;
+  } catch {
+    configMtimeMs = Date.now();
+  }
+  res.json({
+    smartRoute: cachedConfig.routing.smartRoute,
+    orchestration: cachedConfig.orchestration
+  });
+});
+
+app.get("/api/orchestration/rankings", async (req, res) => {
+  try {
+    const config = await getConfig();
+    const registry = await loadModelRegistry(config);
+    const taskTypes = req.query.task ? [String(req.query.task)] : undefined;
+    const rankings = rankAllTasks(registry, taskTypes, {});
+    res.json({ registrySize: registry.length, rankings });
+  } catch (error) {
+    res.status(500).json({ error: { message: error.message } });
+  }
+});
+
+app.get("/api/orchestration/decisions", async (req, res) => {
+  try {
+    const limit = Math.min(Number(req.query.limit) || 100, 1000);
+    const decisions = await readRecentDecisions(limit);
+    res.json({ decisions });
+  } catch (error) {
+    res.status(500).json({ error: { message: error.message } });
+  }
+});
+
+app.get("/api/orchestration/shadow-report", async (req, res) => {
+  try {
+    const config = await getConfig();
+    const [decisions, registry] = await Promise.all([readAllDecisions(), loadModelRegistry(config)]);
+    const report = buildShadowReport(decisions, registry);
+    res.json(report);
+  } catch (error) {
+    res.status(500).json({ error: { message: error.message } });
+  }
+});
+
 app.get("/api/status", async (req, res) => {
   const force = req.query.force === "1";
   const quiet = req.query.quiet !== "0";
@@ -171,7 +244,7 @@ app.post("/api/auth/antigravity/code", async (req, res) => {
     invalidateStatusCache();
   } catch (error) {
     res.status(400).json({
-      error: { message: error.message, type: "routerbot_antigravity_auth_code_error" }
+      error: { message: error.message, type: "paragon_antigravity_auth_code_error" }
     });
   }
 });
@@ -207,7 +280,7 @@ app.post("/api/providers/:provider/models", async (req, res) => {
     res.status(500).json({
       error: {
         message: error.message,
-        type: "routerbot_model_list_error",
+        type: "paragon_model_list_error",
         provider
       }
     });
@@ -335,20 +408,20 @@ app.post("/api/tunnels/ngrok/stop", async (_req, res) => {
 
 registerOpenAiRoutes(app, getConfig);
 
-const host = process.env.ROUTERBOT_HOST ?? cachedConfig.server.host;
-const port = Number(process.env.ROUTERBOT_PORT ?? cachedConfig.server.port);
+const host = getEnv("HOST") ?? cachedConfig.server.host;
+const port = Number(getEnv("PORT") ?? cachedConfig.server.port);
 
 app.listen(port, host, async () => {
-  console.log(`RouterBot dashboard: http://${host}:${port}`);
+  console.log(`PARAGON dashboard:   http://${host}:${port}`);
   console.log(`Cursor model:        ${cachedConfig.server.exposedModel}`);
-  console.log(`API key:             ${cachedConfig.server.apiKey ? "(configured)" : "(missing — set ROUTERBOT_API_KEY)"}`);
+  console.log(`API key:             ${cachedConfig.server.apiKey ? "(configured)" : "(missing — set PARAGON_API_KEY)"}`);
   const ts = tailscaleUrls(cachedConfig.server);
   if (ts) {
     console.log(`Tailnet dashboard:   ${ts.tailnetDashboard}`);
-    console.log(`RouterBot base URL:  ${ts.cursorBaseUrl}`);
+    console.log(`PARAGON base URL:    ${ts.cursorBaseUrl}`);
     console.log(`Run: ./scripts/tailscale-setup.sh (once) to bind Tailscale ports`);
   } else {
-    console.log(`RouterBot base URL:  http://${host}:${port}/v1`);
+    console.log(`PARAGON base URL:    http://${host}:${port}/v1`);
     console.log(`Set server.tailscaleHost in config for Tailscale URLs`);
   }
 

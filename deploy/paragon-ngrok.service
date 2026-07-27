@@ -1,0 +1,17 @@
+[Unit]
+Description=ngrok tunnel for PARAGON
+After=network-online.target paragon.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=%PARAGON_USER%
+Group=%PARAGON_GROUP%
+WorkingDirectory=%PARAGON_DIR%
+EnvironmentFile=-/etc/paragon/environment
+ExecStart=%NGROK_BIN% http %PARAGON_PORT% --log=stdout
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

@@ -5,11 +5,11 @@ tunnel_repo_dir() {
   cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd
 }
 
-ROUTERBOT_DIR="${ROUTERBOT_DIR:-$(tunnel_repo_dir)}"
-ROUTERBOT_PORT="${ROUTERBOT_PORT:-4117}"
-ROUTERBOT_LOCAL_URL="http://127.0.0.1:${ROUTERBOT_PORT}"
-TUNNEL_URLS_FILE="${ROUTERBOT_TUNNEL_URLS_FILE:-${ROUTERBOT_DIR}/data/tunnel-urls.json}"
-DATA_DIR="${ROUTERBOT_DIR}/data"
+PARAGON_DIR="${PARAGON_DIR:-${ROUTERBOT_DIR:-$(tunnel_repo_dir)}}"
+PARAGON_PORT="${PARAGON_PORT:-${ROUTERBOT_PORT:-4117}}"
+PARAGON_LOCAL_URL="http://127.0.0.1:${PARAGON_PORT}"
+TUNNEL_URLS_FILE="${PARAGON_TUNNEL_URLS_FILE:-${ROUTERBOT_TUNNEL_URLS_FILE:-${PARAGON_DIR}/data/tunnel-urls.json}}"
+DATA_DIR="${PARAGON_DIR}/data"
 
 tunnel_ensure_data_dir() {
   mkdir -p "$DATA_DIR"
@@ -20,8 +20,8 @@ tunnel_cloudflared_bin() {
     echo "$CLOUDFLARED_BIN"
     return
   fi
-  if [[ -x "${ROUTERBOT_DIR}/bin/cloudflared" ]]; then
-    echo "${ROUTERBOT_DIR}/bin/cloudflared"
+  if [[ -x "${PARAGON_DIR}/bin/cloudflared" ]]; then
+    echo "${PARAGON_DIR}/bin/cloudflared"
     return
   fi
   if command -v cloudflared >/dev/null 2>&1; then
@@ -50,20 +50,24 @@ tunnel_ngrok_bin() {
 }
 
 tunnel_load_env() {
-  if [[ -f /etc/routerbot/environment ]]; then
+  if [[ -f /etc/paragon/environment ]]; then
+    set -a
+    source /etc/paragon/environment
+    set +a
+  elif [[ -f /etc/routerbot/environment ]]; then
     # shellcheck disable=SC1091
     set -a
     source /etc/routerbot/environment
     set +a
   fi
-  if [[ -f "${ROUTERBOT_DIR}/.env" ]]; then
+  if [[ -f "${PARAGON_DIR}/.env" ]]; then
     # shellcheck disable=SC1091
     set -a
-    source "${ROUTERBOT_DIR}/.env"
+    source "${PARAGON_DIR}/.env"
     set +a
   fi
-  if [[ -z "${NGROK_AUTHTOKEN:-}" && -f "${ROUTERBOT_DIR}/data/config.json" ]]; then
-    NGROK_AUTHTOKEN="$(python3 -c "import json;print(json.load(open('${ROUTERBOT_DIR}/data/config.json')).get('server',{}).get('tunnels',{}).get('ngrokAuthtoken',''))")"
+  if [[ -z "${NGROK_AUTHTOKEN:-}" && -f "${PARAGON_DIR}/data/config.json" ]]; then
+    NGROK_AUTHTOKEN="$(python3 -c "import json;print(json.load(open('${PARAGON_DIR}/data/config.json')).get('server',{}).get('tunnels',{}).get('ngrokAuthtoken',''))")"
   fi
 }
 
@@ -96,5 +100,5 @@ tunnel_print_cursor_hint() {
   echo "Cursor (${label}):"
   echo "  Override OpenAI Base URL: ${base_url}"
   echo "  API key:                  (from dashboard or data/config.json)"
-  echo "  Model:                    routerbot-local"
+  echo "  Model:                    paragon"
 }

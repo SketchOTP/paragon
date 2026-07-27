@@ -1,0 +1,18 @@
+[Unit]
+Description=Cloudflare quick tunnel for PARAGON (trycloudflare.com)
+After=network-online.target paragon.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=%PARAGON_USER%
+Group=%PARAGON_GROUP%
+WorkingDirectory=%PARAGON_DIR%
+EnvironmentFile=-/etc/paragon/environment
+ExecStartPre=%PARAGON_DIR%/bin/cloudflared version
+ExecStart=%PARAGON_DIR%/bin/cloudflared tunnel --url http://127.0.0.1:%PARAGON_PORT% --no-autoupdate
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

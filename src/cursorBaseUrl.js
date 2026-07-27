@@ -1,4 +1,4 @@
-/** Resolve Cursor/RouterBot public base URL from Tailscale vs tunnel state. */
+/** Resolve Cursor/PARAGON public base URL from Tailscale vs tunnel state. */
 
 export function defaultTailscaleCursorBaseUrl(server) {
   const host = (server?.tailscaleHost || "").trim();

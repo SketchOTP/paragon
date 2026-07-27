@@ -10,7 +10,7 @@ const SWE_BENCH = {
   "codex:default": { swe_bench_verified_resolved: 50.0, swe_bench_avg_cost: 0.04 }
 };
 
-const DEFAULT_ROUTERBOT_EVAL = {
+const DEFAULT_PARAGON_EVAL = {
   chat: 0.55,
   rewrite: 0.6,
   summarize: 0.62,
@@ -65,16 +65,16 @@ function resolveBenchmarks(row, cache, now) {
   const swe = exact ?? fuzzy?.data ?? null;
   const confidence = exact ? 1 : fuzzy ? fuzzy.confidence : 0.35;
 
-  const routerbot_eval = { ...DEFAULT_ROUTERBOT_EVAL };
+  const paragon_eval = { ...DEFAULT_PARAGON_EVAL };
   if (row.provider === "antigravity") {
-    routerbot_eval.chat = 0.5;
-    routerbot_eval.rewrite = 0.52;
-    routerbot_eval.summarize = 0.54;
-    routerbot_eval.extract_json = 0.48;
+    paragon_eval.chat = 0.5;
+    paragon_eval.rewrite = 0.52;
+    paragon_eval.summarize = 0.54;
+    paragon_eval.extract_json = 0.48;
   }
   if (row.local) {
-    for (const k of Object.keys(routerbot_eval)) {
-      routerbot_eval[k] = Math.max(0.35, routerbot_eval[k] - 0.1);
+    for (const k of Object.keys(paragon_eval)) {
+      paragon_eval[k] = Math.max(0.35, paragon_eval[k] - 0.1);
     }
   }
 
@@ -83,8 +83,8 @@ function resolveBenchmarks(row, cache, now) {
     swe_bench_avg_cost: swe?.swe_bench_avg_cost ?? null,
     coding_index: null,
     intelligence_index: null,
-    routerbot_eval,
-    benchmark_sources: exact ? ["swebench", "routerbot_eval"] : ["routerbot_eval"],
+    paragon_eval,
+    benchmark_sources: exact ? ["swebench", "paragon_eval"] : ["paragon_eval"],
     benchmark_last_checked: now,
     benchmark_confidence: confidence
   };
@@ -107,7 +107,7 @@ function fuzzySweBench(modelKey) {
 }
 
 export function taskQualityScore(benchmarks, taskType) {
-  const evals = benchmarks?.routerbot_eval ?? {};
+  const evals = benchmarks?.paragon_eval ?? {};
   const codingTasks = new Set(["code", "code_debug", "architecture"]);
 
   if (codingTasks.has(taskType)) {

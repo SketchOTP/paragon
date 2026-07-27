@@ -3,11 +3,12 @@ import path from "node:path";
 const PRODUCTION_DATA_DIR = path.resolve(process.cwd(), "data");
 
 /**
- * Runtime data directory. Tests must set SMARTROUTE_DATA_DIR (or ROUTERBOT_DATA_DIR)
- * to a temp path before any write.
+ * Runtime data directory. Tests must set SMARTROUTE_DATA_DIR (or PARAGON_DATA_DIR,
+ * or the deprecated ROUTERBOT_DATA_DIR) to a temp path before any write.
  */
 export function getDataDir() {
-  const override = process.env.SMARTROUTE_DATA_DIR || process.env.ROUTERBOT_DATA_DIR;
+  const override =
+    process.env.SMARTROUTE_DATA_DIR || process.env.PARAGON_DATA_DIR || process.env.ROUTERBOT_DATA_DIR;
   if (override) {
     return path.resolve(override);
   }

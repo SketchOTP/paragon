@@ -6,7 +6,7 @@ set -euo pipefail
 source "$(dirname "$0")/tunnel-common.sh"
 tunnel_load_env
 
-echo "RouterBot local: $ROUTERBOT_LOCAL_URL"
+echo "PARAGON local: $PARAGON_LOCAL_URL"
 echo ""
 
 "$(dirname "$0")/tunnel-cloudflared.sh" status

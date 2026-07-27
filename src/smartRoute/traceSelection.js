@@ -22,7 +22,7 @@ import { getPricingEvidenceForModel } from "./researchAgent/researchReport.js";
 
 export async function traceSelection(prompt, config, headers = {}) {
   const body = {
-    model: config?.server?.exposedModel ?? "routerbot-local",
+    model: config?.server?.exposedModel ?? "paragon",
     messages: [{ role: "user", content: prompt }]
   };
   const settings = { ...(config?.routing?.smartRoute ?? {}), mode: config?.routing?.smartRoute?.mode ?? "shadow_test" };

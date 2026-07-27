@@ -1,21 +1,22 @@
 {
-  "name": "routerbot",
-  "version": "0.2.2",
-  "description": "Self-hosted OpenAI-compatible API router — Claude, Codex, Antigravity, Ollama, vLLM, and custom backends behind one base URL",
+  "name": "paragon",
+  "version": "0.3.0",
+  "description": "Adaptive, quota-aware AI coding orchestrator — one OpenAI-compatible endpoint over Claude, Codex, Antigravity, Cursor, Ollama, vLLM, and custom backends",
   "type": "module",
   "license": "MIT",
   "author": "Tym Huseby",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/SketchOTP/routerbot.git"
+    "url": "git+https://github.com/SketchOTP/paragon.git"
   },
-  "bugs": "https://github.com/SketchOTP/routerbot/issues",
-  "homepage": "https://github.com/SketchOTP/routerbot#readme",
+  "bugs": "https://github.com/SketchOTP/paragon/issues",
+  "homepage": "https://github.com/SketchOTP/paragon#readme",
   "keywords": [
     "cursor",
     "openai",
     "llm",
     "router",
+    "orchestrator",
     "claude",
     "codex",
     "antigravity",
@@ -29,7 +30,8 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
-    "test": "NODE_ENV=test node --import ./test/setup-test-env.js --test test/antigravity.test.js test/apiKeyPrompt.test.js test/auth.test.js test/authSessions.test.js test/cursorBaseUrl.test.js test/cursorMode.test.js test/legacyMode.test.js test/models.test.js test/release.test.js test/responsesFormat.test.js test/routerbotTask.test.js test/taskClassifier.test.js",
+    "test": "NODE_ENV=test node --import ./test/setup-test-env.js --test test/*.test.js",
+    "test:legacy": "NODE_ENV=test node --import ./test/setup-test-env.js --test test/antigravity.test.js test/apiKeyPrompt.test.js test/auth.test.js test/authSessions.test.js test/cursorBaseUrl.test.js test/cursorMode.test.js test/legacyMode.test.js test/models.test.js test/release.test.js test/responsesFormat.test.js test/paragonTask.test.js test/taskClassifier.test.js",
     "check": "npm test && bash scripts/check-release.sh",
     "check-config": "node src/check.js",
     "routes:verify": "node scripts/verify-legacy-routes.js"

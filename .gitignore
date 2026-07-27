@@ -5,7 +5,7 @@ data/
 *.log
 .env
 
-# Source artwork duplicate; shipped copy is public/routerbot.png
+# Source artwork duplicate; shipped copy is public/paragon.png
 /Routerbot.png
 
 # Local agent / project memory (not part of the public release)

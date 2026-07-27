@@ -3,7 +3,7 @@ import { accessSync, constants } from "node:fs";
 import { execSync } from "node:child_process";
 
 async function check() {
-  console.log("Checking RouterBot configuration...");
+  console.log("Checking PARAGON configuration...");
   let config;
   try {
     config = await readConfig();

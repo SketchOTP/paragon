@@ -9,6 +9,8 @@ import { scoreAndSelect } from "../src/smartRoute/policyScorer.js";
 import { resolveActiveProvider, isShadowMode, routeRequest } from "../src/smartRoute/route.js";
 import { validateResponse, shouldEscalate } from "../src/smartRoute/validator.js";
 import { defaultConfig } from "../src/defaultConfig.js";
+import { writeCurrentSnapshot } from "../src/smartRoute/modelSnapshotStore.js";
+import { withIsolatedDataDir } from "./helpers/isolatedDataDir.js";
 
 const sampleRegistry = [
   {
@@ -75,7 +77,7 @@ const sampleRegistry = [
 
 const baseConfig = {
   ...defaultConfig,
-  server: { ...defaultConfig.server, exposedModel: "routerbot-local" },
+  server: { ...defaultConfig.server, exposedModel: "paragon" },
   routing: {
     ...defaultConfig.routing,
     smartRoute: { ...defaultConfig.routing.smartRoute, mode: "shadow_test" }
@@ -94,7 +96,7 @@ test("parseClassifierResponse accepts fenced JSON", () => {
 test("applyHardGates routes vision to cheapest capable model", () => {
   const normalized = normalizeRequest(
     {
-      model: "routerbot-local",
+      model: "paragon",
       messages: [{ role: "user", content: [{ type: "image_url", image_url: { url: "x" } }] }]
     },
     {},
@@ -108,7 +110,7 @@ test("applyHardGates routes vision to cheapest capable model", () => {
 test("applyHardGates routes tools to tool-capable model", () => {
   const normalized = normalizeRequest(
     {
-      model: "routerbot-local",
+      model: "paragon",
       messages: [{ role: "user", content: "run tool" }],
       tools: [{ type: "function", function: { name: "x" } }]
     },
@@ -122,7 +124,7 @@ test("applyHardGates routes tools to tool-capable model", () => {
 test("extractFeatures marks obvious simple summarize prompts", () => {
   const normalized = normalizeRequest(
     {
-      model: "routerbot-local",
+      model: "paragon",
       messages: [{ role: "user", content: "Summarize this in one paragraph." }]
     },
     {},
@@ -215,28 +217,44 @@ test("shouldEscalate respects settings", () => {
 });
 
 test("routeRequest picks hard gate for tools without classifier", async () => {
-  const config = {
-    ...baseConfig,
-    providers: {
-      codex: { ...baseConfig.providers.codex, enabled: true },
-      antigravity: { ...baseConfig.providers.antigravity, enabled: true },
-      claude: { ...baseConfig.providers.claude, enabled: true }
-    }
-  };
+  // routeRequest() resolves candidates from the live model registry
+  // (src/smartRoute/registry.js -> readCurrentSnapshot), not from the
+  // sampleRegistry fixture above used by the direct applyHardGates() unit
+  // tests — without a written snapshot the registry is empty and the tool
+  // hard gate has nothing to select, so this needs its own seeded snapshot.
+  await withIsolatedDataDir(async () => {
+    await writeCurrentSnapshot({
+      version: 1,
+      stale: false,
+      refresh_status: "ok",
+      models: [
+        { canonical_id: "codex:default", provider: "codex", model: "default", available: true }
+      ]
+    });
 
-  const decision = await routeRequest(
-    {
-      model: "routerbot-local",
-      messages: [{ role: "user", content: "use my tool" }],
-      tools: [{ type: "function", function: { name: "lookup" } }]
-    },
-    {},
-    config
-  );
+    const config = {
+      ...baseConfig,
+      providers: {
+        codex: { ...baseConfig.providers.codex, enabled: true },
+        antigravity: { ...baseConfig.providers.antigravity, enabled: true },
+        claude: { ...baseConfig.providers.claude, enabled: true }
+      }
+    };
 
-  assert.equal(decision.source, "hard_gate");
-  assert.equal(decision.gateReason, "tools_required");
-  assert.ok(decision.provider);
+    const decision = await routeRequest(
+      {
+        model: "paragon",
+        messages: [{ role: "user", content: "use my tool" }],
+        tools: [{ type: "function", function: { name: "lookup" } }]
+      },
+      {},
+      config
+    );
+
+    assert.equal(decision.source, "hard_gate");
+    assert.equal(decision.gateReason, "tools_required");
+    assert.ok(decision.provider);
+  });
 });
 
 test("filterCandidates excludes non-tool models when tools required", () => {

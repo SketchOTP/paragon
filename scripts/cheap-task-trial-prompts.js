@@ -18,5 +18,5 @@ export const PROMPTS = [
   { id: "chat-5", category: "chat", message: "Is JSON good for config files? One sentence." },
   { id: "rewrite-5", category: "rewrite", message: "Rewrite: router picks model using gates and scorer" },
   { id: "summarize-5", category: "summarize", message: "Summarize balanced vs cost_saver in one line each." },
-  { id: "extract-5", category: "extract", message: "Extract tags from: #release #bugfix #routerbot v0.2.2" }
+  { id: "extract-5", category: "extract", message: "Extract tags from: #release #bugfix #paragon v0.3.0" }
 ];

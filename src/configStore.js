@@ -2,10 +2,11 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { generateApiKey } from "./auth.js";
 import { effectiveCursorBaseUrl, reconcilePersistedCursorBaseUrl } from "./cursorBaseUrl.js";
-import { migrateGeminiToAntigravity } from "./configMigrate.js";
+import { migrateGeminiToAntigravity, migrateToParagon } from "./configMigrate.js";
 import { BUILTIN_PROVIDERS, defaultConfig } from "./defaultConfig.js";
 import { getTunnelStatus } from "./tunnelManager.js";
 import { assertNotProductionWrite, getDataDir } from "./dataPaths.js";
+import { getEnv } from "./env.js";
 
 export { getDataDir };
 
@@ -52,20 +53,41 @@ export function mergeConfig(base, incoming) {
       taskRoutes: { ...base.routing.taskRoutes, ...incoming?.routing?.taskRoutes },
       namedRoutes: { ...base.routing?.namedRoutes, ...incoming?.routing?.namedRoutes },
       fallbackChain: incoming?.routing?.fallbackChain ?? base.routing.fallbackChain,
-      taskPatterns: { ...base.routing?.taskPatterns, ...incoming?.routing?.taskPatterns }
+      taskPatterns: { ...base.routing?.taskPatterns, ...incoming?.routing?.taskPatterns },
+      smartRoute: {
+        ...base.routing?.smartRoute,
+        ...incoming?.routing?.smartRoute,
+        canary: {
+          ...base.routing?.smartRoute?.canary,
+          ...incoming?.routing?.smartRoute?.canary,
+          rollback: {
+            ...base.routing?.smartRoute?.canary?.rollback,
+            ...incoming?.routing?.smartRoute?.canary?.rollback
+          }
+        }
+      }
+    },
+    orchestration: {
+      ...base.orchestration,
+      ...incoming?.orchestration,
+      sessionGovernor: { ...base.orchestration?.sessionGovernor, ...incoming?.orchestration?.sessionGovernor },
+      subagentGovernor: { ...base.orchestration?.subagentGovernor, ...incoming?.orchestration?.subagentGovernor }
     }
   };
 }
 
 function applyEnvOverrides(config) {
-  if (process.env.ROUTERBOT_API_KEY) {
-    config.server.apiKey = process.env.ROUTERBOT_API_KEY;
+  const apiKey = getEnv("API_KEY");
+  if (apiKey) {
+    config.server.apiKey = apiKey;
   }
-  if (process.env.ROUTERBOT_HOST) {
-    config.server.host = process.env.ROUTERBOT_HOST;
+  const host = getEnv("HOST");
+  if (host) {
+    config.server.host = host;
   }
-  if (process.env.ROUTERBOT_PORT) {
-    config.server.port = Number(process.env.ROUTERBOT_PORT);
+  const port = getEnv("PORT");
+  if (port) {
+    config.server.port = Number(port);
   }
   if (process.env.NGROK_AUTHTOKEN && config.server.tunnels) {
     config.server.tunnels.ngrokAuthtoken = process.env.NGROK_AUTHTOKEN;
@@ -74,7 +96,7 @@ function applyEnvOverrides(config) {
 }
 
 async function ensureApiKey(config, persist) {
-  if (process.env.ROUTERBOT_API_KEY || config.server.apiKey) {
+  if (getEnv("API_KEY") || config.server.apiKey) {
     return config;
   }
   const next = {
@@ -87,7 +109,7 @@ async function ensureApiKey(config, persist) {
     assertNotProductionWrite(cfgPath);
     await fs.mkdir(dir, { recursive: true });
     await fs.writeFile(cfgPath, `${JSON.stringify(next, null, 2)}\n`, "utf8");
-    console.log("Generated RouterBot API key (saved to data/config.json)");
+    console.log("Generated PARAGON API key (saved to data/config.json)");
     console.log(`  ${next.server.apiKey}`);
   }
   return next;
@@ -131,6 +153,7 @@ export async function readConfig() {
     const raw = await fs.readFile(cfgPath, "utf8");
     config = mergeConfig(defaultConfig, JSON.parse(raw));
     config = migrateGeminiToAntigravity(config);
+    config = migrateToParagon(config);
     ({ config } = await syncCursorBaseUrl(config, { persist: true }));
     config = await ensureApiKey(config, false);
   } catch (error) {
@@ -139,6 +162,7 @@ export async function readConfig() {
     }
     config = mergeConfig(defaultConfig, {});
     config = migrateGeminiToAntigravity(config);
+    config = migrateToParagon(config);
     ({ config } = await syncCursorBaseUrl(config, { persist: true }));
     config = await ensureApiKey(config, true);
   }
@@ -146,7 +170,7 @@ export async function readConfig() {
 }
 
 export async function writeConfig(nextConfig) {
-  let merged = migrateGeminiToAntigravity(mergeConfig(defaultConfig, nextConfig));
+  let merged = migrateToParagon(migrateGeminiToAntigravity(mergeConfig(defaultConfig, nextConfig)));
   ({ config: merged } = await syncCursorBaseUrl(merged, { persist: false }));
   const dir = getDataDir();
   const cfgPath = getConfigPath();

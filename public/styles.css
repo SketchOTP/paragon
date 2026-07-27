@@ -1033,3 +1033,118 @@ button.danger-text {
 .app-notice.error {
   background: var(--bad);
 }
+
+/* --- Orchestration (PARAGON adaptive routing) -------------------------- */
+
+.orchestration-section {
+  margin-top: 28px;
+}
+
+.orch-mode-badge {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--line);
+  color: var(--muted);
+}
+
+.orch-mode-badge.live {
+  color: #1a7f37;
+  border-color: #1a7f37;
+}
+
+.orch-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+  margin-top: 12px;
+}
+
+.orch-shadow-panel {
+  grid-column: span 3;
+}
+
+.checkbox-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  font-size: 13px;
+}
+
+.panel-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.orch-rankings {
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.orch-rankings table,
+.orch-decisions table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.orch-rankings th,
+.orch-rankings td,
+.orch-decisions th,
+.orch-decisions td {
+  text-align: left;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+
+.orch-shadow-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.orch-stat {
+  background: var(--bg-elevated);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+}
+
+.orch-stat-label {
+  display: block;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.orch-stat-value {
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.orch-decisions {
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.orch-empty {
+  font-size: 12px;
+  color: var(--muted);
+  padding: 8px 0;
+}
+
+@media (max-width: 900px) {
+  .orch-grid {
+    grid-template-columns: 1fr;
+  }
+  .orch-shadow-panel {
+    grid-column: span 1;
+  }
+}

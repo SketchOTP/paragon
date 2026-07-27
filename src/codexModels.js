@@ -186,7 +186,7 @@ function persistCodexModelsCache(homeDir, payload) {
     const cachePath = join(homeDir, "models_cache.json");
     writeFileSync(cachePath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
   } catch {
-    // Non-fatal — RouterBot can still use the in-memory list.
+    // Non-fatal — PARAGON can still use the in-memory list.
   }
 }
 

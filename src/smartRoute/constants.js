@@ -62,7 +62,7 @@ export const SCORE_WEIGHTS = {
 
 export const TIER_RANK = { local: 0, cheap: 1, mid: 2, premium: 3 };
 
-export const CLASSIFIER_PROMPT = `You are RouterBot's routing classifier.
+export const CLASSIFIER_PROMPT = `You are PARAGON's routing classifier.
 
 Classify the user's request for model routing.
 Do not answer the user's request.

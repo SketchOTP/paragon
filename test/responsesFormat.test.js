@@ -16,20 +16,20 @@ test("looksLikeResponsesPayload detects Cursor Agent payloads", () => {
 
 test("responsesInputToPrompt flattens instructions and message items", () => {
   const prompt = responsesInputToPrompt({
-    instructions: "You are RouterBot",
+    instructions: "You are PARAGON",
     input: [
       { type: "message", role: "user", content: [{ type: "input_text", text: "Fix the bug" }] },
       { type: "function_call_output", output: "ok" }
     ]
   });
-  assert.match(prompt, /SYSTEM:\nYou are RouterBot/);
+  assert.match(prompt, /SYSTEM:\nYou are PARAGON/);
   assert.match(prompt, /USER:\nFix the bug/);
   assert.match(prompt, /TOOL_OUTPUT:\nok/);
 });
 
 test("responsesToChatCompletion maps assistant text", () => {
   const response = buildResponseObject({
-    model: "routerbot-local",
+    model: "paragon",
     content: "Done.",
     provider: "codex",
     routedProvider: "codex",

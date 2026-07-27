@@ -81,7 +81,7 @@ export async function assertPreTrialSnapshotReady(config, options = {}) {
   // Runtime hash check against server when base URL provided
   if (options.baseUrl && guard.requireHashMatch) {
     try {
-      const headers = { Authorization: `Bearer ${options.apiKey ?? "routerbot"}` };
+      const headers = { Authorization: `Bearer ${options.apiKey ?? "paragon"}` };
       const runtime = await fetch(`${options.baseUrl}/api/smart-route/runtime-state`, {
         headers
       }).then((r) => r.json());

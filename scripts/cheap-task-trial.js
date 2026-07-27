@@ -26,7 +26,7 @@ const maxTokens = Number(
   process.argv.find((_, i, a) => a[i - 1] === "--max-tokens") ?? (quick ? 48 : 256)
 );
 const baseUrl = process.env.ROUTERBOT_BASE ?? "http://127.0.0.1:4117";
-const apiKey = process.env.ROUTERBOT_API_KEY ?? "routerbot";
+const apiKey = process.env.PARAGON_API_KEY ?? process.env.ROUTERBOT_API_KEY ?? "paragon";
 
 function runPreflight() {
   const result = spawnSync("node", ["src/smartRouteModelRankings.js", "--preflight"], {
@@ -108,14 +108,14 @@ async function main() {
         "X-RouterBot-Dev": "1"
       },
       body: JSON.stringify({
-        model: "routerbot-local",
+        model: "paragon",
         messages: [{ role: "user", content: prompt.message }],
         max_tokens: maxTokens,
         stream: false
       })
     });
     const json = await response.json();
-    const rb = json.routerbot ?? {};
+    const rb = json.paragon ?? {};
     console.log(
       response.ok
         ? `${rb.provider ?? "?"} (${Date.now() - started}ms)`

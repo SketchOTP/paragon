@@ -3,7 +3,7 @@ import { normalizeContent } from "../prompt.js";
 export function normalizeRequest(body, headers, config) {
   const messages = body?.messages ?? [];
   const prompt = messages.length ? messagesToNormalizedPrompt(messages) : extractInputPrompt(body);
-  const exposedModel = config?.server?.exposedModel ?? "routerbot-local";
+  const exposedModel = config?.server?.exposedModel ?? "paragon";
   const requestedModel = typeof body?.model === "string" ? body.model.trim() : "";
 
   return {

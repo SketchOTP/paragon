@@ -22,7 +22,7 @@ function model(id, overrides = {}) {
     },
     benchmarks: {
       benchmark_confidence: 0.8,
-      routerbot_eval: { chat: 0.5, rewrite: 0.5, summarize: 0.5, extract: 0.5 },
+      paragon_eval: { chat: 0.5, rewrite: 0.5, summarize: 0.5, extract: 0.5 },
       ...(overrides.benchmarks ?? {})
     },
     health: {
@@ -44,12 +44,12 @@ test("cheap task selects lower-cost model over higher-quality premium", async ()
   const cheap = model("antigravity:flash", {
     tier: "cheap",
     pricing: { input_per_1m: 0.15, output_per_1m: 0.6, pricing_status: "valid", pricing_confidence: 0.9, cost_sensitive_eligible: true, pricing_source: "official_pricing", source_url: "https://x" },
-    benchmarks: { benchmark_confidence: 0.8, routerbot_eval: { rewrite: 0.45 } }
+    benchmarks: { benchmark_confidence: 0.8, paragon_eval: { rewrite: 0.45 } }
   });
   const premium = model("codex:gpt-5.4", {
     tier: "premium",
     pricing: { input_per_1m: 2.5, output_per_1m: 15, pricing_status: "valid", pricing_confidence: 0.9, cost_sensitive_eligible: true, pricing_source: "official_pricing", source_url: "https://x" },
-    benchmarks: { benchmark_confidence: 0.95, routerbot_eval: { rewrite: 0.95 } }
+    benchmarks: { benchmark_confidence: 0.95, paragon_eval: { rewrite: 0.95 } }
   });
 
   const ranked = rankModelsForTask([premium, cheap], "rewrite", {
@@ -75,7 +75,7 @@ test("premium wins only when no cheaper model passes floor", async () => {
   const premium = model("codex:gpt-5.4", {
     tier: "premium",
     pricing: { input_per_1m: 2.5, output_per_1m: 15, pricing_status: "valid", pricing_confidence: 0.9, cost_sensitive_eligible: true, pricing_source: "official_pricing", source_url: "https://x" },
-    benchmarks: { benchmark_confidence: 0.9, routerbot_eval: { rewrite: 0.8 } }
+    benchmarks: { benchmark_confidence: 0.9, paragon_eval: { rewrite: 0.8 } }
   });
 
   const ranked = rankModelsForTask([weakCheap, premium], "rewrite", {
@@ -94,12 +94,12 @@ test("maximum_quality can select premium", async () => {
   const cheap = model("antigravity:flash", {
     tier: "cheap",
     pricing: { input_per_1m: 0.15, output_per_1m: 0.6, pricing_status: "valid", pricing_confidence: 0.9, cost_sensitive_eligible: true, pricing_source: "official_pricing", source_url: "https://x" },
-    benchmarks: { benchmark_confidence: 0.8, routerbot_eval: { rewrite: 0.45 } }
+    benchmarks: { benchmark_confidence: 0.8, paragon_eval: { rewrite: 0.45 } }
   });
   const premium = model("codex:gpt-5.4", {
     tier: "premium",
     pricing: { input_per_1m: 2.5, output_per_1m: 15, pricing_status: "valid", pricing_confidence: 0.9, cost_sensitive_eligible: true, pricing_source: "official_pricing", source_url: "https://x" },
-    benchmarks: { benchmark_confidence: 0.95, routerbot_eval: { rewrite: 0.95 } }
+    benchmarks: { benchmark_confidence: 0.95, paragon_eval: { rewrite: 0.95 } }
   });
 
   const ranked = rankModelsForTask([cheap, premium], "rewrite", {
@@ -118,12 +118,12 @@ test("balanced blocks premium when cheaper model passes floor", async () => {
   const cheap = model("claude:claude-haiku-4-5", {
     tier: "cheap",
     pricing: { input_per_1m: 0.8, output_per_1m: 4, pricing_status: "valid", pricing_confidence: 0.85, cost_sensitive_eligible: true, pricing_source: "underlying_direct_price", source_url: "https://anthropic" },
-    benchmarks: { benchmark_confidence: 0.8, routerbot_eval: { rewrite: 0.5 } }
+    benchmarks: { benchmark_confidence: 0.8, paragon_eval: { rewrite: 0.5 } }
   });
   const premium = model("codex:gpt-5.4", {
     tier: "premium",
     pricing: { input_per_1m: 2.5, output_per_1m: 15, pricing_status: "valid", pricing_confidence: 0.9, cost_sensitive_eligible: true, pricing_source: "official_pricing", source_url: "https://openai" },
-    benchmarks: { benchmark_confidence: 0.95, routerbot_eval: { rewrite: 0.9 } }
+    benchmarks: { benchmark_confidence: 0.95, paragon_eval: { rewrite: 0.9 } }
   });
 
   const report = explainRanking([cheap, premium], "rewrite", {
@@ -151,7 +151,7 @@ test("extract_json prefers model that passes JSON floor", async () => {
       health_confidence: 1,
       last_probe_status: "fail"
     },
-    benchmarks: { benchmark_confidence: 0.8, routerbot_eval: { extract: 0.5 } }
+    benchmarks: { benchmark_confidence: 0.8, paragon_eval: { extract: 0.5 } }
   });
   const midPassJson = model("claude:claude-haiku-4-5", {
     tier: "mid",
@@ -163,7 +163,7 @@ test("extract_json prefers model that passes JSON floor", async () => {
       health_confidence: 1,
       last_probe_status: "pass"
     },
-    benchmarks: { benchmark_confidence: 0.8, routerbot_eval: { extract: 0.55 } }
+    benchmarks: { benchmark_confidence: 0.8, paragon_eval: { extract: 0.55 } }
   });
 
   const ranked = rankModelsForTask([cheapFailJson, midPassJson], "extract_json", {
@@ -182,12 +182,12 @@ test("ranking explanation includes winner and premium block reasons", async () =
   const cheap = model("antigravity:flash", {
     tier: "cheap",
     pricing: { input_per_1m: 0.15, output_per_1m: 0.6, pricing_status: "valid", pricing_confidence: 0.9, cost_sensitive_eligible: true, pricing_source: "official_pricing", source_url: "https://x" },
-    benchmarks: { benchmark_confidence: 0.8, routerbot_eval: { chat: 0.5 } }
+    benchmarks: { benchmark_confidence: 0.8, paragon_eval: { chat: 0.5 } }
   });
   const premium = model("codex:gpt-5.4", {
     tier: "premium",
     pricing: { input_per_1m: 2.5, output_per_1m: 15, pricing_status: "valid", pricing_confidence: 0.9, cost_sensitive_eligible: true, pricing_source: "official_pricing", source_url: "https://x" },
-    benchmarks: { benchmark_confidence: 0.95, routerbot_eval: { chat: 0.9 } }
+    benchmarks: { benchmark_confidence: 0.95, paragon_eval: { chat: 0.9 } }
   });
 
   const report = explainRanking([cheap, premium], "chat", {

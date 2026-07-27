@@ -58,7 +58,7 @@ test("plan prompt classifies to plan task when mode is unknown", async () => {
 test("extractCursorMode infers agent from responses payloads", () => {
   assert.equal(
     extractCursorMode({
-      model: "routerbot-local",
+      model: "paragon",
       input: "edit files",
       stream: true,
       tools: [{ type: "function", name: "ApplyPatch" }],

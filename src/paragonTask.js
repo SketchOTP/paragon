@@ -1,8 +1,10 @@
 /** Explicit task override — skips LLM/regex classification when set. */
 
-export function extractRouterbotTask(body, headers) {
+export function extractParagonTask(body, headers) {
   const meta = body?.metadata;
   const fromMeta =
+    meta?.paragon_task ??
+    meta?.paragon?.task ??
     meta?.routerbot_task ??
     meta?.routerbot?.task ??
     (typeof meta?.task === "string" ? meta.task : null);
@@ -10,7 +12,7 @@ export function extractRouterbotTask(body, headers) {
     return fromMeta.trim().toLowerCase();
   }
 
-  const header = headers?.["x-routerbot-task"];
+  const header = headers?.["x-paragon-task"] ?? headers?.["x-routerbot-task"];
   if (typeof header === "string" && header.trim()) {
     return header.trim().toLowerCase();
   }

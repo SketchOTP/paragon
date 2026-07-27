@@ -2,7 +2,8 @@ import { Router } from "express";
 import { createAuthMiddleware } from "./auth.js";
 import { extractCursorMode } from "./cursorMode.js";
 import { classifyTask } from "./taskClassifier.js";
-import { extractRouterbotTask, resolveExplicitTask } from "./routerbotTask.js";
+import { LEGACY_EXPOSED_MODEL_ALIAS } from "./defaultConfig.js";
+import { extractParagonTask, resolveExplicitTask } from "./paragonTask.js";
 import { messagesToPrompt } from "./prompt.js";
 import { runProvider } from "./cli.js";
 import { addLog } from "./logStore.js";
@@ -22,8 +23,9 @@ import {
   sanitizeResponsesPayload
 } from "./responsesFormat.js";
 import { streamChatFromResponsesInput, streamResponsesSse } from "./responsesStream.js";
+import { recordShadowRoutingDecision } from "./smartRouteShadow.js";
 
-function logRouterbotRequest(message, { level = "info", provider = "routerbot" } = {}) {
+function logParagonRequest(message, { level = "info", provider = "paragon" } = {}) {
   addLog({ type: "request", provider, level, message });
 }
 
@@ -34,7 +36,13 @@ function listModels(config) {
   const data = [];
   if (exposed) {
     seen.add(exposed);
-    data.push({ id: exposed, object: "model", created: 0, owned_by: "routerbot" });
+    data.push({ id: exposed, object: "model", created: 0, owned_by: "paragon" });
+    // Deprecated alias, kept for one migration release so existing clients
+    // pinned to the pre-rename model id keep resolving.
+    if (!seen.has(LEGACY_EXPOSED_MODEL_ALIAS)) {
+      seen.add(LEGACY_EXPOSED_MODEL_ALIAS);
+      data.push({ id: LEGACY_EXPOSED_MODEL_ALIAS, object: "model", created: 0, owned_by: "paragon" });
+    }
   }
   for (const model of named) {
     if (seen.has(model.id)) {
@@ -51,13 +59,13 @@ function createV1Router(getConfig) {
 
   router.get("/models", async (req, res) => {
     const config = await getConfig();
-    logRouterbotRequest(`GET ${req.baseUrl}/models`);
+    logParagonRequest(`GET ${req.baseUrl}/models`);
     res.json({ object: "list", data: listModels(config) });
   });
 
   router.get("/models/:id", async (req, res) => {
     const config = await getConfig();
-    logRouterbotRequest(`GET ${req.baseUrl}/models/${req.params.id}`);
+    logParagonRequest(`GET ${req.baseUrl}/models/${req.params.id}`);
     const model = listModels(config).find((m) => m.id === req.params.id);
     if (!model) {
       res.status(404).json({
@@ -93,7 +101,7 @@ function createV1Router(getConfig) {
   });
 
   router.get("/responses/:id", (req, res) => {
-    logRouterbotRequest(`GET ${req.baseUrl}/responses/:id → 404`);
+    logParagonRequest(`GET ${req.baseUrl}/responses/:id → 404`);
     res.status(404).json({
       error: {
         message: "Stored responses are not supported",
@@ -113,7 +121,7 @@ export function registerOpenAiRoutes(app, getConfig) {
 }
 
 async function resolveTask(prompt, config, cursorMode, body, headers) {
-  const explicitTask = resolveExplicitTask(extractRouterbotTask(body, headers), config);
+  const explicitTask = resolveExplicitTask(extractParagonTask(body, headers), config);
   if (explicitTask) {
     return explicitTask;
   }
@@ -166,11 +174,13 @@ async function handleGeneration(req, res, getConfig, options) {
     );
   }
 
+  recordShadowRoutingDecision({ body: bodyForPrompt, headers: req.headers, config, legacyTask: task, legacyProvider: primary });
+
   const attempts = buildProviderAttempts(config, primary);
   const started = Date.now();
   const streamSuffix = req.body?.stream ? " (stream)" : "";
   const modeLabel = cursorMode ? ` · cursor ${cursorMode}` : "";
-  logRouterbotRequest(`${pathLabel}${streamSuffix}${modeLabel} · ${task} → ${primary}`, { provider: primary });
+  logParagonRequest(`${pathLabel}${streamSuffix}${modeLabel} · ${task} → ${primary}`, { provider: primary });
   addLog({
     type: "route",
     provider: primary,
@@ -199,7 +209,7 @@ async function handleGeneration(req, res, getConfig, options) {
           model: responseModel,
           onGenerate: (onChunk) =>
             runOnce((chunk) => onChunk(sanitizeAssistantContent(chunk))).then((result) => {
-              logRouterbotRequest(
+              logParagonRequest(
                 `${pathLabel} → 200 (${result.durationMs}ms) via ${result.provider}`,
                 { provider: result.provider }
               );
@@ -216,7 +226,7 @@ async function handleGeneration(req, res, getConfig, options) {
           model: responseModel,
           onGenerate: (onChunk) =>
             runOnce((chunk) => onChunk(sanitizeAssistantContent(chunk))).then((result) => {
-              logRouterbotRequest(
+              logParagonRequest(
                 `${pathLabel} → 200 (${result.durationMs}ms) via ${result.provider}`,
                 { provider: result.provider }
               );
@@ -240,7 +250,7 @@ async function handleGeneration(req, res, getConfig, options) {
     }
 
     const { provider, routedProvider, durationMs, content } = await runOnce();
-    logRouterbotRequest(`${pathLabel} → 200 (${durationMs}ms) via ${provider}`, { provider });
+    logParagonRequest(`${pathLabel} → 200 (${durationMs}ms) via ${provider}`, { provider });
 
     if (streamKind === "responses") {
       res.json(
@@ -266,12 +276,12 @@ async function handleGeneration(req, res, getConfig, options) {
       })
     );
   } catch (error) {
-    logRouterbotRequest(`${pathLabel} → 500`, { level: "error", provider: primary });
+    logParagonRequest(`${pathLabel} → 500`, { level: "error", provider: primary });
     addLog({ type: "error", provider: primary, level: "error", message: error.message });
     res.status(500).json({
       error: {
         message: CLIENT_ERROR_MESSAGE,
-        type: "routerbot_provider_error",
+        type: "paragon_provider_error",
         provider: primary
       }
     });
@@ -385,21 +395,21 @@ async function streamCompletion({ res, config, attempts, prompt, started, pathLa
   try {
     const { provider, result } = await runWithFallback(attempts, prompt, onChunk, { cursorMode });
     const durationMs = Date.now() - started;
-    logRouterbotRequest(`${pathLabel} (stream) → 200 (${durationMs}ms) via ${provider}`, { provider });
+    logParagonRequest(`${pathLabel} (stream) → 200 (${durationMs}ms) via ${provider}`, { provider });
     send({
       id,
       object: "chat.completion.chunk",
       created: Math.floor(Date.now() / 1000),
       model: responseModel,
       choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
-      routerbot: { provider, durationMs, contentLength: sanitizeAssistantContent(result.stdout).length }
+      paragon: { provider, durationMs, contentLength: sanitizeAssistantContent(result.stdout).length }
     });
     res.write("data: [DONE]\n\n");
     res.end();
   } catch (error) {
-    logRouterbotRequest(`${pathLabel} (stream) → error`, {
+    logParagonRequest(`${pathLabel} (stream) → error`, {
       level: "error",
-      provider: attempts[0]?.name ?? "routerbot"
+      provider: attempts[0]?.name ?? "paragon"
     });
     if (!roleSent) {
       send({
@@ -435,7 +445,7 @@ function chatCompletion({ model, content, durationMs, provider, routedProvider }
     object: "chat.completion",
     created: Math.floor(Date.now() / 1000),
     model,
-    routerbot: {
+    paragon: {
       durationMs,
       provider,
       routedProvider,

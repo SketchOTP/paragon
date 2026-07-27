@@ -3,9 +3,9 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>RouterBot</title>
-    <link rel="icon" href="/routerbot.png" type="image/png" />
-    <link rel="apple-touch-icon" href="/routerbot.png" />
+    <title>PARAGON</title>
+    <link rel="icon" href="/paragon.png" type="image/png" />
+    <link rel="apple-touch-icon" href="/paragon.png" />
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
@@ -119,9 +119,9 @@
     <main class="app">
       <header class="hero">
         <div class="hero-brand">
-          <img class="logo-mark" src="/routerbot.png" width="72" height="72" alt="" />
+          <img class="logo-mark" src="/paragon.png" width="72" height="72" alt="" />
           <div>
-            <h1>RouterBot</h1>
+            <h1>PARAGON</h1>
             <p class="tagline">One local endpoint — route requests across all your AI backends.</p>
           </div>
         </div>
@@ -139,7 +139,7 @@
           <div class="metric-icon" aria-hidden="true">↗</div>
           <div class="metric-body">
             <span class="metric-label">Base URL</span>
-            <code class="metric-value" id="routerbot-base-url"></code>
+            <code class="metric-value" id="paragon-base-url"></code>
           </div>
         </article>
         <article class="metric-card">
@@ -184,7 +184,7 @@
           </label>
           <label class="field field-span">
             <span class="field-label">Base URL override</span>
-            <input id="setting-routerbot-base" placeholder="https://host:10000/v1" />
+            <input id="setting-paragon-base" placeholder="https://host:10000/v1" />
           </label>
           <label class="field">
             <span class="field-label">Model name</span>
@@ -263,6 +263,118 @@
         <div class="providers-grid" id="providers"></div>
       </section>
 
+      <section class="orchestration-section">
+        <div class="section-head">
+          <h2>Orchestration</h2>
+          <span class="orch-mode-badge" id="orch-mode-badge">shadow</span>
+        </div>
+        <p class="routing-hint">
+          Adaptive orchestration engine (PARAGON directive PARAGON-D-001). In <code>shadow_test</code> mode it
+          computes and logs what it would have selected for every request without ever serving one — the
+          legacy Routing panel above still decides what actually runs. Nothing here can change live behavior
+          until you switch the mode below.
+        </p>
+        <div class="orch-grid">
+          <article class="panel">
+            <div class="panel-head">
+              <h2>Routing policy</h2>
+              <button type="button" id="orch-save-policy" class="btn ghost">Save</button>
+            </div>
+            <label class="field compact">
+              <span class="field-label">Mode</span>
+              <select id="orch-mode">
+                <option value="legacy">legacy (smartRoute off)</option>
+                <option value="shadow_test">shadow_test (observe only)</option>
+                <option value="balanced_live">balanced_live (canary-gated)</option>
+                <option value="manual">manual</option>
+              </select>
+            </label>
+            <label class="field compact">
+              <span class="field-label">Classifier provider</span>
+              <input id="orch-classifier-provider" placeholder="codex" />
+            </label>
+            <label class="field compact">
+              <span class="field-label">Confidence threshold</span>
+              <input id="orch-confidence-threshold" type="number" step="0.01" min="0" max="1" />
+            </label>
+            <label class="checkbox-field">
+              <input id="orch-canary-enabled" type="checkbox" />
+              <span>Canary enabled</span>
+            </label>
+            <label class="field compact">
+              <span class="field-label">Canary %</span>
+              <input id="orch-canary-percent" type="number" min="0" max="100" />
+            </label>
+          </article>
+
+          <article class="panel">
+            <div class="panel-head">
+              <h2>Session governor</h2>
+              <button type="button" id="orch-save-session" class="btn ghost">Save</button>
+            </div>
+            <label class="field compact">
+              <span class="field-label">Context warning (tokens)</span>
+              <input id="orch-context-warning" type="number" min="0" />
+            </label>
+            <label class="field compact">
+              <span class="field-label">Forced rollover (tokens)</span>
+              <input id="orch-forced-rollover" type="number" min="0" />
+            </label>
+            <label class="field compact">
+              <span class="field-label">Absolute ceiling (tokens)</span>
+              <input id="orch-context-ceiling" type="number" min="0" />
+            </label>
+            <label class="field compact">
+              <span class="field-label">Forced session rollover (min)</span>
+              <input id="orch-session-rollover-min" type="number" min="0" />
+            </label>
+          </article>
+
+          <article class="panel">
+            <div class="panel-head">
+              <h2>Subagent governor</h2>
+              <button type="button" id="orch-save-subagent" class="btn ghost">Save</button>
+            </div>
+            <label class="field compact">
+              <span class="field-label">Default subagent count</span>
+              <input id="orch-subagent-default" type="number" min="0" />
+            </label>
+            <label class="field compact">
+              <span class="field-label">Max parallel subagents</span>
+              <input id="orch-subagent-max-parallel" type="number" min="0" />
+            </label>
+            <label class="field compact">
+              <span class="field-label">Max total per job</span>
+              <input id="orch-subagent-max-total" type="number" min="0" />
+            </label>
+            <label class="checkbox-field">
+              <input id="orch-subagent-recursive" type="checkbox" />
+              <span>Recursive spawning allowed</span>
+            </label>
+          </article>
+
+          <article class="panel">
+            <div class="panel-head">
+              <h2>Model rankings</h2>
+              <div class="panel-head-actions">
+                <select id="orch-rankings-task"></select>
+                <button type="button" id="orch-refresh-rankings" class="btn ghost">Refresh</button>
+              </div>
+            </div>
+            <div id="orch-rankings" class="orch-rankings"></div>
+          </article>
+
+          <article class="panel orch-shadow-panel">
+            <div class="panel-head">
+              <h2>Shadow analysis</h2>
+              <button type="button" id="orch-refresh-shadow" class="btn ghost">Refresh</button>
+            </div>
+            <div id="orch-shadow-summary" class="orch-shadow-summary"></div>
+            <div id="orch-decisions" class="orch-decisions"></div>
+          </article>
+        </div>
+      </section>
+
       <section class="lower-grid">
         <article class="panel routing-panel">
           <div class="panel-head">
@@ -277,8 +389,8 @@
           <div id="routes" class="routes"></div>
           <p class="routing-hint">
             Keyword patterns in each task row pick the primary provider. If that provider fails,
-            RouterBot walks the fallback chain. Ask/Plan use BYOK. Agent, Debug Mode, and Multitask
-            usually bypass your base URL — only Ask/Plan traffic hits RouterBot.
+            PARAGON walks the fallback chain. Ask/Plan use BYOK. Agent, Debug Mode, and Multitask
+            usually bypass your base URL — only Ask/Plan traffic hits PARAGON.
             The <code>debug</code> row applies to BYOK requests with debug keywords, not Cursor’s Debug Mode picker.
           </p>
         </article>

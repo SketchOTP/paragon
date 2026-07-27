@@ -1,11 +1,11 @@
 <p align="center">
-  <img src="public/routerbot.png" alt="RouterBot" width="120" />
+  <img src="public/paragon.png" alt="PARAGON" width="120" />
 </p>
 
-<h1 align="center">RouterBot</h1>
+<h1 align="center">PARAGON</h1>
 
 <p align="center">
-  <strong>One OpenAI-compatible endpoint — route to every AI backend you run.</strong>
+  <strong>An adaptive, quota-aware AI coding orchestrator behind one OpenAI-compatible endpoint.</strong>
 </p>
 
 <p align="center">
@@ -19,23 +19,48 @@
 
 ---
 
-RouterBot is a self-hosted **OpenAI-compatible API router**. Point any client that supports a custom OpenAI base URL, model name, and API key at RouterBot — IDEs, chat UIs, agents, scripts, or your own app. RouterBot classifies each request, picks a backend provider, runs your configured CLIs or HTTP APIs, and falls back automatically when something fails.
+PARAGON (formerly RouterBot) is a self-hosted **OpenAI-compatible API router**, now being extended into an
+**adaptive orchestration layer** on top of that router. Point any client that supports a custom OpenAI base
+URL, model name, and API key at PARAGON — IDEs, chat UIs, agents, scripts, or your own app. Today PARAGON
+classifies each request by keyword, picks a backend provider, runs your configured CLIs or HTTP APIs, and
+falls back automatically when something fails — that's the same routing behavior RouterBot always had, and
+it keeps serving every request unchanged. Running alongside it, in shadow mode by default, is an adaptive
+routing engine that scores every request against a live model registry (capability, cost, historical
+success, provider health) and logs what it *would* have chosen, without ever serving a request itself yet.
+See [Orchestration (adaptive routing)](#orchestration-adaptive-routing) below.
 
 **Works with:** Continue, Open WebUI, LibreChat, LangChain, custom HTTP clients, and any tool that speaks `POST /v1/chat/completions`, `POST /v1/responses`, and `GET /v1/models`. Cursor (Ask and Agent with responses-compat) is a common example, not a requirement.
 
 No vendor lock-in to one CLI — mix Anthropic, OpenAI, Google, and local models behind one dashboard and one API key.
 
-## What's new in v0.2.1
+## Renamed from RouterBot
 
-- **Unified provider sign-in** — one auth panel for Claude, Codex, Cursor Agent, and Gemini; detects already-signed-in state; **Re-sign in** when you need a fresh login
-- **Real model lists** — dropdowns show only models each provider actually exposes (no synthetic placeholders); Codex discovery from the installed CLI
-- **Inbound API activity** — Activity log records `GET /v1/models` and `POST /v1/chat/completions` (start, success, errors, duration)
-- **Quieter dashboard** — status polling no longer spams the log or closes open dropdowns
-- **22 automated tests** — auth flows, model alignment, release hygiene scan
+This project shipped as **RouterBot** through v0.2.2 and is now **PARAGON** starting v0.3.0. Nothing about
+how you use it changes on upgrade:
 
-## Why RouterBot?
+- `ROUTERBOT_*` environment variables keep working (with a deprecation warning) for one migration release —
+  set the `PARAGON_*` equivalent when you get a chance.
+- Existing `data/config.json` migrates automatically on first read; the old `routerbot-local` exposed model
+  id is rewritten to `paragon` and still accepted by `/v1/models`.
+- systemd unit/service names moved from `routerbot*` to `paragon*` — re-run `./scripts/install-systemd.sh`
+  to install the renamed units (the old ones keep running until you do).
 
-| Problem | RouterBot |
+## What's new in v0.3.0
+
+- **Renamed to PARAGON** — see [Renamed from RouterBot](#renamed-from-routerbot) for the migration path
+- **Adaptive routing engine wired in (shadow mode)** — every request is scored by the smartRoute engine
+  (model ranking, cost/budget policy, canary rollout, escalation) and logged for comparison, without
+  affecting what actually serves the request
+- **Orchestration dashboard** — routing policy, model rankings, decision log / shadow analysis, and
+  session/subagent governor settings, all editable from the dashboard
+- **Session & subagent governor config** — context/duration thresholds and subagent concurrency limits,
+  config-driven and dashboard-visible ahead of a future PARAGON job/session layer
+- **242+ automated tests** — including the previously-unwired smartRoute engine's test suite, now run by
+  default
+
+## Why PARAGON?
+
+| Problem | PARAGON |
 |---------|-----------|
 | Each app wants its own base URL and backend | One `/v1` endpoint, many providers |
 | Switching between Claude / Codex / Gemini is manual | Task-based routing (`code` → Codex, `plan` → Claude, …) |
@@ -60,15 +85,15 @@ No vendor lock-in to one CLI — mix Anthropic, OpenAI, Google, and local models
 **Requirements:** Node.js 20+, and whichever CLIs you enable on your `PATH`.
 
 ```bash
-git clone git@github.com:SketchOTP/routerbot.git
-cd routerbot
+git clone git@github.com:SketchOTP/paragon.git
+cd paragon
 npm install
 npm start
 ```
 
 Open the dashboard: **http://127.0.0.1:4117**
 
-On first run, RouterBot prints a generated API key — save it for API clients and remote dashboard access.
+On first run, PARAGON prints a generated API key — save it for API clients and remote dashboard access.
 
 Optional: seed config from the example:
 
@@ -84,9 +109,9 @@ Any OpenAI-compatible client needs three values from the dashboard:
 
 | Setting | Value |
 |---------|-------|
-| **Base URL** | RouterBot URL ending in `/v1` (e.g. `http://127.0.0.1:4117/v1`) |
-| **API key** | Your RouterBot API key |
-| **Model** | `routerbot-local` (or your `server.exposedModel`) |
+| **Base URL** | PARAGON URL ending in `/v1` (e.g. `http://127.0.0.1:4117/v1`) |
+| **API key** | Your PARAGON API key |
+| **Model** | `paragon` (or your `server.exposedModel`) |
 
 **Local only:** `http://127.0.0.1:4117/v1`
 
@@ -99,12 +124,12 @@ Cursor routes BYOK requests through **its cloud**, not your PC. It blocks `local
 | Setting | Value |
 |---------|-------|
 | Override OpenAI Base URL | `https://YOUR-TUNNEL-HOST/v1` (Ask/Plan) or `/v1/cursor` (if Agent BYOK sends traffic) |
-| API key | RouterBot API key |
-| Model | `routerbot-local` |
+| API key | PARAGON API key |
+| Model | `paragon` |
 
-**Which Cursor modes hit RouterBot?** Override OpenAI Base URL only applies to BYOK chat traffic Cursor sends to your URL. Today that is mainly **Ask** and **Plan**. **Agent**, **Multitask**, and **Debug Mode** (runtime log instrumentation — Shift+Tab → Debug) run on Cursor’s own agent backend and usually produce **no requests** to RouterBot, so dashboard routes for `agent`, `debug`, and `multitask` do nothing in those UI modes. The `debug` routing row applies when a BYOK request arrives with debug metadata/keywords (e.g. Ask + stack trace), not when you pick Debug Mode in the agent picker.
+**Which Cursor modes hit PARAGON?** Override OpenAI Base URL only applies to BYOK chat traffic Cursor sends to your URL. Today that is mainly **Ask** and **Plan**. **Agent**, **Multitask**, and **Debug Mode** (runtime log instrumentation — Shift+Tab → Debug) run on Cursor’s own agent backend and usually produce **no requests** to PARAGON, so dashboard routes for `agent`, `debug`, and `multitask` do nothing in those UI modes. The `debug` routing row applies when a BYOK request arrives with debug metadata/keywords (e.g. Ask + stack trace), not when you pick Debug Mode in the agent picker.
 
-| Cursor UI | Hits RouterBot BYOK? |
+| Cursor UI | Hits PARAGON BYOK? |
 |-----------|---------------------|
 | Ask | Yes |
 | Plan | Yes |
@@ -112,7 +137,7 @@ Cursor routes BYOK requests through **its cloud**, not your PC. It blocks `local
 | Debug Mode | No — separate agent loop |
 | Multitask | Usually no — Cursor backend |
 
-**Workaround for debug-style questions:** use **Ask** mode, paste the error/stack trace; RouterBot classifies as task `debug` and uses your `debug → provider` map.
+**Workaround for debug-style questions:** use **Ask** mode, paste the error/stack trace; PARAGON classifies as task `debug` and uses your `debug → provider` map.
 
 **Quick setup (both tunnels):**
 
@@ -129,9 +154,9 @@ chmod +x scripts/*.sh
 
 URLs are saved to `data/tunnel-urls.json`. For boot persistence: `./scripts/install-tunnel-services.sh` (installs systemd units; cloudflared URL changes on each restart — check logs or re-run `tunnel-status.sh`).
 
-**Cursor Agent mode:** When Cursor does send BYOK Agent traffic, it often uses OpenAI **Responses API** payloads (`input`, `instructions`, tools, …) — sometimes to `/v1/chat/completions` instead of standard `messages`. RouterBot accepts that on `/v1/chat/completions`, `/v1/responses`, and the same paths under `/v1/cursor`. Use **HTTP/1.1** in Cursor Settings → Network if streaming fails on Windows.
+**Cursor Agent mode:** When Cursor does send BYOK Agent traffic, it often uses OpenAI **Responses API** payloads (`input`, `instructions`, tools, …) — sometimes to `/v1/chat/completions` instead of standard `messages`. PARAGON accepts that on `/v1/chat/completions`, `/v1/responses`, and the same paths under `/v1/cursor`. Use **HTTP/1.1** in Cursor Settings → Network if streaming fails on Windows.
 
-When BYOK requests reach RouterBot, mode is inferred from headers/metadata/payload and mapped via the dashboard (`ask`, `plan`, `agent`, `debug`, `multitask`). The Cursor provider passes matching `cursor-agent` CLI flags (`ask`/`plan` read-only, `agent`/`multitask` with `--force`).
+When BYOK requests reach PARAGON, mode is inferred from headers/metadata/payload and mapped via the dashboard (`ask`, `plan`, `agent`, `debug`, `multitask`). The Cursor provider passes matching `cursor-agent` CLI flags (`ask`/`plan` read-only, `agent`/`multitask` with `--force`).
 
 ### Example: curl
 
@@ -139,7 +164,7 @@ When BYOK requests reach RouterBot, mode is inferred from headers/metadata/paylo
 curl -s http://127.0.0.1:4117/v1/chat/completions \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"model":"routerbot-local","messages":[{"role":"user","content":"Hello"}]}'
+  -d '{"model":"paragon","messages":[{"role":"user","content":"Hello"}]}'
 ```
 
 ## Dashboard tour
@@ -183,11 +208,11 @@ One key protects both the OpenAI API (`/v1`) and the admin API (`/api`).
 | **First startup** | Printed in the terminal when `data/config.json` has no key |
 | **Dashboard** | `http://127.0.0.1:4117` → Server settings → API key |
 | **Config file** | `grep apiKey data/config.json` |
-| **Environment** | `ROUTERBOT_API_KEY=…` (overrides file) |
+| **Environment** | `PARAGON_API_KEY=…` (overrides file) |
 
 Rotate anytime in Server settings → **Save** → update your clients.
 
-If port `4117` is in use, RouterBot is already running (e.g. systemd) — use `sudo systemctl restart routerbot` instead of a second `npm start`.
+If port `4117` is in use, PARAGON is already running (e.g. systemd) — use `sudo systemctl restart paragon` instead of a second `npm start`.
 
 ## Providers
 
@@ -238,19 +263,54 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) to extend built-in adapters.
 
 ## Routing & fallback
 
-1. RouterBot classifies the prompt (`code`, `debug`, `plan`, …).
+1. PARAGON classifies the prompt (`code`, `debug`, `plan`, …).
 2. It uses the mapped provider from the dashboard (or `routing.defaultProvider`).
 3. On failure, it walks `routing.fallbackChain` (default: `codex` → `cursor`).
 
 Configure both in the **Routing** panel; new providers appear in dropdowns automatically.
 
-**GHOST harness (observe-only analysis):** send `metadata.routerbot_task: "ghost"` (or header
-`X-RouterBot-Task: ghost`) to skip LLM task classification and use the `ghost → provider` route.
+**GHOST harness (observe-only analysis):** send `metadata.paragon_task: "ghost"` (or header
+`X-PARAGON-Task: ghost`) to skip LLM task classification and use the `ghost → provider` route.
 Default pattern also matches prompts starting with `Analyze GHOST live session`.
+
+## Orchestration (adaptive routing)
+
+Every request that goes through the routing above is also scored — in the background, without affecting
+what actually serves the request — by an adaptive routing engine (`src/smartRoute/`). It's a model
+ranker + cost/budget policy + canary rollout + escalation + decision log, evaluated against a live
+provider/model registry.
+
+**This ships shadow-only.** The engine computes what it would have picked, logs it alongside the legacy
+decision that actually ran, and stops there. Nothing routes through it in this release. That's a deliberate,
+reversible rollout stage (see `routing.smartRoute.mode` below) — not a limitation you need to work around.
+
+Manage it from the **Orchestration** section of the dashboard:
+
+- **Routing policy** — mode (`legacy` disables the engine entirely / `shadow_test` observes only, default /
+  `balanced_live` canary-gated live serving / `manual`), classifier provider, confidence threshold, canary
+  enable + percentage
+- **Session governor** — context-size and session-duration thresholds a future PARAGON job/session layer
+  (or any client that adopts these conventions) checkpoints and rolls over against
+- **Subagent governor** — default/max subagent concurrency and whether recursive spawning is allowed;
+  defaults to zero subagents, nothing enabled
+- **Model rankings** — per-task-type ranked candidates from the current model registry snapshot, with score
+  and tier
+- **Shadow analysis** — match/diff rate between the legacy pick and the adaptive engine's pick, estimated
+  cost delta, and the most recent logged decisions
+
+Populate the model registry snapshot before rankings show data:
+
+```bash
+node src/smartRouteModelRefresh.js     # pricing/benchmark/health snapshot
+node src/smartRouteReport.js           # full shadow-mode report from the decision log
+```
+
+`GET /api/orchestration/settings|rankings|decisions|shadow-report` back the dashboard panels and are usable
+directly for scripting.
 
 ## Public access
 
-Remote clients cannot reach `localhost`. Expose RouterBot over HTTPS when callers run on another machine or in the cloud.
+Remote clients cannot reach `localhost`. Expose PARAGON over HTTPS when callers run on another machine or in the cloud.
 
 ### Tailscale (recommended)
 
@@ -289,14 +349,14 @@ Use the HTTPS URL + `/v1` as your client base URL.
 ## Run at boot (systemd)
 
 ```bash
-chmod +x scripts/install-systemd.sh scripts/tailscale-setup.sh scripts/check-routerbot.sh
+chmod +x scripts/install-systemd.sh scripts/tailscale-setup.sh scripts/check-paragon.sh
 ./scripts/install-systemd.sh
 ```
 
 ```bash
-ROUTERBOT_USER=your-user ./scripts/install-systemd.sh
-sudo systemctl status routerbot
-./scripts/check-routerbot.sh
+PARAGON_USER=your-user ./scripts/install-systemd.sh
+sudo systemctl status paragon
+./scripts/check-paragon.sh
 ```
 
 ## Configuration
@@ -309,13 +369,13 @@ sudo systemctl status routerbot
 
 | Variable | Description |
 |----------|-------------|
-| `ROUTERBOT_HOST` | Bind address (default `127.0.0.1`) |
-| `ROUTERBOT_PORT` | Port (default `4117`) |
-| `ROUTERBOT_API_KEY` | API key override |
+| `PARAGON_HOST` | Bind address (default `127.0.0.1`) |
+| `PARAGON_PORT` | Port (default `4117`) |
+| `PARAGON_API_KEY` | API key override |
 
 ## Security
 
-Read **[SECURITY.md](SECURITY.md)** before exposing RouterBot on the public internet.
+Read **[SECURITY.md](SECURITY.md)** before exposing PARAGON on the public internet.
 
 - Use a strong, unique API key when using Tailscale Funnel or tunnels.
 - Never commit `data/config.json` (contains keys and hostnames).

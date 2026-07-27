@@ -74,7 +74,7 @@ export async function activateLiveGuard(config, options = {}) {
   await writeLiveGuardState(state);
   addLog({
     type: "smart_route",
-    provider: "routerbot",
+    provider: "paragon",
     level: "info",
     message: `Live guard activated (balanced) hash=${(state.intelligence_hash ?? "").slice(0, 12)}`
   });
@@ -278,7 +278,7 @@ export async function triggerLiveGuardRollback(config, reason, rates) {
 
   addLog({
     type: "smart_route",
-    provider: "routerbot",
+    provider: "paragon",
     level: "error",
     message: `Live guard rollback → ${rollbackMode}: ${reason}`
   });

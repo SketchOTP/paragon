@@ -3,8 +3,8 @@
 import { defaultConfig } from "../src/defaultConfig.js";
 import { listNamedRouteModels, resolveNamedRouteProvider, NAMED_ROUTE_IDS } from "../src/namedRoutes.js";
 
-const baseUrl = process.env.ROUTERBOT_BASE_URL ?? "http://127.0.0.1:4117";
-const apiKey = process.env.ROUTERBOT_API_KEY ?? "";
+const baseUrl = process.env.PARAGON_BASE_URL ?? process.env.ROUTERBOT_BASE_URL ?? "http://127.0.0.1:4117";
+const apiKey = process.env.PARAGON_API_KEY ?? process.env.ROUTERBOT_API_KEY ?? "";
 
 const localModels = listNamedRouteModels(defaultConfig);
 console.log("configured_named_routes:", localModels.map((m) => m.id).join(", "));
@@ -19,7 +19,7 @@ for (const id of NAMED_ROUTE_IDS) {
 }
 
 if (!apiKey) {
-  console.log("SKIP live /v1/models (set ROUTERBOT_API_KEY to probe running server)");
+  console.log("SKIP live /v1/models (set PARAGON_API_KEY to probe running server)");
   process.exit(0);
 }
 

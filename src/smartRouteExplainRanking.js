@@ -74,7 +74,7 @@ async function main() {
   }
 
   const body = {
-    model: config?.server?.exposedModel ?? "routerbot-local",
+    model: config?.server?.exposedModel ?? "paragon",
     messages: [{ role: "user", content: prompt }]
   };
   const normalized = normalizeRequest(body, {}, config);

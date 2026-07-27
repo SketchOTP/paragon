@@ -109,7 +109,7 @@ test("price increase changes ranking order", async () => {
     model: "cheap",
     available: true,
     pricing: { input_per_1m: 0.5, output_per_1m: 1, pricing_source: "official_openai" },
-    benchmarks: { benchmark_confidence: 0.8, routerbot_eval: { chat: 0.6 }, swe_bench_verified_resolved: null },
+    benchmarks: { benchmark_confidence: 0.8, paragon_eval: { chat: 0.6 }, swe_bench_verified_resolved: null },
     health: baseHealth,
     capabilities: { json_mode: true }
   };
@@ -136,7 +136,7 @@ test("unhealthy cheap model excluded from rankings", async () => {
     model: "default",
     available: true,
     pricing: { input_per_1m: 0.1, output_per_1m: 0.2, pricing_source: "manual" },
-    benchmarks: { benchmark_confidence: 0.5, routerbot_eval: { chat: 0.55 } },
+    benchmarks: { benchmark_confidence: 0.5, paragon_eval: { chat: 0.55 } },
     health: {
       response_ok: false,
       success_rate_24h: 0.5,
@@ -160,7 +160,7 @@ test("local model loses when reliability is poor", async () => {
     local: true,
     available: true,
     pricing: { input_per_1m: 0, output_per_1m: 0, pricing_source: "manual" },
-    benchmarks: { benchmark_confidence: 0.5, routerbot_eval: { chat: 0.55 } },
+    benchmarks: { benchmark_confidence: 0.5, paragon_eval: { chat: 0.55 } },
     health: { response_ok: true, success_rate_24h: 0.6, empty_response_rate: 0, timeout_rate: 0.15, avg_latency_ms: 8000 },
     capabilities: { json_mode: true }
   };
@@ -170,7 +170,7 @@ test("local model loses when reliability is poor", async () => {
     model: "gpt-4o-mini",
     available: true,
     pricing: { input_per_1m: 0.15, output_per_1m: 0.6, pricing_source: "official_openai" },
-    benchmarks: { benchmark_confidence: 0.9, routerbot_eval: { chat: 0.6 } },
+    benchmarks: { benchmark_confidence: 0.9, paragon_eval: { chat: 0.6 } },
     health: { response_ok: true, success_rate_24h: 0.98, empty_response_rate: 0, timeout_rate: 0, avg_latency_ms: 900 },
     capabilities: { json_mode: true }
   };
@@ -188,7 +188,7 @@ test("local model wins when reliability and eval score are strong", async () => 
     local: true,
     available: true,
     pricing: { input_per_1m: 0, output_per_1m: 0, pricing_source: "manual" },
-    benchmarks: { benchmark_confidence: 0.85, routerbot_eval: { chat: 0.72 } },
+    benchmarks: { benchmark_confidence: 0.85, paragon_eval: { chat: 0.72 } },
     health: { response_ok: true, success_rate_24h: 0.99, empty_response_rate: 0, timeout_rate: 0, avg_latency_ms: 400 },
     capabilities: { json_mode: true }
   };
@@ -198,7 +198,7 @@ test("local model wins when reliability and eval score are strong", async () => 
     model: "gpt-4o-mini",
     available: true,
     pricing: { input_per_1m: 0.15, output_per_1m: 0.6, pricing_source: "official_openai" },
-    benchmarks: { benchmark_confidence: 0.7, routerbot_eval: { chat: 0.58 } },
+    benchmarks: { benchmark_confidence: 0.7, paragon_eval: { chat: 0.58 } },
     health: { response_ok: true, success_rate_24h: 0.95, empty_response_rate: 0, timeout_rate: 0, avg_latency_ms: 1200 },
     capabilities: { json_mode: true }
   };
@@ -210,18 +210,18 @@ test("SWE-bench used for code tasks only", async () => {
   const { taskQualityScore, usesSweBenchForTask } = await import("../src/smartRoute/modelBenchmarks.js");
   const benchmarks = {
     swe_bench_verified_resolved: 60,
-    routerbot_eval: { chat: 0.4, code: 0.3 }
+    paragon_eval: { chat: 0.4, code: 0.3 }
   };
   assert.equal(usesSweBenchForTask("code"), true);
   assert.equal(usesSweBenchForTask("chat"), false);
   assert.ok(taskQualityScore(benchmarks, "code") > taskQualityScore(benchmarks, "chat"));
 });
 
-test("non-code tasks use RouterBot eval not SWE-bench", async () => {
+test("non-code tasks use PARAGON eval not SWE-bench", async () => {
   const { taskQualityScore } = await import("../src/smartRoute/modelBenchmarks.js");
   const benchmarks = {
     swe_bench_verified_resolved: 90,
-    routerbot_eval: { chat: 0.35, rewrite: 0.38, summarize: 0.4 }
+    paragon_eval: { chat: 0.35, rewrite: 0.38, summarize: 0.4 }
   };
   assert.equal(taskQualityScore(benchmarks, "chat"), 0.35);
   assert.equal(taskQualityScore(benchmarks, "rewrite"), 0.38);
@@ -311,7 +311,7 @@ test("buildPreflightDiagnostics reports top excluded with scores", async () => {
       model: "default",
       available: true,
       pricing: { input_per_1m: 0.15, output_per_1m: 0.6, pricing_source: "official_openai" },
-      benchmarks: { benchmark_confidence: 0.8, routerbot_eval: { chat: 0.6 } },
+      benchmarks: { benchmark_confidence: 0.8, paragon_eval: { chat: 0.6 } },
       health: { response_ok: true, success_rate_24h: 0.88, last_probe_status: "pass" }
     }
   ];

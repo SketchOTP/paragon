@@ -20,7 +20,7 @@ export async function logRoutingDecision(record) {
 
   addLog({
     type: "smart_route",
-    provider: record.selected_provider ?? record.selectedProvider ?? "routerbot",
+    provider: record.selected_provider ?? record.selectedProvider ?? "paragon",
     level: "info",
     message: formatLogMessage(entry)
   });

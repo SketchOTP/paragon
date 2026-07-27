@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Expose RouterBot on Tailscale HTTPS ports (tailnet serve + public funnel).
+# Expose PARAGON on Tailscale HTTPS ports (tailnet serve + public funnel).
 set -euo pipefail
 
-LOCAL_PORT="${ROUTERBOT_PORT:-4117}"
-SERVE_PORT="${ROUTERBOT_TAILSCALE_SERVE_PORT:-9420}"
-FUNNEL_PORT="${ROUTERBOT_TAILSCALE_FUNNEL_PORT:-10000}"
+LOCAL_PORT="${PARAGON_PORT:-${ROUTERBOT_PORT:-4117}}"
+SERVE_PORT="${PARAGON_TAILSCALE_SERVE_PORT:-${ROUTERBOT_TAILSCALE_SERVE_PORT:-9420}}"
+FUNNEL_PORT="${PARAGON_TAILSCALE_FUNNEL_PORT:-${ROUTERBOT_TAILSCALE_FUNNEL_PORT:-10000}}"
 
-echo "RouterBot local port: ${LOCAL_PORT}"
+echo "PARAGON local port: ${LOCAL_PORT}"
 echo "Tailnet HTTPS port:    ${SERVE_PORT} (dashboard + API on tailnet)"
 echo "Funnel HTTPS port:     ${FUNNEL_PORT} (public — use in Cursor Agent)"
 

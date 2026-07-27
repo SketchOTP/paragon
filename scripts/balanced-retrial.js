@@ -21,7 +21,7 @@ const root = path.resolve(__dirname, "..");
 const logPath = path.join(root, "data/smart-route-log.jsonl");
 const configPath = path.join(root, "data/config.json");
 const baseUrl = process.env.ROUTERBOT_BASE ?? "http://127.0.0.1:4117";
-const apiKey = process.env.ROUTERBOT_API_KEY ?? "routerbot";
+const apiKey = process.env.PARAGON_API_KEY ?? process.env.ROUTERBOT_API_KEY ?? "paragon";
 const TRIAL_LIMIT = Number(process.env.TRIAL_LIMIT ?? 33);
 
 function run(cmd, args, opts = {}) {
@@ -60,14 +60,14 @@ async function sendTest(message) {
       "X-RouterBot-Dev": "1"
     },
     body: JSON.stringify({
-      model: "routerbot-local",
+      model: "paragon",
       messages: [{ role: "user", content: message }],
       max_tokens: 20,
       stream: false
     })
   });
   const json = await response.json();
-  return { ok: response.ok, routerbot: json.routerbot ?? null };
+  return { ok: response.ok, paragon: json.paragon ?? null };
 }
 
 async function countLogLines() {
@@ -215,7 +215,7 @@ async function main() {
   console.log("=== SmartRoute Balanced Re-trial ===\n");
 
   const serverPid = await new Promise((resolve) => {
-    const child = spawn("pgrep", ["-f", "/home/sketch/Projects/RouterBot/src/server.js"], {
+    const child = spawn("pgrep", ["-f", path.join(root, "src/server.js")], {
       stdio: ["ignore", "pipe", "ignore"]
     });
     let out = "";
@@ -254,7 +254,7 @@ async function main() {
   if (afterPre <= beforeLines) {
     throw new Error("Pre-check failed: no new log entry written");
   }
-  console.log(`Pre-check OK: log ${beforeLines} → ${afterPre}, routed=${pre.routerbot?.routedProvider}`);
+  console.log(`Pre-check OK: log ${beforeLines} → ${afterPre}, routed=${pre.paragon?.routedProvider}`);
 
   await fs.writeFile(logPath, "", "utf8");
   console.log("Cleared pre-check entries; starting isolated balanced trial log\n");

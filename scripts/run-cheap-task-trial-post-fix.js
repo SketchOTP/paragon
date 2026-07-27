@@ -15,7 +15,7 @@ const root = path.resolve(__dirname, "..");
 const logPath = path.join(root, "data/smart-route-log.jsonl");
 const configPath = path.join(root, "data/config.json");
 const baseUrl = process.env.ROUTERBOT_BASE ?? "http://127.0.0.1:4117";
-const apiKey = process.env.ROUTERBOT_API_KEY ?? "routerbot";
+const apiKey = process.env.PARAGON_API_KEY ?? process.env.ROUTERBOT_API_KEY ?? "paragon";
 
 function run(cmd, args) {
   return new Promise((resolve, reject) => {

@@ -185,7 +185,7 @@ test("high-risk task rejects inherited low-confidence health", async () => {
     },
     benchmarks: {
       benchmark_confidence: 0.9,
-      routerbot_eval: { code: 0.8 },
+      paragon_eval: { code: 0.8 },
       swe_bench_verified_resolved: 60
     },
     health: healthyDirect({
@@ -221,7 +221,7 @@ test("direct probe passes high-risk and cheap floors", async () => {
     },
     benchmarks: {
       benchmark_confidence: 0.9,
-      routerbot_eval: { chat: 0.7, code: 0.8 },
+      paragon_eval: { chat: 0.7, code: 0.8 },
       swe_bench_verified_resolved: 60
     },
     health: healthyDirect(),
@@ -240,7 +240,7 @@ test("unknown health excludes from rankings", async () => {
     model: "mystery",
     available: true,
     pricing: { input_per_1m: 1, output_per_1m: 2, pricing_source: "manual" },
-    benchmarks: { benchmark_confidence: 0.8, routerbot_eval: { chat: 0.6 } },
+    benchmarks: { benchmark_confidence: 0.8, paragon_eval: { chat: 0.6 } },
     health: {
       health_source: "unknown",
       health_confidence: 0,
@@ -316,7 +316,7 @@ test("probe expansion targets models blocked by health confidence", async () => 
     model: "claude-haiku-4-5",
     available: true,
     pricing: { input_per_1m: 0.8, output_per_1m: 4, pricing_source: "official_anthropic" },
-    benchmarks: { benchmark_confidence: 0.9, routerbot_eval: { chat: 0.7 } },
+    benchmarks: { benchmark_confidence: 0.9, paragon_eval: { chat: 0.7 } },
     health: healthyDirect({
       health_source: "inherited_group",
       health_confidence: 0.75,

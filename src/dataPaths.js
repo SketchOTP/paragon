@@ -1,10 +1,11 @@
 import path from "node:path";
+import { getEnv } from "./env.js";
 
 const PRODUCTION_DATA_DIR = path.resolve(process.cwd(), "data");
 
-/** Runtime data directory. Tests set ROUTERBOT_DATA_DIR to a temp path before writes. */
+/** Runtime data directory. Tests set PARAGON_DATA_DIR to a temp path before writes. */
 export function getDataDir() {
-  const override = process.env.ROUTERBOT_DATA_DIR || process.env.SMARTROUTE_DATA_DIR;
+  const override = getEnv("DATA_DIR") || process.env.SMARTROUTE_DATA_DIR;
   if (override) {
     return path.resolve(override);
   }

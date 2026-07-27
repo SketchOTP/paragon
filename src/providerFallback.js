@@ -27,7 +27,7 @@ const NOISE_PATTERNS = [
   /you're out of extra usage[^\n]*/gi,
   /out of extra usage · resets[^\n]*/gi,
   /(?:claude|codex|cursor-agent|agy) exited with code \d+:?/gi,
-  /routerbot: all providers failed[^\n]*/gi,
+  /(?:routerbot|paragon): all providers failed[^\n]*/gi,
   /Warning: 256-color support not detected[^\n]*/gi
 ];
 

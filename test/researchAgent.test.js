@@ -288,7 +288,7 @@ test("invalid pricing cannot win cost-sensitive ranking", async () => {
       pricing_invalid_reason: "sentinel_value",
       cost_sensitive_eligible: false
     },
-    benchmarks: { benchmark_confidence: 0.8, routerbot_eval: { chat: 0.7 } },
+    benchmarks: { benchmark_confidence: 0.8, paragon_eval: { chat: 0.7 } },
     health: {
       response_ok: true,
       success_rate_24h: 0.99,

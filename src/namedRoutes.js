@@ -21,6 +21,6 @@ export function listNamedRouteModels(config) {
     id,
     object: "model",
     created: 0,
-    owned_by: "routerbot"
+    owned_by: "paragon"
   }));
 }
