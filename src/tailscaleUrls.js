@@ -1,3 +1,5 @@
+import { defaultTailscaleCursorBaseUrl } from "./cursorBaseUrl.js";
+
 export function tailscaleUrls(server) {
   const host = (server.tailscaleHost || "").replace(/\/$/, "");
   const servePort = server.tailscaleServePort ?? 9420;
@@ -10,7 +12,6 @@ export function tailscaleUrls(server) {
     tailnetDashboard: `${base}:${servePort}`,
     tailnetApi: `${base}:${servePort}/v1`,
     funnelDashboard: `${base}:${funnelPort}`,
-    cursorBaseUrl:
-      (server.cursorBaseUrl || "").trim() || `${base}:${funnelPort}/v1`
+    cursorBaseUrl: defaultTailscaleCursorBaseUrl(server) || `${base}:${funnelPort}/v1`
   };
 }

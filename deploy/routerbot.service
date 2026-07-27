@@ -17,7 +17,8 @@ RestartSec=5
 StartLimitIntervalSec=300
 StartLimitBurst=10
 
-# CLIs (claude, codex, cursor-agent, gemini) read auth from the service user's home
+# CLIs (claude, codex, cursor-agent, agy) read auth from the service user's home.
+# Ensure PATH includes ~/.local/bin for Antigravity CLI (agy).
 NoNewPrivileges=true
 
 [Install]

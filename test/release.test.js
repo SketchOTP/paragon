@@ -32,6 +32,17 @@ test("mergeConfig merges server and routing", () => {
   assert.deepEqual(merged.routing.fallbackChain, ["claude"]);
 });
 
+test("mergeConfig merges server.tunnels", () => {
+  const merged = mergeConfig(defaultConfig, {
+    server: {
+      tunnels: { ngrokAuthtoken: "tok", autostartCloudflared: true }
+    }
+  });
+  assert.equal(merged.server.tunnels.ngrokAuthtoken, "tok");
+  assert.equal(merged.server.tunnels.autostartCloudflared, true);
+  assert.equal(merged.server.tunnels.autostartNgrok, false);
+});
+
 test("requestHasApiKey accepts bearer, header, and query", () => {
   const key = "secret-key";
   assert.ok(

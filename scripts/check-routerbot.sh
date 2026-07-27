@@ -36,3 +36,15 @@ if [[ -n "${HOST}" ]]; then
 else
   echo "INFO: set ROUTERBOT_TAILSCALE_HOST to check Tailscale URLs"
 fi
+
+TUNNEL_URLS="${ROUTERBOT_DIR:-$(cd "$(dirname "$0")/.." && pwd)}/data/tunnel-urls.json"
+if [[ -f "$TUNNEL_URLS" ]]; then
+  python3 - "$TUNNEL_URLS" <<'PY'
+import json, sys
+data = json.load(open(sys.argv[1]))
+for name in ("cloudflared", "ngrok"):
+    e = data.get(name, {})
+    if e.get("cursorBaseUrl"):
+        print(f"INFO: {name} Cursor URL: {e['cursorBaseUrl']}")
+PY
+fi

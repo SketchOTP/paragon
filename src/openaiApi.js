@@ -1,5 +1,8 @@
+import { Router } from "express";
 import { createAuthMiddleware } from "./auth.js";
+import { extractCursorMode } from "./cursorMode.js";
 import { classifyTask } from "./taskClassifier.js";
+import { extractRouterbotTask, resolveExplicitTask } from "./routerbotTask.js";
 import { messagesToPrompt } from "./prompt.js";
 import { runProvider } from "./cli.js";
 import { addLog } from "./logStore.js";
@@ -10,93 +13,269 @@ import {
   formatProviderError,
   sanitizeAssistantContent
 } from "./providerFallback.js";
+import { listNamedRouteModels, resolveNamedRouteProvider } from "./namedRoutes.js";
+import {
+  buildResponseObject,
+  looksLikeResponsesPayload,
+  responsesInputToPrompt,
+  responsesToChatCompletion,
+  sanitizeResponsesPayload
+} from "./responsesFormat.js";
+import { streamChatFromResponsesInput, streamResponsesSse } from "./responsesStream.js";
 
 function logRouterbotRequest(message, { level = "info", provider = "routerbot" } = {}) {
   addLog({ type: "request", provider, level, message });
 }
 
-export function registerOpenAiRoutes(app, getConfig) {
-  app.use("/v1", createAuthMiddleware(getConfig, { allowLocalhost: false }));
+function listModels(config) {
+  const exposed = config.server.exposedModel;
+  const named = listNamedRouteModels(config);
+  const seen = new Set();
+  const data = [];
+  if (exposed) {
+    seen.add(exposed);
+    data.push({ id: exposed, object: "model", created: 0, owned_by: "routerbot" });
+  }
+  for (const model of named) {
+    if (seen.has(model.id)) {
+      continue;
+    }
+    seen.add(model.id);
+    data.push(model);
+  }
+  return data;
+}
 
-  app.get("/v1/models", async (req, res) => {
+function createV1Router(getConfig) {
+  const router = Router();
+
+  router.get("/models", async (req, res) => {
     const config = await getConfig();
-    logRouterbotRequest("GET /v1/models");
-    res.json({
-      object: "list",
-      data: [
-        {
-          id: config.server.exposedModel,
-          object: "model",
-          created: 0,
-          owned_by: "routerbot"
-        }
-      ]
+    logRouterbotRequest(`GET ${req.baseUrl}/models`);
+    res.json({ object: "list", data: listModels(config) });
+  });
+
+  router.get("/models/:id", async (req, res) => {
+    const config = await getConfig();
+    logRouterbotRequest(`GET ${req.baseUrl}/models/${req.params.id}`);
+    const model = listModels(config).find((m) => m.id === req.params.id);
+    if (!model) {
+      res.status(404).json({
+        error: { message: `Model '${req.params.id}' not found`, type: "not_found" }
+      });
+      return;
+    }
+    res.json(model);
+  });
+
+  router.post("/chat/completions", async (req, res) => {
+    const body = req.body ?? {};
+    const responsesCompat = looksLikeResponsesPayload(body);
+    const pathLabel = responsesCompat
+      ? `POST ${req.baseUrl}/chat/completions (responses-compat)`
+      : `POST ${req.baseUrl}/chat/completions`;
+    await handleGeneration(req, res, getConfig, {
+      pathLabel,
+      streamKind: responsesCompat ? "chat-from-responses" : "chat",
+      bodyForPrompt: responsesCompat ? sanitizeResponsesPayload(body) : body,
+      useResponsesInput: responsesCompat
     });
   });
 
-  app.post("/v1/chat/completions", async (req, res) => {
-    const config = await getConfig();
-    const prompt = messagesToPrompt(req.body.messages);
-    const task = classifyTask(prompt);
-    const routedProvider = config.routing.taskRoutes[task] ?? config.routing.defaultProvider;
-    const primary = pickEnabledProvider(config, routedProvider);
-    const attempts = buildProviderAttempts(config, primary);
-    const started = Date.now();
-    logRouterbotRequest(
-      req.body.stream
-        ? `POST /v1/chat/completions (stream) · task ${task} → ${primary}`
-        : `POST /v1/chat/completions · task ${task} → ${primary}`,
-      { provider: primary }
-    );
-
-    addLog({
-      type: "route",
-      provider: primary,
-      level: "info",
-      message: `Task ${task} -> ${primary} (${config.providers[primary].model})`
+  router.post("/responses", async (req, res) => {
+    const body = sanitizeResponsesPayload(req.body ?? {});
+    await handleGeneration(req, res, getConfig, {
+      pathLabel: body.stream ? `POST ${req.baseUrl}/responses (stream)` : `POST ${req.baseUrl}/responses`,
+      streamKind: "responses",
+      bodyForPrompt: body,
+      useResponsesInput: true
     });
+  });
 
-    try {
-      if (req.body.stream) {
-        await streamCompletion({ res, config, attempts, prompt, started });
+  router.get("/responses/:id", (req, res) => {
+    logRouterbotRequest(`GET ${req.baseUrl}/responses/:id → 404`);
+    res.status(404).json({
+      error: {
+        message: "Stored responses are not supported",
+        type: "not_found"
+      }
+    });
+  });
+
+  return router;
+}
+
+export function registerOpenAiRoutes(app, getConfig) {
+  const auth = createAuthMiddleware(getConfig, { allowLocalhost: false });
+  const router = createV1Router(getConfig);
+  app.use("/v1", auth, router);
+  app.use("/v1/cursor", auth, router);
+}
+
+async function resolveTask(prompt, config, cursorMode, body, headers) {
+  const explicitTask = resolveExplicitTask(extractRouterbotTask(body, headers), config);
+  if (explicitTask) {
+    return explicitTask;
+  }
+
+  if (cursorMode && config.routing?.taskRoutes?.[cursorMode]) {
+    return cursorMode;
+  }
+
+  const classified = await classifyTask(prompt, config);
+
+  if (
+    !cursorMode &&
+    Array.isArray(body?.messages) &&
+    !("input" in body) &&
+    classified === "code" &&
+    config.routing?.taskRoutes?.ask
+  ) {
+    return "ask";
+  }
+
+  return classified;
+}
+
+function responseModelName(body, config) {
+  const named = resolveNamedRouteProvider(body?.model, config);
+  return named?.routeName ?? config.server.exposedModel;
+}
+
+async function handleGeneration(req, res, getConfig, options) {
+  const config = await getConfig();
+  const { pathLabel, streamKind, bodyForPrompt, useResponsesInput } = options;
+  const body = req.body ?? {};
+  const cursorMode = extractCursorMode(body, req.headers);
+  const prompt = useResponsesInput
+    ? responsesInputToPrompt(bodyForPrompt)
+    : messagesToPrompt(bodyForPrompt.messages);
+  const responseModel = responseModelName(body, config);
+
+  let task;
+  let primary;
+  const named = resolveNamedRouteProvider(body?.model, config);
+  if (named) {
+    task = named.routeName;
+    primary = pickEnabledProvider(config, named.provider);
+  } else {
+    task = await resolveTask(prompt, config, cursorMode, body, req.headers);
+    primary = pickEnabledProvider(
+      config,
+      config.routing.taskRoutes[task] ?? config.routing.defaultProvider
+    );
+  }
+
+  const attempts = buildProviderAttempts(config, primary);
+  const started = Date.now();
+  const streamSuffix = req.body?.stream ? " (stream)" : "";
+  const modeLabel = cursorMode ? ` · cursor ${cursorMode}` : "";
+  logRouterbotRequest(`${pathLabel}${streamSuffix}${modeLabel} · ${task} → ${primary}`, { provider: primary });
+  addLog({
+    type: "route",
+    provider: primary,
+    level: "info",
+    message: `Route ${task} -> ${primary} (${config.providers[primary].model})`
+  });
+
+  const runOnce = async (onChunk) => {
+    const { provider, result, providerFallbackUsed } = await runWithFallback(
+      attempts,
+      prompt,
+      onChunk,
+      { cursorMode }
+    );
+    const durationMs = Date.now() - started;
+    const content = sanitizeAssistantContent(result.stdout);
+    return { provider, routedProvider: primary, durationMs, content, providerFallbackUsed };
+  };
+
+  try {
+    if (req.body?.stream) {
+      if (streamKind === "responses") {
+        await streamResponsesSse({
+          res,
+          config,
+          model: responseModel,
+          onGenerate: (onChunk) =>
+            runOnce((chunk) => onChunk(sanitizeAssistantContent(chunk))).then((result) => {
+              logRouterbotRequest(
+                `${pathLabel} → 200 (${result.durationMs}ms) via ${result.provider}`,
+                { provider: result.provider }
+              );
+              return result;
+            })
+        });
         return;
       }
 
-      const { provider, result } = await runWithFallback(attempts, prompt);
-      const durationMs = Date.now() - started;
-      logRouterbotRequest(
-        `POST /v1/chat/completions → 200 (${durationMs}ms) via ${provider}${provider !== primary ? ` (routed ${primary})` : ""}`,
-        { provider }
-      );
-      res.json(
-        chatCompletion({
-          model: config.server.exposedModel,
-          content: sanitizeAssistantContent(result.stdout),
-          durationMs,
-          provider,
-          routedProvider: primary
-        })
-      );
-    } catch (error) {
-      logRouterbotRequest(`POST /v1/chat/completions → ${res.statusCode ?? 500}`, {
-        level: "error",
-        provider: primary
+      if (streamKind === "chat-from-responses") {
+        await streamChatFromResponsesInput({
+          res,
+          config,
+          model: responseModel,
+          onGenerate: (onChunk) =>
+            runOnce((chunk) => onChunk(sanitizeAssistantContent(chunk))).then((result) => {
+              logRouterbotRequest(
+                `${pathLabel} → 200 (${result.durationMs}ms) via ${result.provider}`,
+                { provider: result.provider }
+              );
+              return result;
+            })
+        });
+        return;
+      }
+
+      await streamCompletion({
+        res,
+        config,
+        attempts,
+        prompt,
+        started,
+        pathLabel,
+        cursorMode,
+        responseModel
       });
-      addLog({
-        type: "error",
-        provider: primary,
-        level: "error",
-        message: error.message
-      });
-      res.status(500).json({
-        error: {
-          message: CLIENT_ERROR_MESSAGE,
-          type: "routerbot_provider_error",
-          provider: primary
-        }
-      });
+      return;
     }
-  });
+
+    const { provider, routedProvider, durationMs, content } = await runOnce();
+    logRouterbotRequest(`${pathLabel} → 200 (${durationMs}ms) via ${provider}`, { provider });
+
+    if (streamKind === "responses") {
+      res.json(
+        buildResponseObject({ model: responseModel, content, provider, routedProvider, durationMs })
+      );
+      return;
+    }
+    if (streamKind === "chat-from-responses") {
+      res.json(
+        responsesToChatCompletion(
+          buildResponseObject({ model: responseModel, content, provider, routedProvider, durationMs })
+        )
+      );
+      return;
+    }
+    res.json(
+      chatCompletion({
+        model: responseModel,
+        content,
+        durationMs,
+        provider,
+        routedProvider: primary
+      })
+    );
+  } catch (error) {
+    logRouterbotRequest(`${pathLabel} → 500`, { level: "error", provider: primary });
+    addLog({ type: "error", provider: primary, level: "error", message: error.message });
+    res.status(500).json({
+      error: {
+        message: CLIENT_ERROR_MESSAGE,
+        type: "routerbot_provider_error",
+        provider: primary
+      }
+    });
+  }
 }
 
 function pickEnabledProvider(config, preferred) {
@@ -110,7 +289,8 @@ function pickEnabledProvider(config, preferred) {
   return fallback[0];
 }
 
-async function runWithFallback(attempts, prompt, onChunk) {
+async function runWithFallback(attempts, prompt, onChunk, options = {}) {
+  const { cursorMode } = options;
   let lastError;
 
   for (let index = 0; index < attempts.length; index += 1) {
@@ -122,7 +302,8 @@ async function runWithFallback(attempts, prompt, onChunk) {
         name,
         providerConfig,
         prompt,
-        onChunk ? (chunk) => pendingChunks.push(chunk) : undefined
+        onChunk ? (chunk) => pendingChunks.push(chunk) : undefined,
+        { cursorMode }
       );
 
       if (onChunk) {
@@ -139,7 +320,11 @@ async function runWithFallback(attempts, prompt, onChunk) {
           message: `Recovered using ${name} after ${attempts[index - 1].name} failed`
         });
       }
-      return { provider: name, result };
+      return {
+        provider: name,
+        result,
+        providerFallbackUsed: index > 0
+      };
     } catch (error) {
       pendingChunks.length = 0;
       lastError = error;
@@ -165,7 +350,7 @@ async function runWithFallback(attempts, prompt, onChunk) {
   throw new Error(CLIENT_ERROR_MESSAGE);
 }
 
-async function streamCompletion({ res, config, attempts, prompt, started }) {
+async function streamCompletion({ res, config, attempts, prompt, started, pathLabel, cursorMode, responseModel }) {
   const id = `chatcmpl-${Date.now()}`;
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache, no-transform");
@@ -183,7 +368,7 @@ async function streamCompletion({ res, config, attempts, prompt, started }) {
         id,
         object: "chat.completion.chunk",
         created: Math.floor(Date.now() / 1000),
-        model: config.server.exposedModel,
+        model: responseModel,
         choices: [{ index: 0, delta: { role: "assistant" }, finish_reason: null }]
       });
       roleSent = true;
@@ -192,29 +377,27 @@ async function streamCompletion({ res, config, attempts, prompt, started }) {
       id,
       object: "chat.completion.chunk",
       created: Math.floor(Date.now() / 1000),
-      model: config.server.exposedModel,
+      model: responseModel,
       choices: [{ index: 0, delta: { content: chunk }, finish_reason: null }]
     });
   };
 
   try {
-    const { provider } = await runWithFallback(attempts, prompt, onChunk);
+    const { provider, result } = await runWithFallback(attempts, prompt, onChunk, { cursorMode });
     const durationMs = Date.now() - started;
-    logRouterbotRequest(`POST /v1/chat/completions (stream) → 200 (${durationMs}ms) via ${provider}`, {
-      provider
-    });
+    logRouterbotRequest(`${pathLabel} (stream) → 200 (${durationMs}ms) via ${provider}`, { provider });
     send({
       id,
       object: "chat.completion.chunk",
       created: Math.floor(Date.now() / 1000),
-      model: config.server.exposedModel,
+      model: responseModel,
       choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
-      routerbot: { provider, durationMs: Date.now() - started }
+      routerbot: { provider, durationMs, contentLength: sanitizeAssistantContent(result.stdout).length }
     });
     res.write("data: [DONE]\n\n");
     res.end();
   } catch (error) {
-    logRouterbotRequest(`POST /v1/chat/completions (stream) → error`, {
+    logRouterbotRequest(`${pathLabel} (stream) → error`, {
       level: "error",
       provider: attempts[0]?.name ?? "routerbot"
     });
@@ -223,7 +406,7 @@ async function streamCompletion({ res, config, attempts, prompt, started }) {
         id,
         object: "chat.completion.chunk",
         created: Math.floor(Date.now() / 1000),
-        model: config.server.exposedModel,
+        model: responseModel,
         choices: [{ index: 0, delta: { role: "assistant" }, finish_reason: null }]
       });
     }
@@ -231,20 +414,14 @@ async function streamCompletion({ res, config, attempts, prompt, started }) {
       id,
       object: "chat.completion.chunk",
       created: Math.floor(Date.now() / 1000),
-      model: config.server.exposedModel,
-      choices: [
-        {
-          index: 0,
-          delta: { content: error.message },
-          finish_reason: null
-        }
-      ]
+      model: responseModel,
+      choices: [{ index: 0, delta: { content: CLIENT_ERROR_MESSAGE }, finish_reason: null }]
     });
     send({
       id,
       object: "chat.completion.chunk",
       created: Math.floor(Date.now() / 1000),
-      model: config.server.exposedModel,
+      model: responseModel,
       choices: [{ index: 0, delta: {}, finish_reason: "stop" }]
     });
     res.write("data: [DONE]\n\n");

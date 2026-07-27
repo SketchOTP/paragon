@@ -195,6 +195,64 @@
             <input id="setting-api-key" type="password" autocomplete="new-password" />
           </label>
         </div>
+        <div class="settings-section">
+          <div class="settings-section-head">
+            <h3>Public tunnels (Cursor)</h3>
+            <p class="settings-hint">Cursor blocks localhost and Tailscale IPs. Use a public HTTPS URL below.</p>
+          </div>
+          <div class="tunnel-cards">
+            <article class="tunnel-card" id="tunnel-cloudflared-card">
+              <div class="tunnel-card-head">
+                <span class="tunnel-name">Cloudflare</span>
+                <span class="tunnel-status-dot" id="tunnel-cf-dot" title="Status"></span>
+              </div>
+              <p class="tunnel-lead">Free quick tunnel — no account.</p>
+              <code class="tunnel-url" id="tunnel-cf-url" title="">—</code>
+              <div class="tunnel-actions">
+                <button type="button" class="btn ghost small" id="tunnel-cf-install">Install</button>
+                <button type="button" class="btn secondary small" id="tunnel-cf-start">Start</button>
+                <button type="button" class="btn ghost small" id="tunnel-cf-stop">Stop</button>
+                <button type="button" class="btn ghost small" id="tunnel-cf-copy">Copy /v1</button>
+                <button type="button" class="btn ghost small" id="tunnel-cf-use-base">Use as base URL</button>
+              </div>
+              <label class="toggle-row tunnel-autostart">
+                <span class="toggle-label">Start on boot</span>
+                <label class="toggle">
+                  <input type="checkbox" id="setting-autostart-cloudflared" />
+                  <span class="toggle-slider"></span>
+                </label>
+              </label>
+            </article>
+            <article class="tunnel-card" id="tunnel-ngrok-card">
+              <div class="tunnel-card-head">
+                <span class="tunnel-name">ngrok</span>
+                <span class="tunnel-status-dot" id="tunnel-ngrok-dot" title="Status"></span>
+              </div>
+              <label class="field">
+                <span class="field-label">Authtoken</span>
+                <input id="setting-ngrok-authtoken" type="password" autocomplete="off" placeholder="dashboard.ngrok.com/get-started/your-authtoken" />
+              </label>
+              <label class="field">
+                <span class="field-label">Dev domain (optional)</span>
+                <input id="setting-ngrok-domain" placeholder="your-name.ngrok-free.dev" />
+              </label>
+              <code class="tunnel-url" id="tunnel-ngrok-url" title="">—</code>
+              <div class="tunnel-actions">
+                <button type="button" class="btn secondary small" id="tunnel-ngrok-start">Start</button>
+                <button type="button" class="btn ghost small" id="tunnel-ngrok-stop">Stop</button>
+                <button type="button" class="btn ghost small" id="tunnel-ngrok-copy">Copy /v1</button>
+                <button type="button" class="btn ghost small" id="tunnel-ngrok-use-base">Use as base URL</button>
+              </div>
+              <label class="toggle-row tunnel-autostart">
+                <span class="toggle-label">Start on boot</span>
+                <label class="toggle">
+                  <input type="checkbox" id="setting-autostart-ngrok" />
+                  <span class="toggle-slider"></span>
+                </label>
+              </label>
+            </article>
+          </div>
+        </div>
       </section>
 
       <section class="providers-section">
@@ -217,6 +275,12 @@
           </label>
           <div class="fallback-viz" id="fallback-viz" aria-label="Fallback order"></div>
           <div id="routes" class="routes"></div>
+          <p class="routing-hint">
+            Keyword patterns in each task row pick the primary provider. If that provider fails,
+            RouterBot walks the fallback chain. Ask/Plan use BYOK. Agent, Debug Mode, and Multitask
+            usually bypass your base URL — only Ask/Plan traffic hits RouterBot.
+            The <code>debug</code> row applies to BYOK requests with debug keywords, not Cursor’s Debug Mode picker.
+          </p>
         </article>
 
         <article class="panel logs-panel">

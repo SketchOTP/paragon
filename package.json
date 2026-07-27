@@ -1,7 +1,7 @@
 {
   "name": "routerbot",
   "version": "0.2.2",
-  "description": "Self-hosted OpenAI-compatible API router — Claude, Codex, Gemini, Ollama, vLLM, and custom backends behind one base URL",
+  "description": "Self-hosted OpenAI-compatible API router — Claude, Codex, Antigravity, Ollama, vLLM, and custom backends behind one base URL",
   "type": "module",
   "license": "MIT",
   "author": "Tym Huseby",
@@ -18,7 +18,7 @@
     "router",
     "claude",
     "codex",
-    "gemini",
+    "antigravity",
     "ollama",
     "tailscale",
     "proxy"
@@ -29,8 +29,10 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
-    "test": "node --test test/*.test.js",
-    "check": "npm test && bash scripts/check-release.sh"
+    "test": "NODE_ENV=test node --import ./test/setup-test-env.js --test test/antigravity.test.js test/apiKeyPrompt.test.js test/auth.test.js test/authSessions.test.js test/cursorBaseUrl.test.js test/cursorMode.test.js test/legacyMode.test.js test/models.test.js test/release.test.js test/responsesFormat.test.js test/routerbotTask.test.js test/taskClassifier.test.js",
+    "check": "npm test && bash scripts/check-release.sh",
+    "check-config": "node src/check.js",
+    "routes:verify": "node scripts/verify-legacy-routes.js"
   },
   "dependencies": {
     "cors": "^2.8.5",

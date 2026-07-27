@@ -56,7 +56,7 @@ The dashboard **Add provider** flow and per-card emoji picker set `icon` for you
 
 ### Built-in providers
 
-Claude Code, Codex, Cursor Agent, and Gemini CLI have dedicated adapters in `src/cli.js` with auth flows and model discovery. Extend those in code if you need new built-in behavior.
+Claude Code, Codex, Cursor Agent, and Antigravity CLI have dedicated adapters in `src/cli.js` with auth flows and model discovery. Extend those in code if you need new built-in behavior.
 
 ## Routing
 

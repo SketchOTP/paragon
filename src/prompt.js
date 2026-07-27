@@ -8,7 +8,7 @@ export function messagesToPrompt(messages = []) {
     .join("\n\n");
 }
 
-function normalizeContent(content) {
+export function normalizeContent(content) {
   if (typeof content === "string") {
     return content;
   }

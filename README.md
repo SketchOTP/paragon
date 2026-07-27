@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  Claude Code · Codex · Cursor Agent · Gemini CLI · Ollama · vLLM · custom CLIs
+  Claude Code · Codex · Cursor Agent · Antigravity CLI · Ollama · vLLM · custom CLIs
 </p>
 
 <p align="center">
@@ -21,7 +21,7 @@
 
 RouterBot is a self-hosted **OpenAI-compatible API router**. Point any client that supports a custom OpenAI base URL, model name, and API key at RouterBot — IDEs, chat UIs, agents, scripts, or your own app. RouterBot classifies each request, picks a backend provider, runs your configured CLIs or HTTP APIs, and falls back automatically when something fails.
 
-**Works with:** Continue, Open WebUI, LibreChat, LangChain, custom HTTP clients, and any tool that speaks `POST /v1/chat/completions` and `GET /v1/models`. Cursor is a common example, not a requirement.
+**Works with:** Continue, Open WebUI, LibreChat, LangChain, custom HTTP clients, and any tool that speaks `POST /v1/chat/completions`, `POST /v1/responses`, and `GET /v1/models`. Cursor (Ask and Agent with responses-compat) is a common example, not a requirement.
 
 No vendor lock-in to one CLI — mix Anthropic, OpenAI, Google, and local models behind one dashboard and one API key.
 
@@ -45,11 +45,11 @@ No vendor lock-in to one CLI — mix Anthropic, OpenAI, Google, and local models
 
 ## Features
 
-- **OpenAI-compatible API** — `/v1/models`, `/v1/chat/completions` (streaming supported)
+- **OpenAI-compatible API** — `/v1/models`, `/v1/chat/completions`, `/v1/responses` (streaming supported; Cursor Agent responses-compat)
 - **Web dashboard** — enable providers, pick models, authenticate CLIs, live activity log
 - **Task routing** — keyword classifier sends `code`, `debug`, `plan`, etc. to different backends
 - **Fallback chain** — configurable order when the primary provider errors out
-- **Built-in providers** — Claude Code, Codex, Cursor Agent, Gemini CLI
+- **Built-in providers** — Claude Code, Codex, Cursor Agent, Antigravity CLI (`agy`)
 - **Bring your own** — OpenAI-compatible HTTP (Ollama, LM Studio, vLLM) or any stdin CLI
 - **Emoji provider icons** — click to customize; set when adding a provider
 - **Security** — one API key for `/v1` and admin `/api`; auto-generated on first run
@@ -94,11 +94,44 @@ Any OpenAI-compatible client needs three values from the dashboard:
 
 ### Example: Cursor
 
+Cursor routes BYOK requests through **its cloud**, not your PC. It blocks `localhost`, private IPs, and Tailscale (`100.x`) URLs. Use a **public HTTPS tunnel** — not `http://127.0.0.1:4117/v1` and not Tailscale MagicDNS.
+
 | Setting | Value |
 |---------|-------|
-| Override OpenAI Base URL | `https://YOUR_HOST:10000/v1` (or local URL above) |
+| Override OpenAI Base URL | `https://YOUR-TUNNEL-HOST/v1` (Ask/Plan) or `/v1/cursor` (if Agent BYOK sends traffic) |
 | API key | RouterBot API key |
 | Model | `routerbot-local` |
+
+**Which Cursor modes hit RouterBot?** Override OpenAI Base URL only applies to BYOK chat traffic Cursor sends to your URL. Today that is mainly **Ask** and **Plan**. **Agent**, **Multitask**, and **Debug Mode** (runtime log instrumentation — Shift+Tab → Debug) run on Cursor’s own agent backend and usually produce **no requests** to RouterBot, so dashboard routes for `agent`, `debug`, and `multitask` do nothing in those UI modes. The `debug` routing row applies when a BYOK request arrives with debug metadata/keywords (e.g. Ask + stack trace), not when you pick Debug Mode in the agent picker.
+
+| Cursor UI | Hits RouterBot BYOK? |
+|-----------|---------------------|
+| Ask | Yes |
+| Plan | Yes |
+| Agent (Composer) | Usually no — Cursor backend |
+| Debug Mode | No — separate agent loop |
+| Multitask | Usually no — Cursor backend |
+
+**Workaround for debug-style questions:** use **Ask** mode, paste the error/stack trace; RouterBot classifies as task `debug` and uses your `debug → provider` map.
+
+**Quick setup (both tunnels):**
+
+```bash
+chmod +x scripts/*.sh
+./scripts/tunnel-setup.sh          # cloudflared (no account) + ngrok if NGROK_AUTHTOKEN set
+./scripts/tunnel-status.sh         # show URLs for Cursor
+```
+
+| Tunnel | Account | Script |
+|--------|---------|--------|
+| Cloudflare (`trycloudflare.com`) | None | `./scripts/tunnel-cloudflared.sh start` |
+| ngrok | Free at [dashboard.ngrok.com](https://dashboard.ngrok.com/signup) | Set `NGROK_AUTHTOKEN` in `.env`, then `./scripts/tunnel-ngrok.sh start` |
+
+URLs are saved to `data/tunnel-urls.json`. For boot persistence: `./scripts/install-tunnel-services.sh` (installs systemd units; cloudflared URL changes on each restart — check logs or re-run `tunnel-status.sh`).
+
+**Cursor Agent mode:** When Cursor does send BYOK Agent traffic, it often uses OpenAI **Responses API** payloads (`input`, `instructions`, tools, …) — sometimes to `/v1/chat/completions` instead of standard `messages`. RouterBot accepts that on `/v1/chat/completions`, `/v1/responses`, and the same paths under `/v1/cursor`. Use **HTTP/1.1** in Cursor Settings → Network if streaming fails on Windows.
+
+When BYOK requests reach RouterBot, mode is inferred from headers/metadata/payload and mapped via the dashboard (`ask`, `plan`, `agent`, `debug`, `multitask`). The Cursor provider passes matching `cursor-agent` CLI flags (`ask`/`plan` read-only, `agent`/`multitask` with `--force`).
 
 ### Example: curl
 
@@ -165,7 +198,13 @@ If port `4117` is in use, RouterBot is already running (e.g. systemd) — use `s
 | Claude Code | `claude` | Browser sign-in (opens on your PC) |
 | Codex | `codex` | Device login + one-time code |
 | Cursor Agent | `cursor-agent` | Browser sign-in |
-| Gemini CLI | `gemini` | Google OAuth + paste auth code |
+| Antigravity CLI | `agy` | Google OAuth + paste auth code ([install](https://antigravity.google/cli/install.sh)) |
+
+Install Antigravity CLI:
+
+```bash
+curl -fsSL https://antigravity.google/cli/install.sh | bash
+```
 
 ### Custom backends
 
@@ -205,6 +244,10 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) to extend built-in adapters.
 
 Configure both in the **Routing** panel; new providers appear in dropdowns automatically.
 
+**GHOST harness (observe-only analysis):** send `metadata.routerbot_task: "ghost"` (or header
+`X-RouterBot-Task: ghost`) to skip LLM task classification and use the `ghost → provider` route.
+Default pattern also matches prompts starting with `Analyze GHOST live session`.
+
 ## Public access
 
 Remote clients cannot reach `localhost`. Expose RouterBot over HTTPS when callers run on another machine or in the cloud.
@@ -222,13 +265,22 @@ Remote clients cannot reach `localhost`. Expose RouterBot over HTTPS when caller
 
 Set `server.tailscaleHost` in the dashboard, then **Save**.
 
-### Quick tunnels
+### Quick tunnels (Cursor-compatible)
+
+Use the bundled scripts (install cloudflared to `bin/` automatically):
 
 ```bash
-# cloudflared
-cloudflared tunnel --url http://127.0.0.1:4117
+./scripts/install-cloudflared.sh   # once, if needed
+./scripts/tunnel-cloudflared.sh start
+# NGROK_AUTHTOKEN=… in .env then:
+./scripts/tunnel-ngrok.sh start
+./scripts/tunnel-status.sh
+```
 
-# ngrok
+Manual equivalents:
+
+```bash
+cloudflared tunnel --url http://127.0.0.1:4117
 ngrok http 4117
 ```
 

@@ -7,7 +7,12 @@
     "tailscaleHost": "your-machine.tailXXXX.ts.net",
     "tailscaleServePort": 9420,
     "tailscaleFunnelPort": 10000,
-    "cursorBaseUrl": "https://your-machine.tailXXXX.ts.net:10000/v1"
+    "cursorBaseUrl": "https://your-machine.tailXXXX.ts.net:10000/v1",
+    "tunnels": {
+      "ngrokAuthtoken": "",
+      "autostartCloudflared": false,
+      "autostartNgrok": false
+    }
   },
   "providers": {
     "claude": {
@@ -40,13 +45,13 @@
       "models": [],
       "timeoutMs": 300000
     },
-    "gemini": {
+    "antigravity": {
       "type": "builtin",
-      "label": "Gemini CLI",
-      "icon": "✨",
-      "enabled": false,
-      "command": "gemini",
-      "model": "auto",
+      "label": "Antigravity CLI",
+      "icon": "🚀",
+      "enabled": true,
+      "command": "agy",
+      "model": "gemini-3.5-flash",
       "models": [],
       "timeoutMs": 300000
     },
@@ -65,6 +70,39 @@
   "routing": {
     "defaultProvider": "codex",
     "fallbackChain": ["codex", "ollama-local"],
+    "smartRoute": {
+      "mode": "shadow_test",
+      "classifierProvider": "codex",
+      "largeContextThreshold": 100000,
+      "localPrivateFirst": false,
+      "escalationEnabled": false,
+      "confidenceThreshold": 0.55,
+      "defaultOutputTokensEst": 1200,
+      "explainDecisions": false,
+      "dailyBudgetUsd": null,
+      "premiumBudgetUsd": null,
+      "maxSingleRequestUsd": null,
+      "canary": {
+        "enabled": true,
+        "percent": 10,
+        "allowedTaskTypes": ["rewrite", "summarize", "extract", "chat"],
+        "blockedTaskTypes": ["architecture", "code_debug", "research", "high_stakes"],
+        "maxComplexity": 3,
+        "maxRisk": 2,
+        "requireClassifierConfidence": 0.75,
+        "allowDowngrades": true,
+        "allowDangerDowngrades": false,
+        "fallbackToLegacyOnBlock": true,
+        "rollback": {
+          "enabled": true,
+          "minRequests": 25,
+          "maxValidationFailureRate": 0.1,
+          "maxTimeoutRate": 0.1,
+          "maxThumbsDownRate": 0.1,
+          "maxFallbackRate": 0.2
+        }
+      }
+    },
     "taskRoutes": {
       "code": "codex",
       "debug": "codex",
@@ -72,7 +110,10 @@
       "plan": "claude",
       "explain": "codex",
       "docs": "claude",
-      "quick": "codex"
+      "quick": "codex",
+      "ask": "cursor",
+      "agent": "cursor",
+      "multitask": "codex"
     }
   }
 }

@@ -284,6 +284,104 @@ h1 {
   grid-column: 1 / -1;
 }
 
+.settings-section {
+  grid-column: 1 / -1;
+  margin-top: 8px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+
+.settings-section-head h3 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.settings-hint {
+  margin: 6px 0 12px;
+  font-size: 13px;
+  color: var(--muted);
+  line-height: 1.35;
+}
+
+.tunnel-cards {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.tunnel-card {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 12px;
+  background: #fafafa;
+}
+
+.tunnel-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.tunnel-name {
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.tunnel-status-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--muted);
+  flex-shrink: 0;
+}
+
+.tunnel-status-dot.on {
+  background: var(--ok);
+}
+
+.tunnel-status-dot.off {
+  background: var(--muted);
+}
+
+.tunnel-lead {
+  margin: 0 0 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.tunnel-url {
+  display: block;
+  font-size: 12px;
+  padding: 8px 10px;
+  background: var(--bg-elevated);
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  margin-bottom: 10px;
+  word-break: break-all;
+}
+
+.tunnel-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.btn.small {
+  min-height: 32px;
+  padding: 0 12px;
+  font-size: 13px;
+}
+
+.tunnel-autostart {
+  margin-top: 4px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+
 .field {
   display: grid;
   gap: 6px;
@@ -602,15 +700,13 @@ select:focus {
   font-size: 13px;
 }
 
-.auth-code-row,
-.gemini-code-row {
+.auth-code-row {
   display: flex;
   gap: 8px;
   margin-top: 8px;
 }
 
-.auth-code-row input,
-.gemini-code-row input {
+.auth-code-row input {
   flex: 1;
 }
 
@@ -680,6 +776,65 @@ select:focus {
 .routes {
   display: grid;
   gap: 8px;
+}
+
+.routing-hint {
+  margin: 10px 0 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+
+.routing-hint code {
+  font-size: 11px;
+}
+
+.smart-route-canary {
+  margin: 10px 0;
+  padding: 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border, #d8dbe2);
+  display: grid;
+  gap: 8px;
+}
+
+.canary-head {
+  margin: 0;
+  font-size: 13px;
+}
+
+.smart-route-stats {
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--surface-2, #eef0f4);
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.smart-route-report {
+  margin: 8px 0 0;
+  padding: 10px;
+  border-radius: 8px;
+  background: var(--surface-2, #eef0f4);
+  font-size: 12px;
+  color: var(--text, #1d1d1f);
+  display: grid;
+  gap: 6px;
+}
+
+.smart-route-metric {
+  line-height: 1.4;
+}
+
+.smart-route-diffs {
+  margin: 4px 0 0;
+  padding-left: 18px;
+  color: var(--muted);
+}
+
+.smart-route-diffs li.danger {
+  color: #b42318;
 }
 
 .route-row {
@@ -830,6 +985,10 @@ button.danger-text {
   }
 
   .settings-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .tunnel-cards {
     grid-template-columns: 1fr;
   }
 

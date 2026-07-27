@@ -1,4 +1,6 @@
-export const BUILTIN_PROVIDERS = ["claude", "codex", "cursor", "gemini"];
+import { TASK_PATTERN_SOURCES } from "./taskClassifier.js";
+
+export const BUILTIN_PROVIDERS = ["claude", "codex", "cursor", "antigravity"];
 
 export const defaultConfig = {
   server: {
@@ -9,7 +11,13 @@ export const defaultConfig = {
     tailscaleHost: "",
     tailscaleServePort: 9420,
     tailscaleFunnelPort: 10000,
-    cursorBaseUrl: ""
+    cursorBaseUrl: "",
+    tunnels: {
+      ngrokAuthtoken: "",
+      ngrokDomain: "",
+      autostartCloudflared: false,
+      autostartNgrok: false
+    }
   },
   providers: {
     claude: {
@@ -42,28 +50,39 @@ export const defaultConfig = {
       models: [],
       timeoutMs: 300000
     },
-    gemini: {
+    antigravity: {
       type: "builtin",
-      label: "Gemini CLI",
-      icon: "✨",
+      label: "Antigravity CLI",
+      icon: "🚀",
       enabled: true,
-      command: "gemini",
-      model: "",
+      command: "agy",
+      model: "gemini-3.5-flash",
       models: [],
       timeoutMs: 300000
     }
   },
   routing: {
     defaultProvider: "codex",
-    fallbackChain: ["codex", "cursor"],
+    fallbackChain: ["codex", "cursor", "antigravity"],
+    namedRoutes: {
+      cheap: "cursor",
+      review: "codex",
+      research: "claude",
+      fallback: "antigravity"
+    },
     taskRoutes: {
       code: "codex",
       debug: "codex",
       review: "codex",
       plan: "claude",
-      explain: "cursor",
-      docs: "claude",
-      quick: "cursor"
-    }
+      explain: "antigravity",
+      docs: "antigravity",
+      quick: "cursor",
+      ask: "cursor",
+      agent: "cursor",
+      multitask: "codex",
+      ghost: "claude"
+    },
+    taskPatterns: { ...TASK_PATTERN_SOURCES }
   }
 };

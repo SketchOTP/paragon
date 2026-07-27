@@ -19,11 +19,11 @@ export const AUTH_FLOWS = {
     reSignInLabel: "Re-sign in",
     hint: "Opens Cursor login in your browser."
   },
-  gemini: {
+  antigravity: {
     mode: "oauth-code",
     signInLabel: "Google sign-in",
     reSignInLabel: "Re-sign in",
-    hint: "Open the Google link, authorize, then paste the code below."
+    hint: "Open the Google link, authorize Antigravity, then paste the authorization code below."
   }
 };
 

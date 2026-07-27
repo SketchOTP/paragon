@@ -1,12 +1,20 @@
 import { spawn } from "node:child_process";
-import { unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { authFlowFor } from "./authFlows.js";
 import { clearAuthSession, getAuthSession, ingestAuthOutput } from "./authSessions.js";
 import { discoverClaudeModels } from "./claudeModels.js";
 import { discoverCodexModels } from "./codexModels.js";
-import { checkGeminiAuthStatus, loadGeminiCliModelCatalog } from "./geminiModels.js";
+import {
+  buildAntigravityPrintCommand,
+  checkAntigravityAuthStatus,
+  discoverAntigravityModels,
+  invalidateAntigravityAuthCache,
+  shellSingleQuote
+} from "./antigravityModels.js";
+import { stripAnsi } from "./cliOutput.js";
+import { discoverCursorModels, parseCursorModelsOutput } from "./cursorModels.js";
+import { cursorModeToCliArgs } from "./cursorMode.js";
 import { alignProviderModel } from "./modelList.js";
 import { checkHttpStatus, listHttpModels, runHttpProvider } from "./httpProvider.js";
 import { addLog } from "./logStore.js";
@@ -48,26 +56,17 @@ const providerSpecs = {
     authArgs: ["login"],
     statusArgs: ["status"],
     modelsArgs: ["models"],
-    runArgs: ({ model }) => [
-      "--print",
-      "--trust",
-      "--mode",
-      "ask",
+    runArgs: ({ model, cursorMode }) => [
+      ...cursorModeToCliArgs(cursorMode),
       ...modelArg("--model", model)
     ]
   },
-  gemini: {
-    authArgs: [],
+  antigravity: {
+    authArgs: ["-p", "Reply with exactly: ok"],
     statusArgs: null,
-    modelsArgs: null,
-    runArgs: ({ model }) => [
-      "--skip-trust",
-      "--approval-mode",
-      "plan",
-      "-o",
-      "text",
-      ...modelArg("-m", model)
-    ]
+    modelsArgs: ["models"],
+    runArgs: ({ model }) => [...modelArg("--model", model)],
+    printMode: true
   }
 };
 
@@ -97,16 +96,10 @@ export function expandArgs(args, model) {
   return args.map((arg) => String(arg).replaceAll("{{model}}", model ?? ""));
 }
 
-function envForProvider(provider) {
+function envForProvider(_provider) {
   const env = { ...process.env, NO_COLOR: "1" };
-  if (provider !== "gemini") {
-    return env;
-  }
-  delete env.GEMINI_API_KEY;
-  delete env.GOOGLE_API_KEY;
-  delete env.GOOGLE_GENAI_USE_VERTEXAI;
-  delete env.GOOGLE_GENAI_USE_GCA;
-  env.GEMINI_DEFAULT_AUTH_TYPE = "oauth-personal";
+  const localBin = join(homedir(), ".local", "bin");
+  env.PATH = [localBin, env.PATH].filter(Boolean).join(":");
   return env;
 }
 
@@ -144,8 +137,8 @@ export async function runStatus(provider, providerConfig, { quiet = false } = {}
     return checkHttpStatus(provider, providerConfig, { quiet });
   }
 
-  if (provider === "gemini") {
-    const result = checkGeminiAuthStatus();
+  if (provider === "antigravity") {
+    const result = checkAntigravityAuthStatus(providerConfig.command);
     if (!quiet || !result.ok) {
       addLog({
         type: "status",
@@ -177,7 +170,7 @@ export async function runStatus(provider, providerConfig, { quiet = false } = {}
   });
 }
 
-export async function listModels(provider, providerConfig) {
+export async function listModels(provider, providerConfig, { refresh = true } = {}) {
   const type = providerType(provider, providerConfig);
 
   if (type === "http") {
@@ -186,23 +179,22 @@ export async function listModels(provider, providerConfig) {
 
   let models = [];
 
-  if (provider === "gemini") {
-    models = loadGeminiCliModelCatalog(providerConfig.command) ?? [];
-    if (!models.length) {
-      throw new Error("Gemini CLI model catalog unavailable — reinstall or upgrade the gemini CLI");
-    }
+  if (provider === "antigravity") {
+    models = discoverAntigravityModels(providerConfig.command);
   } else if (provider === "claude") {
     models = await discoverClaudeModels(providerConfig.command);
     if (!models.length) {
       throw new Error("Claude model catalog unavailable — upgrade the claude CLI");
     }
   } else if (provider === "codex") {
-    models = await discoverCodexModels(providerConfig.command);
+    models = await discoverCodexModels(providerConfig.command, { refresh });
     if (!models.length) {
       throw new Error(
         "Codex CLI model catalog unavailable — upgrade codex or reinstall the codex snap"
       );
     }
+  } else if (provider === "cursor") {
+    models = await discoverCursorModels(providerConfig.command ?? "cursor-agent");
   } else {
     const spec = getProviderSpec(provider, providerConfig);
     if (!spec.modelsArgs?.length) {
@@ -224,9 +216,6 @@ export async function listModels(provider, providerConfig) {
       quiet: true
     });
     models = parseModels(provider, result.stdout);
-    if (provider === "cursor") {
-      models = sortCursorModels(models);
-    }
     if (!models.length) {
       throw new Error("Model list command returned no models");
     }
@@ -242,10 +231,8 @@ export async function listModels(provider, providerConfig) {
   return aligned;
 }
 
-let geminiAuthSession = null;
+let oauthCodeSessions = new Map();
 const authProcesses = new Map();
-
-const GEMINI_DIR = join(homedir(), ".gemini");
 
 function trackAuthProcess(provider, child) {
   authProcesses.set(provider, { pid: child.pid, startedAt: Date.now() });
@@ -267,8 +254,8 @@ function trackAuthProcess(provider, child) {
 
 function isReadyFromStatus(provider, result) {
   const out = (result.stdout || result.stderr || "").trim();
-  if (provider === "gemini") {
-    return checkGeminiAuthStatus().ok;
+  if (provider === "antigravity") {
+    return checkAntigravityAuthStatus().ok;
   }
   if (provider === "claude") {
     try {
@@ -288,56 +275,56 @@ async function checkProviderReady(provider, providerConfig) {
   };
 }
 
-function clearGeminiCredentials() {
-  for (const name of ["oauth_creds.json"]) {
-    try {
-      unlinkSync(join(GEMINI_DIR, name));
-    } catch {
-      // ignore missing file
-    }
-  }
-}
-
 export function getAuthState(provider) {
   return {
     provider,
     flow: authFlowFor(provider),
     session: getAuthSession(provider),
-    inProgress: authProcesses.has(provider) || (provider === "gemini" && Boolean(geminiAuthSession))
+    inProgress: authProcesses.has(provider) || oauthCodeSessions.has(provider)
   };
 }
 
-function stripAnsi(text) {
-  return text.replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, "").replace(/\r/g, "");
+function providerLabel(provider) {
+  return provider === "antigravity" ? "Antigravity" : provider;
 }
 
-function stopGeminiAuthSession(reason) {
-  if (!geminiAuthSession) {
+function stopOAuthCodeSession(provider, reason) {
+  const session = oauthCodeSessions.get(provider);
+  if (!session) {
     return;
   }
-  const { child } = geminiAuthSession;
-  geminiAuthSession = null;
+  oauthCodeSessions.delete(provider);
   try {
-    child.kill("SIGTERM");
+    session.child.kill("SIGTERM");
   } catch {
     // ignore
   }
   if (reason) {
-    addLog({ type: "auth", provider: "gemini", level: "info", message: reason });
+    addLog({ type: "auth", provider, level: "info", message: reason });
   }
 }
 
-function startGeminiAuth(providerConfig, { force = false } = {}) {
-  stopGeminiAuthSession("Replacing pending Gemini login");
-  clearAuthSession("gemini");
-
-  if (force) {
-    clearGeminiCredentials();
+function buildOAuthScriptCommand(provider, providerConfig) {
+  const spec = getProviderSpec(provider, providerConfig);
+  const authArgs = spec?.authArgs ?? [];
+  const command = providerConfig.command ?? provider;
+  if (!authArgs.length) {
+    return command;
   }
+  const parts = [
+    command,
+    ...authArgs.map((arg) => (String(arg).startsWith("-") ? arg : shellSingleQuote(arg)))
+  ];
+  return parts.join(" ");
+}
 
-  const child = spawn("script", ["-qfec", providerConfig.command, "/dev/null"], {
+function startOAuthCodeAuth(provider, providerConfig, { force = false } = {}) {
+  stopOAuthCodeSession(provider, `Replacing pending ${providerLabel(provider)} login`);
+  clearAuthSession(provider);
+
+  const child = spawn("script", ["-qfec", buildOAuthScriptCommand(provider, providerConfig), "/dev/null"], {
     cwd: process.cwd(),
-    env: { ...authEnvForProvider("gemini"), NO_BROWSER: "true" },
+    env: { ...authEnvForProvider(provider), NO_BROWSER: "true" },
     stdio: ["pipe", "pipe", "pipe"]
   });
 
@@ -349,14 +336,14 @@ function startGeminiAuth(providerConfig, { force = false } = {}) {
     buffer += raw;
     const plain = stripAnsi(raw).trim();
     if (plain) {
-      addLog({ type: "auth", provider: "gemini", level, message: plain });
+      addLog({ type: "auth", provider, level, message: plain });
     }
-    const session = ingestAuthOutput("gemini", buffer);
+    const session = ingestAuthOutput(provider, buffer);
     if (session?.url && !urlLogged) {
       urlLogged = true;
       addLog({
         type: "auth",
-        provider: "gemini",
+        provider,
         level: "info",
         message: `Open Google sign-in in your browser: ${session.url}`
       });
@@ -366,44 +353,58 @@ function startGeminiAuth(providerConfig, { force = false } = {}) {
   child.stdout.on("data", (chunk) => handleChunk(chunk, "info"));
   child.stderr.on("data", (chunk) => handleChunk(chunk, "warn"));
   child.on("error", (error) => {
-    geminiAuthSession = null;
-    addLog({ type: "auth", provider: "gemini", level: "error", message: error.message });
+    oauthCodeSessions.delete(provider);
+    addLog({ type: "auth", provider, level: "error", message: error.message });
   });
 
-  trackAuthProcess("gemini", child);
-
-  geminiAuthSession = { child };
+  trackAuthProcess(provider, child);
+  oauthCodeSessions.set(provider, { child });
   child.on("exit", () => {
-    geminiAuthSession = null;
+    oauthCodeSessions.delete(provider);
+    if (provider === "antigravity") {
+      invalidateAntigravityAuthCache();
+      clearAuthSession(provider);
+    }
   });
 
   addLog({
     type: "auth",
-    provider: "gemini",
+    provider,
     level: "info",
-    message:
-      "Gemini login started (manual OAuth). Watch Recent Activity for the Google link, sign in on your PC, then paste the authorization code in the dashboard."
+    message: `${providerLabel(provider)} login started. Watch Recent Activity for the Google link, sign in on your PC, then paste the authorization code in the dashboard.`
   });
 
   return { pid: child.pid, mode: "oauth-code" };
 }
 
-export function submitGeminiAuthCode(code) {
+export function submitOAuthCodeAuth(provider, code) {
   const trimmed = String(code ?? "").trim();
   if (!trimmed) {
     throw new Error("Authorization code is required");
   }
-  if (!geminiAuthSession?.child?.stdin?.writable) {
-    throw new Error("No Gemini login in progress. Click Google sign-in first.");
+  const session = oauthCodeSessions.get(provider);
+  if (!session?.child?.stdin?.writable) {
+    throw new Error(`No ${providerLabel(provider)} login in progress. Click Google sign-in first.`);
   }
-  geminiAuthSession.child.stdin.write(`${trimmed}\n`);
+  session.child.stdin.write(`${trimmed}\n`);
   addLog({
     type: "auth",
-    provider: "gemini",
+    provider,
     level: "info",
-    message: "Authorization code submitted — waiting for Gemini to finish login."
+    message: "Authorization code submitted — waiting for login to finish."
   });
+  if (provider === "antigravity") {
+    invalidateAntigravityAuthCache();
+  }
   return { ok: true };
+}
+
+export function submitAntigravityAuthCode(code) {
+  return submitOAuthCodeAuth("antigravity", code);
+}
+
+function startAntigravityAuth(providerConfig, options) {
+  return startOAuthCodeAuth("antigravity", providerConfig, options);
 }
 
 export async function startAuth(provider, providerConfig, { force = false } = {}) {
@@ -428,8 +429,8 @@ export async function startAuth(provider, providerConfig, { force = false } = {}
     }
   }
 
-  if (provider === "gemini") {
-    return startGeminiAuth(providerConfig, { force });
+  if (provider === "antigravity") {
+    return startAntigravityAuth(providerConfig, { force });
   }
 
   return startCliAuth(provider, providerConfig);
@@ -506,17 +507,7 @@ export function parseModels(provider, stdout) {
   }
 
   if (provider === "cursor") {
-    return stdout
-      .split("\n")
-      .map((line) => line.trim())
-      .filter((line) => line.includes(" - "))
-      .map((line) => {
-        const [id, ...nameParts] = line.split(" - ");
-        return {
-          id: id.trim(),
-          name: nameParts.join(" - ").replace(/\s+\((current|default)\)$/i, "").trim()
-        };
-      });
+    return parseCursorModelsOutput(stdout);
   }
 
   return stdout
@@ -526,38 +517,37 @@ export function parseModels(provider, stdout) {
     .map((line) => ({ id: line, name: line }));
 }
 
-function sortCursorModels(models) {
-  const rank = (id) => {
-    if (id.startsWith("composer")) {
-      return 0;
-    }
-    if (id === "auto") {
-      return 1;
-    }
-    return 2;
-  };
-  return [...models].sort((a, b) => {
-    const byRank = rank(a.id) - rank(b.id);
-    if (byRank !== 0) {
-      return byRank;
-    }
-    return a.name.localeCompare(b.name);
-  });
-}
-
-export async function runProvider(provider, providerConfig, prompt, onChunk) {
+export async function runProvider(provider, providerConfig, prompt, onChunk, options = {}) {
   const type = providerType(provider, providerConfig);
 
   if (type === "http") {
-    return runHttpProvider(provider, providerConfig, prompt, onChunk);
+    return await runHttpProvider(provider, providerConfig, prompt, onChunk);
   }
 
   const spec = getProviderSpec(provider, providerConfig);
   const stdinMode = providerConfig.stdinMode ?? "prompt";
-  return runProcess({
+
+  if (provider === "antigravity" || spec.printMode) {
+    const printCmd = buildAntigravityPrintCommand(
+      providerConfig.command,
+      prompt,
+      providerConfig.model
+    );
+    return await runProcess({
+      provider,
+      command: "script",
+      args: ["-qec", printCmd, "/dev/null"],
+      stdinText: undefined,
+      timeoutMs: providerConfig.timeoutMs,
+      logType: "completion",
+      onChunk
+    });
+  }
+
+  return await runProcess({
     provider,
     command: providerConfig.command,
-    args: spec.runArgs({ model: providerConfig.model }),
+    args: spec.runArgs({ model: providerConfig.model, cursorMode: options.cursorMode }),
     stdinText: stdinMode === "none" ? undefined : prompt,
     timeoutMs: providerConfig.timeoutMs,
     logType: "completion",

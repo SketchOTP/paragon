@@ -1,0 +1,18 @@
+[Unit]
+Description=Cloudflare quick tunnel for RouterBot (trycloudflare.com)
+After=network-online.target routerbot.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=%ROUTERBOT_USER%
+Group=%ROUTERBOT_GROUP%
+WorkingDirectory=%ROUTERBOT_DIR%
+EnvironmentFile=-/etc/routerbot/environment
+ExecStartPre=%ROUTERBOT_DIR%/bin/cloudflared version
+ExecStart=%ROUTERBOT_DIR%/bin/cloudflared tunnel --url http://127.0.0.1:%ROUTERBOT_PORT% --no-autoupdate
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

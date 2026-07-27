@@ -1,30 +1,41 @@
 import { spawn, execSync } from "node:child_process";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { dedupeModels, splitTTYLines } from "./cliOutput.js";
 
-/** Documented Claude Code models (help center + common aliases). */
-export const CLAUDE_DOCUMENTED_MODELS = [
-  { id: "claude-opus-4-8", name: "Opus 4.8" },
-  { id: "claude-opus-4-7", name: "Opus 4.7" },
-  { id: "claude-sonnet-4-6", name: "Sonnet 4.6" },
-  { id: "claude-opus-4-6", name: "Opus 4.6" },
-  { id: "claude-opus-4-5-20251101", name: "Opus 4.5" },
-  { id: "claude-haiku-4-5-20251001", name: "Haiku 4.5" },
-  { id: "claude-sonnet-4-5-20250929", name: "Sonnet 4.5" },
-  { id: "claude-sonnet-4-20250514", name: "Sonnet 4" },
-  { id: "claude-opus-4-20250514", name: "Opus 4" },
-  { id: "claude-3-7-sonnet-20250219", name: "Sonnet 3.7" },
-  { id: "claude-3-5-haiku-20241022", name: "Haiku 3.5" },
-  { id: "opus", name: "Opus (alias)" },
-  { id: "sonnet", name: "Sonnet (alias)" },
-  { id: "haiku", name: "Haiku (alias)" }
-];
+/** Display-name hints when the API/CLI only returns ids. */
+export const CLAUDE_DISPLAY_NAMES = {
+  "claude-sonnet-5": "Claude Sonnet 5",
+  "claude-fable-5": "Claude Fable 5",
+  "claude-opus-4-8": "Opus 4.8",
+  "claude-opus-4-7": "Opus 4.7",
+  "claude-sonnet-4-6": "Sonnet 4.6",
+  "claude-opus-4-6": "Opus 4.6",
+  "claude-opus-4-5-20251101": "Opus 4.5",
+  "claude-haiku-4-5-20251001": "Haiku 4.5",
+  "claude-sonnet-4-5-20250929": "Sonnet 4.5",
+  "claude-opus-4-1-20250805": "Opus 4.1",
+  opus: "Opus (alias)",
+  sonnet: "Sonnet (alias)",
+  haiku: "Haiku (alias)",
+  fable: "Fable (alias)"
+};
 
 const DISCOVERY_ARG_SETS = [
   ["model", "list"],
   ["models"]
 ];
 
-const BINARY_MODEL_PATTERN = /claude-(?:opus|sonnet|haiku)-[a-z0-9.-]+/g;
+const BINARY_MODEL_PATTERN = /claude-(?:opus|sonnet|haiku|fable)-[a-z0-9.-]+/g;
+
+export function claudeHomeDir() {
+  return process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude");
+}
+
+export function claudeCredentialsPath(homeDir = claudeHomeDir()) {
+  return join(homeDir, ".credentials.json");
+}
 
 function runClaude(command, args, timeoutMs = 15000) {
   return new Promise((resolve, reject) => {
@@ -74,7 +85,7 @@ function resolveClaudeBinary(command = "claude") {
 }
 
 function isClaudeModelId(id) {
-  if (!/^claude-(opus|sonnet|haiku)-/.test(id)) {
+  if (!/^claude-(opus|sonnet|haiku|fable)-/.test(id)) {
     return false;
   }
   if (id.endsWith("-v1") || id.endsWith("-fast")) {
@@ -87,11 +98,28 @@ function isClaudeModelId(id) {
 }
 
 function displayNameForClaudeModel(id) {
-  const documented = CLAUDE_DOCUMENTED_MODELS.find((model) => model.id === id);
-  if (documented) {
-    return documented.name;
+  return CLAUDE_DISPLAY_NAMES[id] ?? id.replace(/^claude-/, "").replace(/-/g, " ");
+}
+
+export function parseAnthropicModelsResponse(payload) {
+  const entries = payload?.data ?? payload?.models ?? [];
+  if (!Array.isArray(entries)) {
+    return [];
   }
-  return id.replace(/^claude-/, "").replace(/-/g, " ");
+  return dedupeModels(
+    entries
+      .map((entry) => {
+        const id = entry.id ?? entry.model ?? entry.slug;
+        if (!id) {
+          return null;
+        }
+        return {
+          id: String(id),
+          name: entry.display_name ?? entry.displayName ?? entry.name ?? displayNameForClaudeModel(String(id))
+        };
+      })
+      .filter(Boolean)
+  );
 }
 
 export function parseClaudeModelListOutput(stdout) {
@@ -102,20 +130,9 @@ export function parseClaudeModelListOutput(stdout) {
 
   try {
     const payload = JSON.parse(text);
-    const entries = Array.isArray(payload) ? payload : (payload.models ?? payload.data ?? []);
-    if (Array.isArray(entries) && entries.length) {
-      return entries
-        .map((entry) => {
-          const id = entry.id ?? entry.model ?? entry.slug;
-          if (!id) {
-            return null;
-          }
-          return {
-            id: String(id),
-            name: entry.name ?? entry.display_name ?? displayNameForClaudeModel(String(id))
-          };
-        })
-        .filter(Boolean);
+    const parsed = parseAnthropicModelsResponse(payload);
+    if (parsed.length) {
+      return parsed;
     }
   } catch {
     // Plain-text output below.
@@ -123,35 +140,53 @@ export function parseClaudeModelListOutput(stdout) {
 
   const models = [];
   const seen = new Set();
-  for (const line of text.split("\n")) {
-    const trimmed = line.trim();
-    const idMatch = trimmed.match(/\b(claude-(?:opus|sonnet|haiku)-[a-z0-9.-]+)\b/i);
+  for (const line of splitTTYLines(text)) {
+    const idMatch = line.match(/\b(claude-(?:opus|sonnet|haiku|fable)-[a-z0-9.-]+)\b/i);
     if (idMatch && isClaudeModelId(idMatch[1]) && !seen.has(idMatch[1])) {
       seen.add(idMatch[1]);
       models.push({ id: idMatch[1], name: displayNameForClaudeModel(idMatch[1]) });
     }
   }
-  return models;
+  return dedupeModels(models);
 }
 
-export function mergeClaudeModelCatalogs(...lists) {
-  const byId = new Map();
-  for (const list of lists) {
-    for (const model of list ?? []) {
-      if (!model?.id) {
-        continue;
-      }
-      const existing = byId.get(model.id);
-      byId.set(model.id, {
-        id: model.id,
-        name: existing?.name && existing.name !== existing.id ? existing.name : model.name || model.id
-      });
+function loadClaudeOAuthToken(homeDir = claudeHomeDir()) {
+  try {
+    const credentialsPath = claudeCredentialsPath(homeDir);
+    if (!existsSync(credentialsPath)) {
+      return null;
     }
+    const payload = JSON.parse(readFileSync(credentialsPath, "utf8"));
+    return payload?.claudeAiOauth?.accessToken ?? payload?.accessToken ?? null;
+  } catch {
+    return null;
   }
-  return [...byId.values()].sort((a, b) => a.id.localeCompare(b.id));
 }
 
-/** Model IDs embedded in the installed claude binary. */
+/** Account-scoped catalog from Anthropic /v1/models using Claude Code OAuth. */
+export async function fetchClaudeModelsFromApi(homeDir = claudeHomeDir()) {
+  const token = loadClaudeOAuthToken(homeDir);
+  if (!token) {
+    return [];
+  }
+
+  const response = await fetch("https://api.anthropic.com/v1/models?limit=1000", {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "anthropic-version": "2023-06-01",
+      Accept: "application/json"
+    },
+    signal: AbortSignal.timeout(30_000)
+  });
+
+  if (!response.ok) {
+    throw new Error(`Anthropic models HTTP ${response.status}`);
+  }
+
+  return parseAnthropicModelsResponse(await response.json());
+}
+
+/** Model IDs embedded in the installed claude binary — last-resort fallback only. */
 export function loadClaudeBundledCatalog(command = "claude") {
   try {
     const binaryPath = resolveClaudeBinary(command);
@@ -166,19 +201,20 @@ export function loadClaudeBundledCatalog(command = "claude") {
       seen.add(id);
       models.push({ id, name: displayNameForClaudeModel(id) });
     }
-    return models;
+    return dedupeModels(models);
   } catch {
     return [];
   }
 }
 
 export async function discoverClaudeModels(command = "claude") {
-  const bundled = mergeClaudeModelCatalogs(
-    CLAUDE_DOCUMENTED_MODELS,
-    loadClaudeBundledCatalog(command)
-  );
-  if (bundled.length) {
-    return bundled;
+  try {
+    const apiModels = await fetchClaudeModelsFromApi();
+    if (apiModels.length) {
+      return apiModels;
+    }
+  } catch {
+    // Fall through to CLI discovery.
   }
 
   for (const args of DISCOVERY_ARG_SETS) {
@@ -186,12 +222,19 @@ export async function discoverClaudeModels(command = "claude") {
       const result = await runClaude(command, args, 5000);
       const models = parseClaudeModelListOutput(result.stdout);
       if (models.length) {
-        return mergeClaudeModelCatalogs(CLAUDE_DOCUMENTED_MODELS, models);
+        return models;
       }
     } catch {
       // Try the next discovery command shape.
     }
   }
 
-  return CLAUDE_DOCUMENTED_MODELS;
+  const bundled = loadClaudeBundledCatalog(command);
+  if (bundled.length) {
+    return bundled;
+  }
+
+  throw new Error(
+    "Claude model catalog unavailable — sign in with `claude auth login` or set ANTHROPIC_API_KEY"
+  );
 }

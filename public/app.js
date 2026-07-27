@@ -1,13 +1,29 @@
-const BUILTIN_ORDER = ["claude", "codex", "cursor", "gemini"];
-const taskOrder = ["code", "debug", "review", "plan", "explain", "docs", "quick"];
+import { createApiKeyPrompt } from "./apiKeyPrompt.js";
+
+const BUILTIN_ORDER = ["claude", "codex", "cursor", "antigravity"];
+const taskOrder = [
+  "ask",
+  "plan",
+  "agent",
+  "debug",
+  "multitask",
+  "code",
+  "review",
+  "explain",
+  "docs",
+  "quick"
+];
 const API_KEY_STORAGE = "routerbot-api-key";
 
 const TASK_ICONS = {
-  code: "{ }",
-  debug: "⚙",
-  review: "✓",
+  ask: "?",
   plan: "◎",
-  explain: "?",
+  agent: "🤖",
+  debug: "⚙",
+  multitask: "⑂",
+  code: "{ }",
+  review: "✓",
+  explain: "💬",
   docs: "📄",
   quick: "⚡"
 };
@@ -16,7 +32,7 @@ const DEFAULT_PROVIDER_ICON = {
   claude: "🧠",
   codex: "⚡",
   cursor: "🖱️",
-  gemini: "✨",
+  antigravity: "🚀",
   http: "🌐",
   cli: "🔧",
   default: "🤖"
@@ -37,7 +53,7 @@ const authUi = {
   claude: { label: "Sign in", short: "Browser" },
   codex: { label: "Device login", short: "Device" },
   cursor: { label: "Sign in", short: "Browser" },
-  gemini: { label: "Google sign-in", short: "OAuth" }
+  antigravity: { label: "Google sign-in", short: "OAuth" }
 };
 
 let authFlowsMeta = { ...authUi };
@@ -56,6 +72,18 @@ const AUTH_POLL_INTERVAL_MS = 8000;
 let config;
 let statuses = {};
 let fallbackDraft = [];
+let tunnelStatus = null;
+
+function ensureTunnelsConfig() {
+  if (!config.server.tunnels) {
+    config.server.tunnels = {
+      ngrokAuthtoken: "",
+      ngrokDomain: "",
+      autostartCloudflared: false,
+      autostartNgrok: false
+    };
+  }
+}
 
 const els = {
   providers: document.querySelector("#providers"),
@@ -69,6 +97,7 @@ const els = {
   healthGauge: document.querySelector("#health-gauge"),
   fallbackViz: document.querySelector("#fallback-viz"),
   defaultProvider: document.querySelector("#default-provider"),
+
   addProvider: document.querySelector("#add-provider"),
   addProviderDialog: document.querySelector("#add-provider-dialog"),
   addProviderForm: document.querySelector("#add-provider-form"),
@@ -88,6 +117,23 @@ const els = {
   settingRouterbotBase: document.querySelector("#setting-routerbot-base"),
   settingExposedModel: document.querySelector("#setting-exposed-model"),
   settingApiKey: document.querySelector("#setting-api-key"),
+  settingNgrokAuthtoken: document.querySelector("#setting-ngrok-authtoken"),
+  settingNgrokDomain: document.querySelector("#setting-ngrok-domain"),
+  settingAutostartCloudflared: document.querySelector("#setting-autostart-cloudflared"),
+  settingAutostartNgrok: document.querySelector("#setting-autostart-ngrok"),
+  tunnelCfDot: document.querySelector("#tunnel-cf-dot"),
+  tunnelCfUrl: document.querySelector("#tunnel-cf-url"),
+  tunnelCfInstall: document.querySelector("#tunnel-cf-install"),
+  tunnelCfStart: document.querySelector("#tunnel-cf-start"),
+  tunnelCfStop: document.querySelector("#tunnel-cf-stop"),
+  tunnelCfCopy: document.querySelector("#tunnel-cf-copy"),
+  tunnelCfUseBase: document.querySelector("#tunnel-cf-use-base"),
+  tunnelNgrokDot: document.querySelector("#tunnel-ngrok-dot"),
+  tunnelNgrokUrl: document.querySelector("#tunnel-ngrok-url"),
+  tunnelNgrokStart: document.querySelector("#tunnel-ngrok-start"),
+  tunnelNgrokStop: document.querySelector("#tunnel-ngrok-stop"),
+  tunnelNgrokCopy: document.querySelector("#tunnel-ngrok-copy"),
+  tunnelNgrokUseBase: document.querySelector("#tunnel-ngrok-use-base"),
   settingsPanel: document.querySelector("#settings-panel"),
   toggleSettings: document.querySelector("#toggle-settings"),
   editFallback: document.querySelector("#edit-fallback"),
@@ -104,6 +150,18 @@ const els = {
   emojiCancel: document.querySelector("#emoji-cancel"),
   emojiApply: document.querySelector("#emoji-apply")
 };
+
+function seedApiKeyFromUrl() {
+  const params = new URLSearchParams(window.location.search);
+  const key = params.get("key");
+  if (!key) {
+    return;
+  }
+  sessionStorage.setItem(API_KEY_STORAGE, key);
+  params.delete("key");
+  const rest = params.toString();
+  history.replaceState(null, "", window.location.pathname + (rest ? `?${rest}` : ""));
+}
 
 function getStoredApiKey() {
   return sessionStorage.getItem(API_KEY_STORAGE) ?? "";
@@ -131,18 +189,13 @@ async function apiFetch(url, options = {}) {
   return response;
 }
 
-async function promptForApiKey() {
-  return new Promise((resolve) => {
-    els.apiKeyInput.value = getStoredApiKey();
-    els.apiKeyDialog.showModal();
-    els.apiKeyForm.onsubmit = (event) => {
-      event.preventDefault();
-      setStoredApiKey(els.apiKeyInput.value.trim());
-      els.apiKeyDialog.close();
-      resolve();
-    };
-  });
-}
+const promptForApiKey = createApiKeyPrompt({
+  dialog: els.apiKeyDialog,
+  form: els.apiKeyForm,
+  input: els.apiKeyInput,
+  getStored: getStoredApiKey,
+  setStored: setStoredApiKey
+});
 
 function providerOrder() {
   const keys = Object.keys(config.providers);
@@ -217,7 +270,9 @@ function ensureFallbackChain() {
   }
 }
 
+seedApiKeyFromUrl();
 await loadConfig();
+await refreshTunnelStatus();
 render();
 connectLogs();
 bindProviderInteractionLock();
@@ -251,6 +306,32 @@ els.settingExposedModel.addEventListener("input", updateServerFromSettings);
 els.settingApiKey.addEventListener("input", updateServerFromSettings);
 els.toggleSettings.addEventListener("click", () => {
   els.settingsPanel.hidden = !els.settingsPanel.hidden;
+  if (!els.settingsPanel.hidden) {
+    refreshTunnelStatus();
+  }
+});
+els.settingNgrokAuthtoken.addEventListener("input", updateServerFromSettings);
+els.settingNgrokDomain.addEventListener("input", updateServerFromSettings);
+els.settingAutostartCloudflared.addEventListener("change", updateServerFromSettings);
+els.settingAutostartNgrok.addEventListener("change", updateServerFromSettings);
+els.tunnelCfInstall.addEventListener("click", () => tunnelAction("/api/tunnels/cloudflared/install"));
+els.tunnelCfStart.addEventListener("click", () => tunnelAction("/api/tunnels/cloudflared/start"));
+els.tunnelCfStop.addEventListener("click", () => tunnelAction("/api/tunnels/cloudflared/stop", { notify: false }));
+els.tunnelCfCopy.addEventListener("click", () => {
+  copyTunnelUrl(tunnelStatus?.cloudflared?.cursorBaseUrl);
+});
+els.tunnelCfUseBase.addEventListener("click", () => {
+  useTunnelAsBaseUrl(tunnelStatus?.cloudflared?.cursorBaseUrl);
+});
+els.tunnelNgrokStart.addEventListener("click", () =>
+  tunnelAction("/api/tunnels/ngrok/start", { saveFirst: true })
+);
+els.tunnelNgrokStop.addEventListener("click", () => tunnelAction("/api/tunnels/ngrok/stop", { notify: false }));
+els.tunnelNgrokCopy.addEventListener("click", () => {
+  copyTunnelUrl(tunnelStatus?.ngrok?.cursorBaseUrl);
+});
+els.tunnelNgrokUseBase.addEventListener("click", () => {
+  useTunnelAsBaseUrl(tunnelStatus?.ngrok?.cursorBaseUrl);
 });
 els.editFallback.addEventListener("click", openFallbackDialog);
 els.fallbackCancel.addEventListener("click", () => els.fallbackDialog.close());
@@ -355,7 +436,7 @@ function tailscaleFromConfig(server) {
   const funnelPort = server.tailscaleFunnelPort ?? 10000;
   const base = `https://${host}`;
   return {
-    routerbotBase: (server.cursorBaseUrl || "").trim() || `${base}:${funnelPort}/v1`
+    routerbotBase: `${base}:${funnelPort}/v1`
   };
 }
 
@@ -366,7 +447,11 @@ function renderConnectionBanner() {
   const routerbotBase = override || ts?.routerbotBase || localBase;
 
   els.routerbotBaseUrl.textContent = routerbotBase.replace(/^https?:\/\//, "").slice(0, 42);
-  els.routerbotBaseUrl.title = routerbotBase;
+  const activeTunnel = tunnelStatus?.effectiveCursorBaseUrl;
+  els.routerbotBaseUrl.title =
+    activeTunnel && activeTunnel !== routerbotBase
+      ? `${routerbotBase}\nActive tunnel: ${activeTunnel}`
+      : routerbotBase;
   els.modelName.textContent = config.server.exposedModel || "routerbot-local";
   els.apiKey.textContent = config.server.apiKey ? "••••••••" : "—";
 }
@@ -427,26 +512,137 @@ function renderRouting() {
 }
 
 function render() {
+  ensureTunnelsConfig();
   els.settingTailscaleHost.value = config.server.tailscaleHost ?? "";
   els.settingServePort.value = config.server.tailscaleServePort ?? 9420;
   els.settingFunnelPort.value = config.server.tailscaleFunnelPort ?? 10000;
   els.settingRouterbotBase.value = config.server.cursorBaseUrl ?? "";
   els.settingExposedModel.value = config.server.exposedModel ?? "";
   els.settingApiKey.value = config.server.apiKey ?? "";
+  els.settingNgrokAuthtoken.value = config.server.tunnels.ngrokAuthtoken ?? "";
+  els.settingNgrokDomain.value = config.server.tunnels.ngrokDomain ?? "";
+  els.settingAutostartCloudflared.checked = Boolean(config.server.tunnels.autostartCloudflared);
+  els.settingAutostartNgrok.checked = Boolean(config.server.tunnels.autostartNgrok);
 
   renderConnectionBanner();
   renderHealthGauge();
   renderRouting();
   renderProviders();
+  renderTunnelStatus();
+}
+
+function renderTunnelStatus() {
+  if (!tunnelStatus) {
+    return;
+  }
+  const cf = tunnelStatus.cloudflared ?? {};
+  const ng = tunnelStatus.ngrok ?? {};
+
+  els.tunnelCfDot.className = `tunnel-status-dot ${cf.running ? "on" : "off"}`;
+  els.tunnelCfDot.title = cf.running ? "Running" : cf.installed ? "Stopped" : "Not installed";
+  const cfDisplay = cf.cursorBaseUrl || cf.url || "—";
+  els.tunnelCfUrl.textContent = cfDisplay;
+  els.tunnelCfUrl.title = cfDisplay;
+  els.tunnelCfInstall.disabled = cf.installed;
+  els.tunnelCfStart.disabled = cf.running || !cf.installed;
+  els.tunnelCfStop.disabled = !cf.running;
+
+  els.tunnelNgrokDot.className = `tunnel-status-dot ${ng.running ? "on" : "off"}`;
+  els.tunnelNgrokDot.title = ng.running ? "Running" : "Stopped";
+  const ngDisplay = ng.cursorBaseUrl || ng.url || "—";
+  els.tunnelNgrokUrl.textContent = ngDisplay;
+  els.tunnelNgrokUrl.title = ngDisplay;
+  els.tunnelNgrokStart.disabled = ng.running;
+  els.tunnelNgrokStop.disabled = !ng.running;
+}
+
+async function refreshTunnelStatus() {
+  try {
+    const response = await apiFetch("/api/tunnels");
+    if (!response.ok) {
+      return;
+    }
+    tunnelStatus = await response.json();
+    renderTunnelStatus();
+    renderConnectionBanner();
+  } catch {
+    /* ignore */
+  }
+}
+
+async function tunnelAction(path, { saveFirst = false, notify = true } = {}) {
+  if (saveFirst) {
+    await saveConfig();
+  }
+  const buttonIds = [
+    els.tunnelCfInstall,
+    els.tunnelCfStart,
+    els.tunnelCfStop,
+    els.tunnelNgrokStart,
+    els.tunnelNgrokStop
+  ];
+  for (const btn of buttonIds) {
+    if (btn) {
+      btn.disabled = true;
+    }
+  }
+  try {
+    const response = await apiFetch(path, { method: "POST" });
+    const body = await response.json();
+    if (!response.ok) {
+      throw new Error(body.error?.message ?? "Tunnel request failed");
+    }
+    await refreshTunnelStatus();
+    if (notify) {
+      const url = body.url ?? body.entry?.url;
+      flashNotice(url ? `Tunnel ready: ${url}` : "Tunnel updated");
+    } else if (body.effectiveCursorBaseUrl) {
+      renderConnectionBanner();
+    }
+    return body;
+  } catch (error) {
+    flashNotice(error.message || "Tunnel failed", { type: "error", ms: 4500 });
+    throw error;
+  } finally {
+    renderTunnelStatus();
+  }
+}
+
+function useTunnelAsBaseUrl(cursorBaseUrl) {
+  if (!cursorBaseUrl) {
+    flashNotice("No tunnel URL yet — start the tunnel first", { type: "error" });
+    return;
+  }
+  els.settingRouterbotBase.value = cursorBaseUrl;
+  updateServerFromSettings();
+  flashNotice("Base URL updated — click Save");
+}
+
+async function copyTunnelUrl(cursorBaseUrl) {
+  if (!cursorBaseUrl) {
+    flashNotice("No URL to copy", { type: "error" });
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(cursorBaseUrl);
+    flashNotice("Copied Cursor base URL");
+  } catch {
+    window.prompt("Copy this URL:", cursorBaseUrl);
+  }
 }
 
 function updateServerFromSettings() {
+  ensureTunnelsConfig();
   config.server.tailscaleHost = els.settingTailscaleHost.value.trim();
   config.server.tailscaleServePort = Number(els.settingServePort.value);
   config.server.tailscaleFunnelPort = Number(els.settingFunnelPort.value);
   config.server.cursorBaseUrl = els.settingRouterbotBase.value.trim();
   config.server.exposedModel = els.settingExposedModel.value.trim();
   config.server.apiKey = els.settingApiKey.value;
+  config.server.tunnels.ngrokAuthtoken = els.settingNgrokAuthtoken.value.trim();
+  config.server.tunnels.ngrokDomain = els.settingNgrokDomain.value.trim();
+  config.server.tunnels.autostartCloudflared = els.settingAutostartCloudflared.checked;
+  config.server.tunnels.autostartNgrok = els.settingAutostartNgrok.checked;
   renderConnectionBanner();
 }
 
@@ -1008,7 +1204,7 @@ function paintAuthPanel(provider) {
     `);
   }
 
-  const needsCode = session.mode === "oauth-code" || flow.mode === "oauth-code" || provider === "gemini";
+  const needsCode = session.mode === "oauth-code" || flow.mode === "oauth-code" || provider === "antigravity";
   if (needsCode) {
     parts.push(`
       <div class="auth-code-row">
@@ -1099,7 +1295,7 @@ async function pollAuthCompletion(provider, maxMs = 120000) {
   const started = Date.now();
   while (Date.now() - started < maxMs) {
     await new Promise((resolve) => setTimeout(resolve, AUTH_POLL_INTERVAL_MS));
-    await refreshStatus();
+    await refreshStatus({ manual: true });
     if (statuses[provider]?.ok) {
       clearAuthPanel(provider);
       return true;
@@ -1152,7 +1348,7 @@ async function startAuth(provider, button, { force = false } = {}) {
         alreadyAuthenticated: true,
         message: body.output
       });
-      await refreshStatus();
+      await refreshStatus({ manual: true });
       authInProgress.delete(provider);
       return;
     }
@@ -1192,7 +1388,8 @@ async function submitAuthCode(provider, input, button) {
   }
   button.disabled = true;
   try {
-    const response = await apiFetch("/api/auth/gemini/code", {
+    const authPath = "/api/auth/antigravity/code";
+    const response = await apiFetch(authPath, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ code })
@@ -1214,11 +1411,46 @@ async function submitAuthCode(provider, input, button) {
   }
 }
 
+function syncProviderFieldsFromDom(provider) {
+  els.providers.querySelectorAll(`[data-provider="${provider}"]`).forEach((input) => {
+    const providerConfig = config.providers[provider];
+    if (!providerConfig) {
+      return;
+    }
+    const key = input.dataset.key;
+    if (!key) {
+      return;
+    }
+    if (input.type === "checkbox") {
+      providerConfig[key] = input.checked;
+      return;
+    }
+    if (input.type === "number") {
+      providerConfig[key] = Number(input.value);
+      return;
+    }
+    if (key === "runArgs") {
+      providerConfig[key] = input.value
+        .split(",")
+        .map((part) => part.trim())
+        .filter(Boolean);
+      return;
+    }
+    providerConfig[key] = input.value;
+  });
+}
+
 async function refreshProviderModels(provider, button) {
   button.disabled = true;
   try {
+    syncProviderFieldsFromDom(provider);
     await saveConfig();
-    const response = await apiFetch(`/api/providers/${provider}/models`, { method: "POST" });
+    const providerConfig = config.providers[provider];
+    const response = await apiFetch(`/api/providers/${provider}/models`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ provider: providerConfig })
+    });
     const body = await response.json();
     if (!response.ok) {
       throw new Error(body.error?.message ?? "Failed");
@@ -1281,10 +1513,14 @@ function prependLog(entry) {
   }
 
   if (
+    entry.type === "tunnel" ||
     entry.type === "auth-complete" ||
     (entry.type === "auth" && /signed in|logged in|sign-in completed|authorization code submitted/i.test(entry.message))
   ) {
     scheduleStatusRefresh();
+    if (entry.type === "tunnel" && !els.settingsPanel.hidden) {
+      refreshTunnelStatus();
+    }
   }
 
   if (entry.type === "auth" && /https:\/\/\S+/i.test(entry.message)) {

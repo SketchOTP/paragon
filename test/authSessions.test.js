@@ -30,3 +30,13 @@ test("ingestAuthOutput extracts Codex device URL and code", () => {
   assert.equal(session.deviceCode, "PBSZ-LN8YJ");
   assert.equal(session.mode, "device");
 });
+
+test("ingestAuthOutput extracts Antigravity Google OAuth URL", () => {
+  clearAuthSession("antigravity");
+  const session = ingestAuthOutput(
+    "antigravity",
+    "Authentication required. Please visit the URL to log in:\n  https://accounts.google.com/o/oauth2/auth?access_type=offline&client_id=x"
+  );
+  assert.ok(session.url?.startsWith("https://accounts.google.com/o/oauth2/auth"));
+  assert.equal(session.mode, "oauth-code");
+});

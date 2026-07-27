@@ -7,7 +7,7 @@ const URL_PATTERNS = [
   /https:\/\/cursor\.com\/loginDeepControl\?\S+/i,
   /https:\/\/auth\.openai\.com\/codex\/device\b/i,
   /https:\/\/auth\.openai\.com\/oauth\/authorize\?\S+/i,
-  /https:\/\/accounts\.google\.com\/o\/oauth2\/v2\/auth\S+/i
+  /https:\/\/accounts\.google\.com\/o\/oauth2\/(?:v2\/)?auth\S+/i
 ];
 
 const DEVICE_CODE_PATTERN = /\b([A-Z0-9]{4,5}-[A-Z0-9]{4,5})\b/;

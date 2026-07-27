@@ -1,0 +1,22 @@
+export const PROMPTS = [
+  { id: "chat-1", category: "chat", message: "Say hello briefly." },
+  { id: "chat-2", category: "chat", message: "What is 12 + 19?" },
+  { id: "chat-3", category: "chat", message: "One tip for writing commit messages." },
+  { id: "chat-4", category: "chat", message: "Explain APIs in one sentence." },
+  { id: "rewrite-1", category: "rewrite", message: "Rewrite professionally: hey can u send the file asap" },
+  { id: "rewrite-2", category: "rewrite", message: "Rephrase: The deploy failed due to bad config." },
+  { id: "rewrite-3", category: "rewrite", message: "Make formal: thx for the quick turnaround!" },
+  { id: "rewrite-4", category: "rewrite", message: "Polish: we should probably refactor this module soon" },
+  { id: "summarize-1", category: "summarize", message: "Summarize in 2 bullets: SmartRoute logs every routing decision." },
+  { id: "summarize-2", category: "summarize", message: "TL;DR: Cheap tasks should stay on antigravity when possible." },
+  { id: "summarize-3", category: "summarize", message: "Summarize: Provider fallback and quality escalation are separate." },
+  { id: "summarize-4", category: "summarize", message: "Brief summary of why shadow_test is the default mode." },
+  { id: "extract-1", category: "extract", message: "Extract bullets: Name: Alex; Role: PM; Email: alex@example.com" },
+  { id: "extract-2", category: "extract", message: "List action items: fix bug, write docs, ship patch" },
+  { id: "extract-3", category: "extract", message: "Extract dates and names from: Meet Sam on Tue 3pm about Q3 plan." },
+  { id: "extract-4", category: "extract", message: "Extract fields: Server=api-1; Region=us-east; Status=healthy" },
+  { id: "chat-5", category: "chat", message: "Is JSON good for config files? One sentence." },
+  { id: "rewrite-5", category: "rewrite", message: "Rewrite: router picks model using gates and scorer" },
+  { id: "summarize-5", category: "summarize", message: "Summarize balanced vs cost_saver in one line each." },
+  { id: "extract-5", category: "extract", message: "Extract tags from: #release #bugfix #routerbot v0.2.2" }
+];
