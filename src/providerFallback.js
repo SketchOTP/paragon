@@ -25,7 +25,7 @@ export const CLIENT_ERROR_MESSAGE =
 const NOISE_PATTERNS = [
   /you're out of extra usage[^\n]*/gi,
   /out of extra usage · resets[^\n]*/gi,
-  /(?:claude|codex|cursor-agent|gemini) exited with code \d+:?/gi,
+  /(?:claude|codex|cursor-agent|agy) exited with code \d+:?/gi,
   /(?:routerbot|paragon): all providers failed[^\n]*/gi
 ];
 

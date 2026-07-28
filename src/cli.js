@@ -1,12 +1,8 @@
 import { spawn } from "node:child_process";
-import { unlinkSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
 import { authFlowFor } from "./authFlows.js";
 import { clearAuthSession, getAuthSession, ingestAuthOutput } from "./authSessions.js";
 import { discoverClaudeModels } from "./claudeModels.js";
 import { discoverCodexModels } from "./codexModels.js";
-import { checkGeminiAuthStatus, loadGeminiCliModelCatalog } from "./geminiModels.js";
 import { alignProviderModel } from "./modelList.js";
 import { checkHttpStatus, listHttpModels, runHttpProvider } from "./httpProvider.js";
 import { addLog } from "./logStore.js";
@@ -54,19 +50,6 @@ const providerSpecs = {
       "--mode",
       "ask",
       ...modelArg("--model", model)
-    ]
-  },
-  gemini: {
-    authArgs: [],
-    statusArgs: null,
-    modelsArgs: null,
-    runArgs: ({ model }) => [
-      "--skip-trust",
-      "--approval-mode",
-      "plan",
-      "-o",
-      "text",
-      ...modelArg("-m", model)
     ]
   },
   // Real CLI contract verified by hand against the installed `agy` binary
@@ -126,9 +109,9 @@ export function expandArgs(args, model) {
 
 function envForProvider(provider) {
   const env = { ...process.env, NO_COLOR: "1" };
-  // antigravity is Gemini-family too (agy models lists gemini-3.x variants)
-  // and shares the same conflicting env-var surface as gemini itself.
-  if (provider !== "gemini" && provider !== "antigravity") {
+  // antigravity is Gemini-family (agy models lists gemini-3.x variants) and
+  // shares the same conflicting env-var surface gemini-cli used to.
+  if (provider !== "antigravity") {
     return env;
   }
   delete env.GEMINI_API_KEY;
@@ -173,24 +156,6 @@ export async function runStatus(provider, providerConfig, { quiet = false } = {}
     return checkHttpStatus(provider, providerConfig, { quiet });
   }
 
-  if (provider === "gemini") {
-    const result = checkGeminiAuthStatus();
-    if (!quiet || !result.ok) {
-      addLog({
-        type: "status",
-        provider,
-        level: result.ok ? "info" : "warn",
-        message: result.output
-      });
-    }
-    if (result.ok) {
-      return { stdout: result.output, stderr: "", code: 0 };
-    }
-    const error = new Error(result.output);
-    error.stderr = result.output;
-    throw error;
-  }
-
   const spec = getProviderSpec(provider, providerConfig);
   if (!spec.statusArgs?.length) {
     return { stdout: "No status command configured", stderr: "", code: 0 };
@@ -215,12 +180,7 @@ export async function listModels(provider, providerConfig) {
 
   let models = [];
 
-  if (provider === "gemini") {
-    models = loadGeminiCliModelCatalog(providerConfig.command) ?? [];
-    if (!models.length) {
-      throw new Error("Gemini CLI model catalog unavailable — reinstall or upgrade the gemini CLI");
-    }
-  } else if (provider === "claude") {
+  if (provider === "claude") {
     models = await discoverClaudeModels(providerConfig.command);
     if (!models.length) {
       throw new Error("Claude model catalog unavailable — upgrade the claude CLI");
@@ -271,10 +231,7 @@ export async function listModels(provider, providerConfig) {
   return aligned;
 }
 
-let geminiAuthSession = null;
 const authProcesses = new Map();
-
-const GEMINI_DIR = join(homedir(), ".gemini");
 
 function trackAuthProcess(provider, child) {
   authProcesses.set(provider, { pid: child.pid, startedAt: Date.now() });
@@ -296,9 +253,6 @@ function trackAuthProcess(provider, child) {
 
 function isReadyFromStatus(provider, result) {
   const out = (result.stdout || result.stderr || "").trim();
-  if (provider === "gemini") {
-    return checkGeminiAuthStatus().ok;
-  }
   if (provider === "claude") {
     try {
       return JSON.parse(out).loggedIn === true;
@@ -317,122 +271,13 @@ async function checkProviderReady(provider, providerConfig) {
   };
 }
 
-function clearGeminiCredentials() {
-  for (const name of ["oauth_creds.json"]) {
-    try {
-      unlinkSync(join(GEMINI_DIR, name));
-    } catch {
-      // ignore missing file
-    }
-  }
-}
-
 export function getAuthState(provider) {
   return {
     provider,
     flow: authFlowFor(provider),
     session: getAuthSession(provider),
-    inProgress: authProcesses.has(provider) || (provider === "gemini" && Boolean(geminiAuthSession))
+    inProgress: authProcesses.has(provider)
   };
-}
-
-function stripAnsi(text) {
-  return text.replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, "").replace(/\r/g, "");
-}
-
-function stopGeminiAuthSession(reason) {
-  if (!geminiAuthSession) {
-    return;
-  }
-  const { child } = geminiAuthSession;
-  geminiAuthSession = null;
-  try {
-    child.kill("SIGTERM");
-  } catch {
-    // ignore
-  }
-  if (reason) {
-    addLog({ type: "auth", provider: "gemini", level: "info", message: reason });
-  }
-}
-
-function startGeminiAuth(providerConfig, { force = false } = {}) {
-  stopGeminiAuthSession("Replacing pending Gemini login");
-  clearAuthSession("gemini");
-
-  if (force) {
-    clearGeminiCredentials();
-  }
-
-  const child = spawn("script", ["-qfec", providerConfig.command, "/dev/null"], {
-    cwd: process.cwd(),
-    env: { ...authEnvForProvider("gemini"), NO_BROWSER: "true" },
-    stdio: ["pipe", "pipe", "pipe"]
-  });
-
-  let buffer = "";
-  let urlLogged = false;
-
-  const handleChunk = (chunk, level) => {
-    const raw = chunk.toString();
-    buffer += raw;
-    const plain = stripAnsi(raw).trim();
-    if (plain) {
-      addLog({ type: "auth", provider: "gemini", level, message: plain });
-    }
-    const session = ingestAuthOutput("gemini", buffer);
-    if (session?.url && !urlLogged) {
-      urlLogged = true;
-      addLog({
-        type: "auth",
-        provider: "gemini",
-        level: "info",
-        message: `Open Google sign-in in your browser: ${session.url}`
-      });
-    }
-  };
-
-  child.stdout.on("data", (chunk) => handleChunk(chunk, "info"));
-  child.stderr.on("data", (chunk) => handleChunk(chunk, "warn"));
-  child.on("error", (error) => {
-    geminiAuthSession = null;
-    addLog({ type: "auth", provider: "gemini", level: "error", message: error.message });
-  });
-
-  trackAuthProcess("gemini", child);
-
-  geminiAuthSession = { child };
-  child.on("exit", () => {
-    geminiAuthSession = null;
-  });
-
-  addLog({
-    type: "auth",
-    provider: "gemini",
-    level: "info",
-    message:
-      "Gemini login started (manual OAuth). Watch Recent Activity for the Google link, sign in on your PC, then paste the authorization code in the dashboard."
-  });
-
-  return { pid: child.pid, mode: "oauth-code" };
-}
-
-export function submitGeminiAuthCode(code) {
-  const trimmed = String(code ?? "").trim();
-  if (!trimmed) {
-    throw new Error("Authorization code is required");
-  }
-  if (!geminiAuthSession?.child?.stdin?.writable) {
-    throw new Error("No Gemini login in progress. Click Google sign-in first.");
-  }
-  geminiAuthSession.child.stdin.write(`${trimmed}\n`);
-  addLog({
-    type: "auth",
-    provider: "gemini",
-    level: "info",
-    message: "Authorization code submitted — waiting for Gemini to finish login."
-  });
-  return { ok: true };
 }
 
 export async function startAuth(provider, providerConfig, { force = false } = {}) {
@@ -455,10 +300,6 @@ export async function startAuth(provider, providerConfig, { force = false } = {}
     } catch {
       // Not ready — proceed with sign-in flow.
     }
-  }
-
-  if (provider === "gemini") {
-    return startGeminiAuth(providerConfig, { force });
   }
 
   return startCliAuth(provider, providerConfig);

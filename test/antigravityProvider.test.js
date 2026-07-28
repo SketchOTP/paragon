@@ -4,6 +4,11 @@ import test from "node:test";
 import { getProviderSpec, parseModels } from "../src/cli.js";
 import { BUILTIN_PROVIDERS, defaultConfig } from "../src/defaultConfig.js";
 
+test("gemini is fully removed — EOL, confirmed via IneligibleTierError from the installed @google/gemini-cli itself", () => {
+  assert.ok(!BUILTIN_PROVIDERS.includes("gemini"));
+  assert.equal(defaultConfig.providers.gemini, undefined);
+});
+
 test("antigravity is registered as a builtin provider, disabled by default", () => {
   assert.ok(BUILTIN_PROVIDERS.includes("antigravity"));
   const provider = defaultConfig.providers.antigravity;

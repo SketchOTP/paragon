@@ -1,6 +1,6 @@
 import { DEFAULT_ORCHESTRATION_CONFIG } from "./orchestration/governorPolicy.js";
 
-export const BUILTIN_PROVIDERS = ["claude", "codex", "cursor", "gemini", "antigravity"];
+export const BUILTIN_PROVIDERS = ["claude", "codex", "cursor", "antigravity"];
 
 /** Legacy exposed-model id accepted as an alias for "paragon" (pre-rename). */
 export const LEGACY_EXPOSED_MODEL_ALIAS = "routerbot-local";
@@ -48,16 +48,6 @@ export const defaultConfig = {
       enabled: true,
       command: "cursor-agent",
       model: "sonnet-4",
-      models: [],
-      timeoutMs: 300000
-    },
-    gemini: {
-      type: "builtin",
-      label: "Gemini CLI",
-      icon: "✨",
-      enabled: true,
-      command: "gemini",
-      model: "",
       models: [],
       timeoutMs: 300000
     },

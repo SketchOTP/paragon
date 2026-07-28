@@ -8,7 +8,6 @@ import {
   parseClaudeModelListOutput
 } from "../src/claudeModels.js";
 import { loadCodexBundledCatalog } from "../src/codexModels.js";
-import { loadGeminiCliModelCatalog } from "../src/geminiModels.js";
 import { alignProviderModel, parseCodexModelsCatalog } from "../src/modelList.js";
 import { openAiBaseUrl } from "../src/httpProvider.js";
 
@@ -102,17 +101,6 @@ test("loadClaudeBundledCatalog picks up fable/mythos strings from the installed 
   if (hasFableFamily) {
     assert.ok(ids.includes("claude-fable-5"));
   }
-});
-
-test("loadGeminiCliModelCatalog does not inject alias placeholders", () => {
-  const models = loadGeminiCliModelCatalog("gemini");
-  if (!models) {
-    return;
-  }
-  for (const model of models) {
-    assert.ok(!model.name.endsWith("(alias)"), `unexpected alias placeholder: ${model.name}`);
-  }
-  assert.ok(!models.some((model) => model.id === "auto" && model.name.includes("(alias)")));
 });
 
 test("loadCodexBundledCatalog returns slugs from installed binary when present", () => {

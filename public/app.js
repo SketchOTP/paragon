@@ -1,4 +1,4 @@
-const BUILTIN_ORDER = ["claude", "codex", "cursor", "gemini", "antigravity"];
+const BUILTIN_ORDER = ["claude", "codex", "cursor", "antigravity"];
 const taskOrder = ["code", "debug", "review", "plan", "explain", "docs", "quick"];
 const API_KEY_STORAGE = "paragon-api-key";
 
@@ -16,7 +16,6 @@ const DEFAULT_PROVIDER_ICON = {
   claude: "🧠",
   codex: "⚡",
   cursor: "🖱️",
-  gemini: "✨",
   antigravity: "🪐",
   http: "🌐",
   cli: "🔧",
@@ -37,8 +36,10 @@ let newProviderIconLocked = false;
 const authUi = {
   claude: { label: "Sign in", short: "Browser" },
   codex: { label: "Device login", short: "Device" },
-  cursor: { label: "Sign in", short: "Browser" },
-  gemini: { label: "Google sign-in", short: "OAuth" }
+  cursor: { label: "Sign in", short: "Browser" }
+  // antigravity intentionally omitted — no verified dashboard-triggerable
+  // login flow (see docs/evidence). It relies on host-level auth already
+  // being set up outside of PARAGON.
 };
 
 let authFlowsMeta = { ...authUi };
@@ -1036,7 +1037,7 @@ function paintAuthPanel(provider) {
     `);
   }
 
-  const needsCode = session.mode === "oauth-code" || flow.mode === "oauth-code" || provider === "gemini";
+  const needsCode = session.mode === "oauth-code" || flow.mode === "oauth-code";
   if (needsCode) {
     parts.push(`
       <div class="auth-code-row">
@@ -1220,7 +1221,7 @@ async function submitAuthCode(provider, input, button) {
   }
   button.disabled = true;
   try {
-    const response = await apiFetch("/api/auth/gemini/code", {
+    const response = await apiFetch(`/api/auth/${provider}/code`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ code })

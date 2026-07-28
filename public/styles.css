@@ -612,15 +612,13 @@ select:focus {
   font-size: 13px;
 }
 
-.auth-code-row,
-.gemini-code-row {
+.auth-code-row {
   display: flex;
   gap: 8px;
   margin-top: 8px;
 }
 
-.auth-code-row input,
-.gemini-code-row input {
+.auth-code-row input {
   flex: 1;
 }
 

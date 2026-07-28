@@ -18,12 +18,6 @@ export const AUTH_FLOWS = {
     signInLabel: "Sign in",
     reSignInLabel: "Re-sign in",
     hint: "Opens Cursor login in your browser."
-  },
-  gemini: {
-    mode: "oauth-code",
-    signInLabel: "Google sign-in",
-    reSignInLabel: "Re-sign in",
-    hint: "Open the Google link, authorize, then paste the code below."
   }
 };
 
