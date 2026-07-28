@@ -1,8 +1,8 @@
 :root {
   color-scheme: dark;
-  /* PARAGON neon-purple identity — near-black base, purple/magenta glow,
+  /* PARAGON neon-purple identity — solid black base, purple/magenta glow,
      cyan reserved for limited secondary accents only. */
-  --bg: #0a0712;
+  --bg: #000000;
   --bg-elevated: #140f22;
   --surface-2: #1c1530;
   --surface-3: #241b3d;
@@ -21,6 +21,7 @@
   --bad-soft: rgba(248, 113, 113, 0.14);
   --on-accent: #f8f5ff;
   --glow: 0 0 26px rgba(168, 85, 247, 0.45);
+  --glow-card: 0 0 28px rgba(168, 85, 247, 0.35), 0 0 60px rgba(124, 58, 237, 0.22), 0 4px 24px rgba(0, 0, 0, 0.6);
   --radius: 14px;
   --radius-sm: 10px;
 }
@@ -63,45 +64,14 @@ select {
 
 .hero-brand {
   display: flex;
-  gap: 18px;
   align-items: center;
 }
 
-.logo-mark {
-  width: 72px;
-  height: 72px;
-  border-radius: 18px;
+.hero-header-image {
+  height: 64px;
+  width: auto;
   object-fit: contain;
-  background: #000;
-  box-shadow: var(--glow);
-  flex-shrink: 0;
-}
-
-.hero-brand h1 {
-  margin: 0;
-  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", sans-serif;
-  font-size: 34px;
-  font-weight: 600;
-  letter-spacing: -0.04em;
-  line-height: 1.05;
-  color: var(--ink);
-}
-
-h1 {
-  margin: 0;
-  font-size: 17px;
-  font-weight: 600;
-  letter-spacing: -0.01em;
-}
-
-.tagline {
-  margin: 6px 0 0;
-  color: var(--muted);
-  font-size: 15px;
-  font-weight: 400;
-  letter-spacing: -0.01em;
-  line-height: 1.35;
-  max-width: 380px;
+  display: block;
 }
 
 .hero-actions {
@@ -186,8 +156,8 @@ h1 {
   padding: 14px 16px;
   background: var(--bg-elevated);
   border-radius: var(--radius);
-  box-shadow: var(--shadow);
-  border: 1px solid var(--line);
+  box-shadow: var(--glow-card);
+  border: 1px solid rgba(168, 85, 247, 0.3);
   min-width: 0;
 }
 
