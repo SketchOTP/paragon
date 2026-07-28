@@ -102,7 +102,14 @@ const els = {
   emojiPreview: document.querySelector("#emoji-preview"),
   emojiCustom: document.querySelector("#emoji-custom"),
   emojiCancel: document.querySelector("#emoji-cancel"),
-  emojiApply: document.querySelector("#emoji-apply")
+  emojiApply: document.querySelector("#emoji-apply"),
+  refreshOrchestration: document.querySelector("#refresh-orchestration"),
+  orchOverview: document.querySelector("#orch-overview"),
+  orchContext: document.querySelector("#orch-context"),
+  orchSessions: document.querySelector("#orch-sessions"),
+  orchAgents: document.querySelector("#orch-agents"),
+  orchProviders: document.querySelector("#orch-providers"),
+  orchGovernor: document.querySelector("#orch-governor")
 };
 
 function getStoredApiKey() {
@@ -222,9 +229,12 @@ render();
 connectLogs();
 bindProviderInteractionLock();
 refreshStatus();
+refreshOrchestration();
+setInterval(refreshOrchestration, 30000);
 
 els.save.addEventListener("click", () => saveConfig({ notify: true }));
 els.refreshStatus.addEventListener("click", () => refreshStatus({ manual: true }));
+els.refreshOrchestration?.addEventListener("click", () => refreshOrchestration({ manual: true }));
 els.addProvider.addEventListener("click", openAddProviderDialog);
 els.addProviderCancel.addEventListener("click", () => els.addProviderDialog.close());
 els.newProviderType.addEventListener("change", () => {
@@ -1297,6 +1307,70 @@ function prependLog(entry) {
           mode: authFlow(provider).mode
         });
       }
+    }
+  }
+}
+
+function orchStat(label, value) {
+  return `<div class="orch-stat"><span class="orch-stat-label">${escapeHtml(label)}</span><span class="orch-stat-value">${escapeHtml(String(value))}</span></div>`;
+}
+
+function orchRow(label, value) {
+  return `<div class="orch-row"><span>${escapeHtml(label)}</span><span>${escapeHtml(String(value))}</span></div>`;
+}
+
+function renderCountMap(container, map, emptyText) {
+  const entries = Object.entries(map ?? {});
+  container.innerHTML = entries.length
+    ? entries.map(([key, count]) => orchRow(key, count)).join("")
+    : `<p class="orch-empty">${escapeHtml(emptyText)}</p>`;
+}
+
+async function refreshOrchestration({ manual = false } = {}) {
+  if (els.refreshOrchestration) {
+    els.refreshOrchestration.disabled = true;
+  }
+  try {
+    const [statusRes, usageRes, decisionsRes] = await Promise.all([
+      apiFetch("/api/orchestration/status"),
+      apiFetch("/api/orchestration/usage"),
+      apiFetch("/api/orchestration/decisions?limit=10")
+    ]);
+    if (!statusRes.ok || !usageRes.ok || !decisionsRes.ok) {
+      return;
+    }
+    const status = await statusRes.json();
+    const usage = await usageRes.json();
+    const decisions = await decisionsRes.json();
+
+    els.orchOverview.innerHTML = [
+      orchStat("Active jobs", status.activeJobs),
+      orchStat("Active sessions", status.activeSessions),
+      orchStat("Active runs", status.activeRuns),
+      orchStat("Root vs child", `${usage.byRootVsChild?.root ?? 0} / ${usage.byRootVsChild?.child ?? 0}`),
+      orchStat("Max observed context", `${status.maxObservedContextTokens ?? 0} tok`),
+      orchStat("Longest active session", `${status.longestActiveSessionMinutes ?? 0}m`),
+      orchStat("Enforcement mode", status.enforcementMode ?? "shadow")
+    ].join("");
+
+    renderCountMap(els.orchContext, usage.byContextBand, "No requests observed yet.");
+    renderCountMap(els.orchSessions, usage.bySessionDurationBand, "No sessions observed yet.");
+    renderCountMap(els.orchAgents, usage.byAgentRole, "No runs observed yet.");
+    renderCountMap(els.orchProviders, usage.byProvider, "No provider executions observed yet.");
+
+    els.orchGovernor.innerHTML = decisions.items?.length
+      ? decisions.items
+          .map(
+            (d) =>
+              `<div class="orch-decision"><span class="orch-decision-rule">${escapeHtml(d.policyRule)}</span> — ${escapeHtml(d.explanation)}</div>`
+          )
+          .join("")
+      : '<p class="orch-empty">No governor decisions recorded yet — shadow mode has nothing to propose.</p>';
+  } catch {
+    // Best-effort dashboard panel; a failed fetch here must not disturb the rest of the UI.
+  } finally {
+    if (els.refreshOrchestration) {
+      els.refreshOrchestration.disabled = false;
     }
   }
 }

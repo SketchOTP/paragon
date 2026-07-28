@@ -226,6 +226,37 @@
           <div id="logs" class="logs"></div>
         </article>
       </section>
+
+      <section class="panel orchestration-panel" id="orchestration-panel">
+        <div class="panel-head">
+          <h2>Orchestration Observability</h2>
+          <button type="button" id="refresh-orchestration" class="btn ghost">Refresh</button>
+        </div>
+        <p class="shadow-banner">Shadow mode: PARAGON is measuring and recommending actions but is not changing execution.</p>
+        <div class="orch-grid" id="orch-overview"></div>
+        <div class="orch-columns">
+          <div class="orch-col">
+            <h3>Context</h3>
+            <div id="orch-context"></div>
+          </div>
+          <div class="orch-col">
+            <h3>Sessions</h3>
+            <div id="orch-sessions"></div>
+          </div>
+          <div class="orch-col">
+            <h3>Agents</h3>
+            <div id="orch-agents"></div>
+          </div>
+          <div class="orch-col">
+            <h3>Providers</h3>
+            <div id="orch-providers"></div>
+          </div>
+        </div>
+        <div class="orch-col orch-governor">
+          <h3>Governor — recent proposed actions</h3>
+          <div id="orch-governor"></div>
+        </div>
+      </section>
     </main>
     <script src="/app.js" type="module"></script>
   </body>
