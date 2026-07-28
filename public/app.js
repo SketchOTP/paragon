@@ -1041,10 +1041,10 @@ function paintAuthPanel(provider) {
   if (needsCode) {
     parts.push(`
       <div class="auth-code-row">
-        <input type="text" placeholder="Paste authorization code from Google" data-auth-code="${escapeAttr(provider)}" autocomplete="off" />
+        <input type="text" placeholder="Paste authorization code" data-auth-code="${escapeAttr(provider)}" autocomplete="off" />
         <button type="button" class="btn secondary sm" data-auth-code-submit="${escapeAttr(provider)}">Submit code</button>
       </div>
-      <p class="auth-hint auth-code-note">After Google redirects you, copy the code and paste it here. This field stays open until you submit.</p>
+      <p class="auth-hint auth-code-note">After the browser step, copy the code shown there and paste it here. This field stays open until you submit.</p>
     `);
   }
 

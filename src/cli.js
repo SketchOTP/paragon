@@ -234,7 +234,7 @@ export async function listModels(provider, providerConfig) {
 const authProcesses = new Map();
 
 function trackAuthProcess(provider, child) {
-  authProcesses.set(provider, { pid: child.pid, startedAt: Date.now() });
+  authProcesses.set(provider, { pid: child.pid, startedAt: Date.now(), child });
   const finish = (code, signal) => {
     authProcesses.delete(provider);
     addLog({
@@ -316,7 +316,10 @@ function startCliAuth(provider, providerConfig) {
   const child = spawn(providerConfig.command, spec.authArgs, {
     cwd: process.cwd(),
     env: authEnvForProvider(provider),
-    stdio: ["ignore", "pipe", "pipe"]
+    // stdin must be writable, not "ignore" — some CLIs (claude's current
+    // login flow, confirmed by hand: "Paste code here if prompted >") need
+    // a manual authorization code written back after the browser step.
+    stdio: ["pipe", "pipe", "pipe"]
   });
 
   addLog({
@@ -362,6 +365,30 @@ function startCliAuth(provider, providerConfig) {
   trackAuthProcess(provider, child);
 
   return { pid: child.pid, mode: authFlowFor(provider).mode };
+}
+
+/**
+ * Writes a manually-copied authorization code back to a provider's
+ * in-progress login process. Generic across providers — anything spawned
+ * via startCliAuth() is trackable here, not just one hardcoded provider.
+ */
+export function submitAuthCode(provider, code) {
+  const trimmed = String(code ?? "").trim();
+  if (!trimmed) {
+    throw new Error("Authorization code is required");
+  }
+  const entry = authProcesses.get(provider);
+  if (!entry?.child?.stdin?.writable) {
+    throw new Error(`No ${provider} login in progress. Click Sign in first.`);
+  }
+  entry.child.stdin.write(`${trimmed}\n`);
+  addLog({
+    type: "auth",
+    provider,
+    level: "info",
+    message: "Authorization code submitted — waiting for sign-in to finish."
+  });
+  return { ok: true };
 }
 
 export function parseModels(provider, stdout) {

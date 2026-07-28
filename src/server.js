@@ -8,7 +8,7 @@ import { dataDir, readConfig, writeConfig } from "./configStore.js";
 import { getEnv } from "./env.js";
 import { getLogs, subscribeLogs, addLog } from "./logStore.js";
 import { registerOpenAiRoutes } from "./openaiApi.js";
-import { getAuthSession, getAuthState, listModels, runStatus, startAuth } from "./cli.js";
+import { getAuthSession, getAuthState, listModels, runStatus, startAuth, submitAuthCode } from "./cli.js";
 import { tailscaleUrls } from "./tailscaleUrls.js";
 import { createOrchestrationRuntime } from "./orchestration/telemetry.js";
 import { registerOrchestrationRoutes } from "./orchestration/api.js";
@@ -130,6 +130,17 @@ app.post("/api/auth/:provider/start", async (req, res) => {
     res.json(result);
   } catch (error) {
     res.status(400).json({ error: { message: error.message } });
+  }
+});
+
+app.post("/api/auth/:provider/code", async (req, res) => {
+  try {
+    res.json(submitAuthCode(req.params.provider, req.body?.code));
+    invalidateStatusCache();
+  } catch (error) {
+    res.status(400).json({
+      error: { message: error.message, type: "paragon_auth_code_error" }
+    });
   }
 });
 

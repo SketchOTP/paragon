@@ -37,10 +37,21 @@ export function ingestAuthOutput(provider, text) {
       current.updatedAt = new Date().toISOString();
       if (current.url.includes("auth.openai.com/codex/device")) {
         current.mode = "device";
-      } else if (current.url.includes("accounts.google.com")) {
+      } else if (current.url.includes("accounts.google.com") || current.url.includes("claude.com/cai/oauth")) {
+        // claude's current login flow (verified by hand: "Paste code here
+        // if prompted >") requires manually copying a code from the
+        // browser redirect and pasting it back — same shape as the
+        // google oauth-code flow, just a different provider.
         current.mode = "oauth-code";
       }
     }
+  }
+
+  // Fallback signal independent of URL matching — catches the prompt even
+  // if a future CLI version rewords or omits the URL line.
+  if (/paste code here/i.test(plain)) {
+    current.mode = "oauth-code";
+    current.updatedAt = new Date().toISOString();
   }
 
   if (current.mode === "device" || plain.toLowerCase().includes("one-time code")) {

@@ -1,11 +1,17 @@
 /** Auth flow metadata for built-in CLI providers (dashboard UX). */
 
 export const AUTH_FLOWS = {
+  // Verified by hand against the installed claude CLI (2.1.220):
+  // `claude auth login` opens a browser, then prompts
+  // "Paste code here if prompted >" on its own stdin — a manual
+  // code-exchange step, not pure browser-only sign-in. Confirmed via
+  // `script -qfec "claude auth login" <logfile>` to capture the real
+  // (non-interactive) output rather than assumed.
   claude: {
-    mode: "browser",
+    mode: "oauth-code",
     signInLabel: "Sign in",
     reSignInLabel: "Re-sign in",
-    hint: "Opens Claude in your browser. Complete sign-in there."
+    hint: "Open the Claude link, authorize, then paste the code below."
   },
   codex: {
     mode: "device",
