@@ -16,7 +16,20 @@ function logParagonRequest(message, { level = "info", provider = "paragon" } = {
   addLog({ type: "request", provider, level, message });
 }
 
-export function registerOpenAiRoutes(app, getConfig) {
+/**
+ * Shadow-only instrumentation hook. All orchestration recording is
+ * best-effort — a storage failure must never affect the actual response.
+ */
+async function safely(fn, fallback = null) {
+  try {
+    return await fn();
+  } catch (error) {
+    console.warn(`orchestration: instrumentation error (non-fatal): ${error.message}`);
+    return fallback;
+  }
+}
+
+export function registerOpenAiRoutes(app, getConfig, orchestration) {
   app.use("/v1", createAuthMiddleware(getConfig, { allowLocalhost: false }));
 
   app.get("/v1/models", async (req, res) => {
@@ -51,6 +64,17 @@ export function registerOpenAiRoutes(app, getConfig) {
     const primary = pickEnabledProvider(config, routedProvider);
     const attempts = buildProviderAttempts(config, primary);
     const started = Date.now();
+
+    const telemetry = orchestration
+      ? await safely(() => orchestration.beginRequest(req.headers, req.body))
+      : null;
+    if (telemetry) {
+      res.set(telemetry.responseHeaders);
+      await safely(() =>
+        orchestration.recordRoute(telemetry.run.id, { provider: primary, routeClassification: task, fallbackPosition: 0 })
+      );
+    }
+
     logParagonRequest(
       req.body.stream
         ? `POST /v1/chat/completions (stream) · task ${task} → ${primary}`
@@ -67,7 +91,7 @@ export function registerOpenAiRoutes(app, getConfig) {
 
     try {
       if (req.body.stream) {
-        await streamCompletion({ res, config, attempts, prompt, started });
+        await streamCompletion({ res, config, attempts, prompt, started, orchestration, telemetry });
         return;
       }
 
@@ -77,10 +101,23 @@ export function registerOpenAiRoutes(app, getConfig) {
         `POST /v1/chat/completions → 200 (${durationMs}ms) via ${provider}${provider !== primary ? ` (routed ${primary})` : ""}`,
         { provider }
       );
+      const content = sanitizeAssistantContent(result.stdout);
+      if (telemetry) {
+        await safely(() =>
+          orchestration.finishRequest(telemetry.run.id, {
+            success: true,
+            provider,
+            model: config.providers[provider]?.model,
+            fallbackPosition: attempts.findIndex((a) => a.name === provider),
+            responseText: content,
+            contextEstimate: telemetry.contextEstimate
+          })
+        );
+      }
       res.json(
         chatCompletion({
           model: config.server.exposedModel,
-          content: sanitizeAssistantContent(result.stdout),
+          content,
           durationMs,
           provider,
           routedProvider: primary
@@ -97,6 +134,16 @@ export function registerOpenAiRoutes(app, getConfig) {
         level: "error",
         message: error.message
       });
+      if (telemetry) {
+        await safely(() =>
+          orchestration.finishRequest(telemetry.run.id, {
+            success: false,
+            provider: primary,
+            errorClassification: error.message,
+            contextEstimate: telemetry.contextEstimate
+          })
+        );
+      }
       res.status(500).json({
         error: {
           message: CLIENT_ERROR_MESSAGE,
@@ -174,7 +221,7 @@ async function runWithFallback(attempts, prompt, onChunk) {
   throw new Error(CLIENT_ERROR_MESSAGE);
 }
 
-async function streamCompletion({ res, config, attempts, prompt, started }) {
+async function streamCompletion({ res, config, attempts, prompt, started, orchestration, telemetry }) {
   const id = `chatcmpl-${Date.now()}`;
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache, no-transform");
@@ -186,7 +233,9 @@ async function streamCompletion({ res, config, attempts, prompt, started }) {
   };
 
   let roleSent = false;
+  let streamedText = "";
   const onChunk = (chunk) => {
+    streamedText += chunk;
     if (!roleSent) {
       send({
         id,
@@ -212,6 +261,18 @@ async function streamCompletion({ res, config, attempts, prompt, started }) {
     logParagonRequest(`POST /v1/chat/completions (stream) → 200 (${durationMs}ms) via ${provider}`, {
       provider
     });
+    if (telemetry) {
+      await safely(() =>
+        orchestration.finishRequest(telemetry.run.id, {
+          success: true,
+          provider,
+          model: config.providers[provider]?.model,
+          fallbackPosition: attempts.findIndex((a) => a.name === provider),
+          responseText: streamedText,
+          contextEstimate: telemetry.contextEstimate
+        })
+      );
+    }
     send({
       id,
       object: "chat.completion.chunk",
@@ -227,6 +288,16 @@ async function streamCompletion({ res, config, attempts, prompt, started }) {
       level: "error",
       provider: attempts[0]?.name ?? "paragon"
     });
+    if (telemetry) {
+      await safely(() =>
+        orchestration.finishRequest(telemetry.run.id, {
+          success: false,
+          provider: attempts[0]?.name ?? null,
+          errorClassification: error.message,
+          contextEstimate: telemetry.contextEstimate
+        })
+      );
+    }
     if (!roleSent) {
       send({
         id,

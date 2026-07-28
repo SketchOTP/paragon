@@ -4,6 +4,7 @@ import { generateApiKey } from "./auth.js";
 import { migrateToParagon } from "./configMigrate.js";
 import { BUILTIN_PROVIDERS, defaultConfig } from "./defaultConfig.js";
 import { getEnv } from "./env.js";
+import { mergeOrchestrationConfig } from "./orchestration/governorPolicy.js";
 
 const dataDir = path.resolve(process.cwd(), "data");
 const configPath = path.join(dataDir, "config.json");
@@ -32,7 +33,8 @@ export function mergeConfig(base, incoming) {
       ...incoming?.routing,
       taskRoutes: { ...base.routing.taskRoutes, ...incoming?.routing?.taskRoutes },
       fallbackChain: incoming?.routing?.fallbackChain ?? base.routing.fallbackChain
-    }
+    },
+    orchestration: mergeOrchestrationConfig(base.orchestration, incoming?.orchestration)
   };
 }
 

@@ -4,12 +4,14 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { AUTH_FLOWS } from "./authFlows.js";
 import { createAuthMiddleware } from "./auth.js";
-import { readConfig, writeConfig } from "./configStore.js";
+import { dataDir, readConfig, writeConfig } from "./configStore.js";
 import { getEnv } from "./env.js";
 import { getLogs, subscribeLogs, addLog } from "./logStore.js";
 import { registerOpenAiRoutes } from "./openaiApi.js";
 import { getAuthSession, getAuthState, listModels, runStatus, startAuth, submitGeminiAuthCode } from "./cli.js";
 import { tailscaleUrls } from "./tailscaleUrls.js";
+import { createOrchestrationRuntime } from "./orchestration/telemetry.js";
+import { registerOrchestrationRoutes } from "./orchestration/api.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 let cachedConfig = await readConfig();
@@ -21,6 +23,11 @@ app.use(express.static(path.resolve(__dirname, "../public")));
 
 const getConfig = async () => cachedConfig;
 const adminAuth = createAuthMiddleware(getConfig, { allowLocalhost: true });
+
+const orchestration = createOrchestrationRuntime({
+  dataDir,
+  getPolicy: () => cachedConfig.orchestration
+});
 
 const STATUS_CACHE_MS = 15000;
 let statusSnapshot = { at: 0, body: null };
@@ -186,7 +193,12 @@ app.get("/api/logs/stream", (req, res) => {
   req.on("close", unsubscribe);
 });
 
-registerOpenAiRoutes(app, getConfig);
+registerOpenAiRoutes(app, getConfig, orchestration);
+// Mounted after `app.use("/api", adminAuth)` above, so these inherit admin auth.
+registerOrchestrationRoutes(app, orchestration, getConfig, async (next) => {
+  cachedConfig = await writeConfig(next);
+  return cachedConfig;
+});
 
 const host = getEnv("HOST") ?? cachedConfig.server.host;
 const port = Number(getEnv("PORT") ?? cachedConfig.server.port);

@@ -1,3 +1,5 @@
+import { DEFAULT_ORCHESTRATION_CONFIG } from "./orchestration/governorPolicy.js";
+
 export const BUILTIN_PROVIDERS = ["claude", "codex", "cursor", "gemini"];
 
 /** Legacy exposed-model id accepted as an alias for "paragon" (pre-rename). */
@@ -72,5 +74,6 @@ export const defaultConfig = {
       docs: "claude",
       quick: "cursor"
     }
-  }
+  },
+  orchestration: DEFAULT_ORCHESTRATION_CONFIG
 };
