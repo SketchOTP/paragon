@@ -1,5 +1,7 @@
 <p align="center">
-  <img src="public/paragon.png" alt="PARAGON" width="120" />
+  <table><tr><td bgcolor="#000000" align="center">
+    <img src="public/paragon-banner.png" alt="PARAGON banner" width="480" />
+  </td></tr></table>
 </p>
 
 <h1 align="center">PARAGON</h1>

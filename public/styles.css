@@ -62,7 +62,8 @@ select {
   width: 72px;
   height: 72px;
   border-radius: 18px;
-  object-fit: cover;
+  object-fit: contain;
+  background: #000;
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.1);
   flex-shrink: 0;
 }
