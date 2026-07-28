@@ -60,6 +60,10 @@ build_path() {
     /usr/local/bin
     /usr/bin
     /bin
+    # Several provider CLIs (codex, chromium, etc.) ship as snap packages on
+    # this host — without this, spawn("codex", ...) fails ENOENT even when
+    # `codex` resolves fine in an interactive login shell.
+    /snap/bin
   )
   local IFS=:
   echo "${parts[*]}"

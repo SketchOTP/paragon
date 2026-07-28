@@ -54,3 +54,12 @@ test("install-systemd.sh substitutes every placeholder deploy/paragon-tailscale.
     assert.ok(installScript.includes(placeholder), `install-systemd.sh must substitute ${placeholder}`);
   }
 });
+
+test("install-systemd.sh's service PATH includes /snap/bin (snap-packaged provider CLIs like codex)", () => {
+  const installScript = fs.readFileSync(path.join(repoRoot, "scripts/install-systemd.sh"), "utf8");
+  const buildPathBody = installScript.slice(
+    installScript.indexOf("build_path()"),
+    installScript.indexOf("\n}", installScript.indexOf("build_path()"))
+  );
+  assert.match(buildPathBody, /\/snap\/bin/);
+});
