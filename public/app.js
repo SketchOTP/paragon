@@ -1,6 +1,6 @@
 const BUILTIN_ORDER = ["claude", "codex", "cursor", "gemini"];
 const taskOrder = ["code", "debug", "review", "plan", "explain", "docs", "quick"];
-const API_KEY_STORAGE = "routerbot-api-key";
+const API_KEY_STORAGE = "paragon-api-key";
 
 const TASK_ICONS = {
   code: "{ }",
@@ -63,7 +63,7 @@ const els = {
   logs: document.querySelector("#logs"),
   save: document.querySelector("#save"),
   refreshStatus: document.querySelector("#refresh-status"),
-  routerbotBaseUrl: document.querySelector("#routerbot-base-url"),
+  paragonBaseUrl: document.querySelector("#paragon-base-url"),
   modelName: document.querySelector("#model-name"),
   apiKey: document.querySelector("#api-key"),
   healthGauge: document.querySelector("#health-gauge"),
@@ -85,7 +85,7 @@ const els = {
   settingTailscaleHost: document.querySelector("#setting-tailscale-host"),
   settingServePort: document.querySelector("#setting-serve-port"),
   settingFunnelPort: document.querySelector("#setting-funnel-port"),
-  settingRouterbotBase: document.querySelector("#setting-routerbot-base"),
+  settingParagonBase: document.querySelector("#setting-paragon-base"),
   settingExposedModel: document.querySelector("#setting-exposed-model"),
   settingApiKey: document.querySelector("#setting-api-key"),
   settingsPanel: document.querySelector("#settings-panel"),
@@ -246,7 +246,7 @@ els.addProviderForm.addEventListener("submit", addProvider);
 els.settingTailscaleHost.addEventListener("input", updateServerFromSettings);
 els.settingServePort.addEventListener("input", updateServerFromSettings);
 els.settingFunnelPort.addEventListener("input", updateServerFromSettings);
-els.settingRouterbotBase.addEventListener("input", updateServerFromSettings);
+els.settingParagonBase.addEventListener("input", updateServerFromSettings);
 els.settingExposedModel.addEventListener("input", updateServerFromSettings);
 els.settingApiKey.addEventListener("input", updateServerFromSettings);
 els.toggleSettings.addEventListener("click", () => {
@@ -355,7 +355,7 @@ function tailscaleFromConfig(server) {
   const funnelPort = server.tailscaleFunnelPort ?? 10000;
   const base = `https://${host}`;
   return {
-    routerbotBase: (server.cursorBaseUrl || "").trim() || `${base}:${funnelPort}/v1`
+    paragonBase: (server.cursorBaseUrl || "").trim() || `${base}:${funnelPort}/v1`
   };
 }
 
@@ -363,11 +363,11 @@ function renderConnectionBanner() {
   const localBase = `${location.protocol}//127.0.0.1:${config.server.port ?? 4117}/v1`;
   const ts = tailscaleFromConfig(config.server);
   const override = (config.server.cursorBaseUrl || "").trim();
-  const routerbotBase = override || ts?.routerbotBase || localBase;
+  const paragonBase = override || ts?.paragonBase || localBase;
 
-  els.routerbotBaseUrl.textContent = routerbotBase.replace(/^https?:\/\//, "").slice(0, 42);
-  els.routerbotBaseUrl.title = routerbotBase;
-  els.modelName.textContent = config.server.exposedModel || "routerbot-local";
+  els.paragonBaseUrl.textContent = paragonBase.replace(/^https?:\/\//, "").slice(0, 42);
+  els.paragonBaseUrl.title = paragonBase;
+  els.modelName.textContent = config.server.exposedModel || "paragon";
   els.apiKey.textContent = config.server.apiKey ? "••••••••" : "—";
 }
 
@@ -430,7 +430,7 @@ function render() {
   els.settingTailscaleHost.value = config.server.tailscaleHost ?? "";
   els.settingServePort.value = config.server.tailscaleServePort ?? 9420;
   els.settingFunnelPort.value = config.server.tailscaleFunnelPort ?? 10000;
-  els.settingRouterbotBase.value = config.server.cursorBaseUrl ?? "";
+  els.settingParagonBase.value = config.server.cursorBaseUrl ?? "";
   els.settingExposedModel.value = config.server.exposedModel ?? "";
   els.settingApiKey.value = config.server.apiKey ?? "";
 
@@ -444,7 +444,7 @@ function updateServerFromSettings() {
   config.server.tailscaleHost = els.settingTailscaleHost.value.trim();
   config.server.tailscaleServePort = Number(els.settingServePort.value);
   config.server.tailscaleFunnelPort = Number(els.settingFunnelPort.value);
-  config.server.cursorBaseUrl = els.settingRouterbotBase.value.trim();
+  config.server.cursorBaseUrl = els.settingParagonBase.value.trim();
   config.server.exposedModel = els.settingExposedModel.value.trim();
   config.server.apiKey = els.settingApiKey.value;
   renderConnectionBanner();
