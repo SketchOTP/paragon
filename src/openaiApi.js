@@ -1,5 +1,6 @@
 import { createAuthMiddleware } from "./auth.js";
 import { classifyTask } from "./taskClassifier.js";
+import { LEGACY_EXPOSED_MODEL_ALIAS } from "./defaultConfig.js";
 import { messagesToPrompt } from "./prompt.js";
 import { runProvider } from "./cli.js";
 import { addLog } from "./logStore.js";
@@ -11,7 +12,7 @@ import {
   sanitizeAssistantContent
 } from "./providerFallback.js";
 
-function logRouterbotRequest(message, { level = "info", provider = "routerbot" } = {}) {
+function logParagonRequest(message, { level = "info", provider = "paragon" } = {}) {
   addLog({ type: "request", provider, level, message });
 }
 
@@ -20,7 +21,7 @@ export function registerOpenAiRoutes(app, getConfig) {
 
   app.get("/v1/models", async (req, res) => {
     const config = await getConfig();
-    logRouterbotRequest("GET /v1/models");
+    logParagonRequest("GET /v1/models");
     res.json({
       object: "list",
       data: [
@@ -28,7 +29,15 @@ export function registerOpenAiRoutes(app, getConfig) {
           id: config.server.exposedModel,
           object: "model",
           created: 0,
-          owned_by: "routerbot"
+          owned_by: "paragon"
+        },
+        // Deprecated alias, kept for one migration release so existing
+        // clients pinned to the pre-rename model id keep resolving.
+        {
+          id: LEGACY_EXPOSED_MODEL_ALIAS,
+          object: "model",
+          created: 0,
+          owned_by: "paragon"
         }
       ]
     });
@@ -42,7 +51,7 @@ export function registerOpenAiRoutes(app, getConfig) {
     const primary = pickEnabledProvider(config, routedProvider);
     const attempts = buildProviderAttempts(config, primary);
     const started = Date.now();
-    logRouterbotRequest(
+    logParagonRequest(
       req.body.stream
         ? `POST /v1/chat/completions (stream) · task ${task} → ${primary}`
         : `POST /v1/chat/completions · task ${task} → ${primary}`,
@@ -64,7 +73,7 @@ export function registerOpenAiRoutes(app, getConfig) {
 
       const { provider, result } = await runWithFallback(attempts, prompt);
       const durationMs = Date.now() - started;
-      logRouterbotRequest(
+      logParagonRequest(
         `POST /v1/chat/completions → 200 (${durationMs}ms) via ${provider}${provider !== primary ? ` (routed ${primary})` : ""}`,
         { provider }
       );
@@ -78,7 +87,7 @@ export function registerOpenAiRoutes(app, getConfig) {
         })
       );
     } catch (error) {
-      logRouterbotRequest(`POST /v1/chat/completions → ${res.statusCode ?? 500}`, {
+      logParagonRequest(`POST /v1/chat/completions → ${res.statusCode ?? 500}`, {
         level: "error",
         provider: primary
       });
@@ -91,7 +100,7 @@ export function registerOpenAiRoutes(app, getConfig) {
       res.status(500).json({
         error: {
           message: CLIENT_ERROR_MESSAGE,
-          type: "routerbot_provider_error",
+          type: "paragon_provider_error",
           provider: primary
         }
       });
@@ -200,7 +209,7 @@ async function streamCompletion({ res, config, attempts, prompt, started }) {
   try {
     const { provider } = await runWithFallback(attempts, prompt, onChunk);
     const durationMs = Date.now() - started;
-    logRouterbotRequest(`POST /v1/chat/completions (stream) → 200 (${durationMs}ms) via ${provider}`, {
+    logParagonRequest(`POST /v1/chat/completions (stream) → 200 (${durationMs}ms) via ${provider}`, {
       provider
     });
     send({
@@ -209,14 +218,14 @@ async function streamCompletion({ res, config, attempts, prompt, started }) {
       created: Math.floor(Date.now() / 1000),
       model: config.server.exposedModel,
       choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
-      routerbot: { provider, durationMs: Date.now() - started }
+      paragon: { provider, durationMs: Date.now() - started }
     });
     res.write("data: [DONE]\n\n");
     res.end();
   } catch (error) {
-    logRouterbotRequest(`POST /v1/chat/completions (stream) → error`, {
+    logParagonRequest(`POST /v1/chat/completions (stream) → error`, {
       level: "error",
-      provider: attempts[0]?.name ?? "routerbot"
+      provider: attempts[0]?.name ?? "paragon"
     });
     if (!roleSent) {
       send({
@@ -258,7 +267,7 @@ function chatCompletion({ model, content, durationMs, provider, routedProvider }
     object: "chat.completion",
     created: Math.floor(Date.now() / 1000),
     model,
-    routerbot: {
+    paragon: {
       durationMs,
       provider,
       routedProvider,

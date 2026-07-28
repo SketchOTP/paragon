@@ -1,7 +1,9 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { generateApiKey } from "./auth.js";
+import { migrateToParagon } from "./configMigrate.js";
 import { BUILTIN_PROVIDERS, defaultConfig } from "./defaultConfig.js";
+import { getEnv } from "./env.js";
 
 const dataDir = path.resolve(process.cwd(), "data");
 const configPath = path.join(dataDir, "config.json");
@@ -35,20 +37,23 @@ export function mergeConfig(base, incoming) {
 }
 
 function applyEnvOverrides(config) {
-  if (process.env.ROUTERBOT_API_KEY) {
-    config.server.apiKey = process.env.ROUTERBOT_API_KEY;
+  const apiKey = getEnv("API_KEY");
+  if (apiKey) {
+    config.server.apiKey = apiKey;
   }
-  if (process.env.ROUTERBOT_HOST) {
-    config.server.host = process.env.ROUTERBOT_HOST;
+  const host = getEnv("HOST");
+  if (host) {
+    config.server.host = host;
   }
-  if (process.env.ROUTERBOT_PORT) {
-    config.server.port = Number(process.env.ROUTERBOT_PORT);
+  const port = getEnv("PORT");
+  if (port) {
+    config.server.port = Number(port);
   }
   return config;
 }
 
 async function ensureApiKey(config, persist) {
-  if (process.env.ROUTERBOT_API_KEY || config.server.apiKey) {
+  if (getEnv("API_KEY") || config.server.apiKey) {
     return config;
   }
   const next = {
@@ -58,7 +63,7 @@ async function ensureApiKey(config, persist) {
   if (persist) {
     await fs.mkdir(dataDir, { recursive: true });
     await fs.writeFile(configPath, `${JSON.stringify(next, null, 2)}\n`, "utf8");
-    console.log("Generated RouterBot API key (saved to data/config.json)");
+    console.log("Generated PARAGON API key (saved to data/config.json)");
     console.log(`  ${next.server.apiKey}`);
   }
   return next;
@@ -69,19 +74,21 @@ export async function readConfig() {
   try {
     const raw = await fs.readFile(configPath, "utf8");
     config = mergeConfig(defaultConfig, JSON.parse(raw));
+    config = migrateToParagon(config);
     config = await ensureApiKey(config, false);
   } catch (error) {
     if (error.code !== "ENOENT") {
       console.warn(`Could not read config, using defaults: ${error.message}`);
     }
     config = mergeConfig(defaultConfig, {});
+    config = migrateToParagon(config);
     config = await ensureApiKey(config, true);
   }
   return applyEnvOverrides(config);
 }
 
 export async function writeConfig(nextConfig) {
-  const merged = mergeConfig(defaultConfig, nextConfig);
+  const merged = migrateToParagon(mergeConfig(defaultConfig, nextConfig));
   await fs.mkdir(dataDir, { recursive: true });
   await fs.writeFile(configPath, `${JSON.stringify(merged, null, 2)}\n`, "utf8");
   return applyEnvOverrides(merged);

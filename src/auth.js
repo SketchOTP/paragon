@@ -32,8 +32,8 @@ export function createAuthMiddleware(getConfig, { allowLocalhost = false } = {})
     if (!expectedKey) {
       res.status(503).json({
         error: {
-          message: "RouterBot API key is not configured",
-          type: "routerbot_auth_error"
+          message: "PARAGON API key is not configured",
+          type: "paragon_auth_error"
         }
       });
       return;
@@ -48,8 +48,8 @@ export function createAuthMiddleware(getConfig, { allowLocalhost = false } = {})
     }
     res.status(401).json({
       error: {
-        message: "Missing or invalid RouterBot API key",
-        type: "routerbot_auth_error"
+        message: "Missing or invalid PARAGON API key",
+        type: "paragon_auth_error"
       }
     });
   };
