@@ -26,7 +26,7 @@ const NOISE_PATTERNS = [
   /you're out of extra usage[^\n]*/gi,
   /out of extra usage · resets[^\n]*/gi,
   /(?:claude|codex|cursor-agent|gemini) exited with code \d+:?/gi,
-  /routerbot: all providers failed[^\n]*/gi
+  /(?:routerbot|paragon): all providers failed[^\n]*/gi
 ];
 
 /** Strip provider billing/errors from text sent to Cursor (dashboard logs stay verbose). */

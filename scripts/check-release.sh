@@ -24,7 +24,8 @@ if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   fi
 fi
 
-test -f public/routerbot.png || { echo "FAIL: missing public/routerbot.png" >&2; exit 1; }
+test -f public/paragon-logo.png || { echo "FAIL: missing public/paragon-logo.png" >&2; exit 1; }
+test -f public/paragon-banner.png || { echo "FAIL: missing public/paragon-banner.png" >&2; exit 1; }
 test -f LICENSE || { echo "FAIL: missing LICENSE" >&2; exit 1; }
 
 echo "OK: release checks passed"

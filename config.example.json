@@ -2,7 +2,7 @@
   "server": {
     "host": "127.0.0.1",
     "port": 4117,
-    "exposedModel": "routerbot-local",
+    "exposedModel": "paragon",
     "apiKey": "",
     "tailscaleHost": "your-machine.tailXXXX.ts.net",
     "tailscaleServePort": 9420,

@@ -1,12 +1,12 @@
 # Security
 
-RouterBot exposes an OpenAI-compatible API and a web dashboard on the same HTTP server. Treat it like any service that can run code and read secrets on the host.
+PARAGON exposes an OpenAI-compatible API and a web dashboard on the same HTTP server. Treat it like any service that can run code and read secrets on the host.
 
 ## API key
 
-- RouterBot generates a random API key on first startup and saves it to `data/config.json` (see README → **API key**).
+- PARAGON generates a random API key on first startup and saves it to `data/config.json` (see README → **API key**).
 - The same key protects **both** `/v1/*` (OpenAI-compatible API) and `/api/*` (dashboard).
-- Set `ROUTERBOT_API_KEY` in the environment to override the config file.
+- Set `PARAGON_API_KEY` in the environment to override the config file (deprecated `ROUTERBOT_API_KEY` still works for one migration release).
 - **Never** commit `data/config.json` or share your API key publicly.
 
 When accessing the dashboard over Tailscale or a tunnel, enter the API key in the prompt (stored in browser session storage for that tab).
@@ -15,7 +15,7 @@ Localhost dashboard access (`127.0.0.1`) is allowed without a key for convenienc
 
 ## Public exposure (Tailscale Funnel, ngrok, cloudflared)
 
-If you expose RouterBot to the internet:
+If you expose PARAGON to the internet:
 
 1. Use a strong, unique API key.
 2. Understand that anyone with the key can call `/v1` **and** change config via `/api/config`.
@@ -24,12 +24,12 @@ If you expose RouterBot to the internet:
 
 ## Provider credentials
 
-RouterBot does not store provider API keys in the repository. Credentials live in:
+PARAGON does not store provider API keys in the repository. Credentials live in:
 
 - `data/config.json` (HTTP provider keys you configure)
 - CLI OAuth/token files in the service user's home directory (`~/.codex`, `~/.cursor`, `~/.gemini`, etc.)
 
-Run RouterBot under a dedicated user account with minimal filesystem permissions.
+Run PARAGON under a dedicated user account with minimal filesystem permissions.
 
 ## CLI safety
 

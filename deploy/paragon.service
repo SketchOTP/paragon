@@ -1,16 +1,16 @@
 [Unit]
-Description=RouterBot OpenAI-compatible routing proxy
-Documentation=file://%ROUTERBOT_DIR%/README.md
+Description=PARAGON OpenAI-compatible routing proxy
+Documentation=file://%PARAGON_DIR%/README.md
 After=network-online.target tailscaled.service
 Wants=network-online.target
 
 [Service]
 Type=simple
-User=%ROUTERBOT_USER%
-Group=%ROUTERBOT_GROUP%
-WorkingDirectory=%ROUTERBOT_DIR%
-EnvironmentFile=-/etc/routerbot/environment
-ExecStart=%NODE_BIN% %ROUTERBOT_DIR%/src/server.js
+User=%PARAGON_USER%
+Group=%PARAGON_GROUP%
+WorkingDirectory=%PARAGON_DIR%
+EnvironmentFile=-/etc/paragon/environment
+ExecStart=%NODE_BIN% %PARAGON_DIR%/src/server.js
 Restart=always
 RestartSec=5
 # Avoid tight restart loops if node or config is broken

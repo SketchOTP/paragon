@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { AUTH_FLOWS } from "./authFlows.js";
 import { createAuthMiddleware } from "./auth.js";
 import { readConfig, writeConfig } from "./configStore.js";
+import { getEnv } from "./env.js";
 import { getLogs, subscribeLogs, addLog } from "./logStore.js";
 import { registerOpenAiRoutes } from "./openaiApi.js";
 import { getAuthSession, getAuthState, listModels, runStatus, startAuth, submitGeminiAuthCode } from "./cli.js";
@@ -130,7 +131,7 @@ app.post("/api/auth/gemini/code", async (req, res) => {
     invalidateStatusCache();
   } catch (error) {
     res.status(400).json({
-      error: { message: error.message, type: "routerbot_gemini_auth_code_error" }
+      error: { message: error.message, type: "paragon_gemini_auth_code_error" }
     });
   }
 });
@@ -161,7 +162,7 @@ app.post("/api/providers/:provider/models", async (req, res) => {
     res.status(500).json({
       error: {
         message: error.message,
-        type: "routerbot_model_list_error",
+        type: "paragon_model_list_error",
         provider
       }
     });
@@ -187,20 +188,20 @@ app.get("/api/logs/stream", (req, res) => {
 
 registerOpenAiRoutes(app, getConfig);
 
-const host = process.env.ROUTERBOT_HOST ?? cachedConfig.server.host;
-const port = Number(process.env.ROUTERBOT_PORT ?? cachedConfig.server.port);
+const host = getEnv("HOST") ?? cachedConfig.server.host;
+const port = Number(getEnv("PORT") ?? cachedConfig.server.port);
 
 app.listen(port, host, () => {
-  console.log(`RouterBot dashboard: http://${host}:${port}`);
+  console.log(`PARAGON dashboard:   http://${host}:${port}`);
   console.log(`Cursor model:        ${cachedConfig.server.exposedModel}`);
-  console.log(`API key:             ${cachedConfig.server.apiKey ? "(configured)" : "(missing — set ROUTERBOT_API_KEY)"}`);
+  console.log(`API key:             ${cachedConfig.server.apiKey ? "(configured)" : "(missing — set PARAGON_API_KEY)"}`);
   const ts = tailscaleUrls(cachedConfig.server);
   if (ts) {
     console.log(`Tailnet dashboard:   ${ts.tailnetDashboard}`);
-    console.log(`RouterBot base URL:  ${ts.cursorBaseUrl}`);
+    console.log(`PARAGON base URL:    ${ts.cursorBaseUrl}`);
     console.log(`Run: ./scripts/tailscale-setup.sh (once) to bind Tailscale ports`);
   } else {
-    console.log(`RouterBot base URL:  http://${host}:${port}/v1`);
+    console.log(`PARAGON base URL:    http://${host}:${port}/v1`);
     console.log(`Set server.tailscaleHost in config for Tailscale URLs`);
   }
 });
