@@ -12,7 +12,14 @@
  */
 
 import { buildModelRegistry } from "./modelRegistry.js";
+import { annotateRegistryWithBenchmarks } from "./benchmarks.js";
 import { isCircuitOpen, circuitStateSnapshot } from "../orchestration/liveEnforcement.js";
+
+// "good enough" threshold for the value-scoring stage below: a candidate
+// within this fraction of the best available external benchmark index for
+// a task is treated as capable of doing the job, not just the top scorer.
+const QUALITY_FLOOR_RATIO = 0.85;
+const CODING_TASK_TYPES = new Set(["code", "debug", "review"]);
 
 // Coarse per-task-type cost/latency preference. Not a learned weighting —
 // an explicit, readable starting policy an operator can see and override
@@ -36,7 +43,14 @@ const WEIGHTS = {
   healthUnknown: 0,
   contextFit: 1,
   contextMissingWhenNeeded: -3,
-  circuitHalfOpen: -1
+  circuitHalfOpen: -1,
+  // Value-scoring stage (only applied when a candidate has a matched
+  // external benchmark — see applyValueScoring below). Deliberately larger
+  // than the internal-only weights above: once real quality+price data
+  // exists for a candidate, it should dominate the coarse cost-class
+  // heuristic, not just nudge it.
+  valueBonusMax: 8,
+  valueFloorPenalty: -4
 };
 
 function passesHardEligibility(entry, { estimatedInputTokens }) {
@@ -104,6 +118,94 @@ function scoreCandidate(entry, taskProfile, taskRoutes) {
   return { score, reasons };
 }
 
+/** codingIndex is the more relevant Artificial Analysis metric for coding-flavored task types; intelligenceIndex is the general fallback. */
+function benchmarkIndexForTask(entry, taskType) {
+  const b = entry.externalBenchmark;
+  if (!b) {
+    return null;
+  }
+  const value = CODING_TASK_TYPES.has(taskType) ? (b.codingIndex ?? b.intelligenceIndex) : (b.intelligenceIndex ?? b.codingIndex);
+  return value ?? null;
+}
+
+function benchmarkPromptPrice(entry) {
+  const raw = entry.externalBenchmark?.pricing?.prompt;
+  const value = raw == null ? NaN : Number(raw);
+  return Number.isFinite(value) ? value : null;
+}
+
+/**
+ * The actual "good enough for the cost" algorithm (PARAGON-D-004 follow-up):
+ * among eligible candidates that have a matched external benchmark, find
+ * the best available quality index for this task, then treat every
+ * candidate within QUALITY_FLOOR_RATIO of it as capable of doing the job.
+ * Within that "good enough" set, cheaper wins — reward is inversely
+ * proportional to price, not to raw quality. Candidates below the floor
+ * are deprioritized (not excluded — they may still be the only option).
+ * Candidates with no benchmark match are untouched: this stage never
+ * penalizes or favors a model just for lacking external data, it only
+ * acts on real data when present.
+ */
+function applyValueScoring(eligibleCandidates, taskType) {
+  const withBenchmark = eligibleCandidates
+    .map((c) => ({ c, index: benchmarkIndexForTask(c.entry, taskType), price: benchmarkPromptPrice(c.entry) }))
+    .filter((x) => x.index != null && x.price != null);
+
+  if (!withBenchmark.length) {
+    return;
+  }
+
+  const maxIndex = Math.max(...withBenchmark.map((x) => x.index));
+  const floor = maxIndex * QUALITY_FLOOR_RATIO;
+  const prices = withBenchmark.map((x) => x.price);
+  const minPrice = Math.min(...prices);
+  const maxPrice = Math.max(...prices);
+  const priceRange = maxPrice - minPrice;
+
+  for (const { c, index, price } of withBenchmark) {
+    if (index >= floor) {
+      const cheapness = priceRange > 0 ? (maxPrice - price) / priceRange : 1;
+      const bonus = WEIGHTS.valueBonusMax * cheapness;
+      c.score += bonus;
+      c.reasons.push(
+        `good enough for ${taskType} (external benchmark ${index.toFixed(1)} >= ${floor.toFixed(1)} floor) — value bonus +${bonus.toFixed(1)} for $${(price * 1e6).toFixed(2)}/M tokens`
+      );
+    } else {
+      c.score += WEIGHTS.valueFloorPenalty;
+      c.reasons.push(`external benchmark ${index.toFixed(1)} is below the ${floor.toFixed(1)} "good enough" floor for ${taskType} — deprioritized, not excluded`);
+    }
+  }
+}
+
+/**
+ * Scores every registry entry for a task, applying the internal
+ * deterministic formula and then (when external benchmark data is present
+ * on any eligible candidate) the value-scoring stage above. Shared by both
+ * rankRegistryByTask (the dashboard panel) and selectRoute (the live
+ * per-request decision) so the two can never diverge — what the panel
+ * shows is what actually happens.
+ */
+function scoreAndRankCandidates(registry, taskProfile, taskRoutes) {
+  const scored = registry.map((entry) => {
+    const eligibility = passesHardEligibility(entry, taskProfile);
+    if (!eligibility.ok) {
+      return { provider: entry.provider, model: entry.model, excluded: true, reasonCode: eligibility.reasonCode, score: null, reasons: [] };
+    }
+    const { score, reasons } = scoreCandidate(entry, taskProfile, taskRoutes);
+    return { provider: entry.provider, model: entry.model, excluded: false, score, reasons, entry };
+  });
+
+  applyValueScoring(
+    scored.filter((s) => !s.excluded),
+    taskProfile.taskType
+  );
+
+  for (const s of scored) {
+    delete s.entry;
+  }
+  return scored;
+}
+
 export const TASK_TYPES = Object.keys(TASK_COST_PREFERENCE);
 
 /**
@@ -114,13 +216,18 @@ export const TASK_TYPES = Object.keys(TASK_COST_PREFERENCE);
  */
 export function scoringMethodology() {
   return {
-    kind: "internal-deterministic",
+    kind: "internal-deterministic-plus-value",
     description:
-      "PARAGON has no live internet access and runs no evaluation harness against these models, so this is not an external benchmark citation. " +
-      "It is PARAGON's own deterministic routing formula, computed live from real inputs (health checks, circuit-breaker state, configured cost class, " +
-      "your routing.taskRoutes preferences) — the exact same formula that picks the live route for real requests, not a separate/different score.",
+      "PARAGON's own deterministic routing formula, computed live from real inputs (health checks, circuit-breaker state, configured cost class, " +
+      "your routing.taskRoutes preferences) — the exact same formula that picks the live route for real requests, not a separate/different score. " +
+      "When an OpenRouter API key is configured and a candidate has a matched external benchmark, a second value-scoring stage runs: it finds the " +
+      "best available quality index for the task, treats anything within " +
+      `${Math.round(QUALITY_FLOOR_RATIO * 100)}% of it as "good enough", and rewards the cheapest good-enough candidate — not the highest-scoring ` +
+      "one. Candidates below that floor are deprioritized, never hard-excluded. Candidates with no benchmark match are scored purely on the " +
+      "internal formula, never penalized for lacking external data.",
     weights: WEIGHTS,
-    taskCostPreference: TASK_COST_PREFERENCE
+    taskCostPreference: TASK_COST_PREFERENCE,
+    qualityFloorRatio: QUALITY_FLOOR_RATIO
   };
 }
 
@@ -136,15 +243,7 @@ export function rankRegistryByTask(registry, taskRoutes, taskTypes = TASK_TYPES)
   const result = {};
   for (const taskType of taskTypes) {
     const taskProfile = { taskType, estimatedInputTokens: null };
-    const scored = registry.map((entry) => {
-      const eligibility = passesHardEligibility(entry, taskProfile);
-      if (!eligibility.ok) {
-        return { provider: entry.provider, model: entry.model, excluded: true, reasonCode: eligibility.reasonCode, score: null, reasons: [] };
-      }
-      const { score, reasons } = scoreCandidate(entry, taskProfile, taskRoutes);
-      return { provider: entry.provider, model: entry.model, excluded: false, score, reasons };
-    });
-
+    const scored = scoreAndRankCandidates(registry, taskProfile, taskRoutes);
     const eligible = scored.filter((s) => !s.excluded).sort((a, b) => b.score - a.score);
     const n = eligible.length;
     eligible.forEach((item, index) => {
@@ -164,10 +263,12 @@ export function rankRegistryByTask(registry, taskRoutes, taskTypes = TASK_TYPES)
  * @param {object} params.statuses - current /api/status snapshot (avoids re-probing CLIs)
  * @param {object} params.taskProfile - { taskType, estimatedInputTokens }
  * @param {object} [params.hints] - { forceProvider, forceModel, maxCostClass, disableEscalation }
+ * @param {object[]} [params.benchmarkRows] - rows from getBenchmarkData(), or [] if not configured
  * @returns {{ provider: string, model: string, reasonCode: string, ranking: object[], confidence: string } | null}
  */
-export function selectRoute({ config, statuses, taskProfile, hints = {} }) {
-  const registry = buildModelRegistry(config, statuses);
+export function selectRoute({ config, statuses, taskProfile, hints = {}, benchmarkRows = [] }) {
+  const rawRegistry = buildModelRegistry(config, statuses);
+  const registry = benchmarkRows.length ? annotateRegistryWithBenchmarks(rawRegistry, benchmarkRows) : rawRegistry;
 
   // Force is resolved directly against config, not the registry — a
   // provider that hasn't had "Load models" run yet (empty models[], so
@@ -188,23 +289,16 @@ export function selectRoute({ config, statuses, taskProfile, hints = {} }) {
   }
 
   const costCeiling = hints.maxCostClass ? ["economy", "standard", "premium"].indexOf(hints.maxCostClass) : null;
+  const costFiltered = registry.filter((entry) => {
+    if (costCeiling != null && ["economy", "standard", "premium"].indexOf(entry.costClass) > costCeiling) {
+      return false;
+    }
+    return true;
+  });
 
-  const ranking = registry
-    .filter((entry) => {
-      if (costCeiling != null && ["economy", "standard", "premium"].indexOf(entry.costClass) > costCeiling) {
-        return false;
-      }
-      return true;
-    })
-    .map((entry) => {
-      const eligibility = passesHardEligibility(entry, taskProfile);
-      if (!eligibility.ok) {
-        return { provider: entry.provider, model: entry.model, score: null, excluded: true, reasonCode: eligibility.reasonCode };
-      }
-      const { score, reasons } = scoreCandidate(entry, taskProfile, config.routing?.taskRoutes);
-      return { provider: entry.provider, model: entry.model, score, reasons, excluded: false };
-    })
-    .sort((a, b) => (b.score ?? -Infinity) - (a.score ?? -Infinity));
+  const ranking = scoreAndRankCandidates(costFiltered, taskProfile, config.routing?.taskRoutes).sort(
+    (a, b) => (b.score ?? -Infinity) - (a.score ?? -Infinity)
+  );
 
   const winner = ranking.find((candidate) => !candidate.excluded);
   if (!winner) {

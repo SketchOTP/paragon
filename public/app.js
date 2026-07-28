@@ -133,6 +133,10 @@ const els = {
   registryTable: document.querySelector("#registry-table"),
   toggleModelRouting: document.querySelector("#toggle-model-routing"),
   modelRoutingBody: document.querySelector("#model-routing-body"),
+  toggleOrchestration: document.querySelector("#toggle-orchestration"),
+  orchestrationBody: document.querySelector("#orchestration-body"),
+  toggleOrchSettings: document.querySelector("#toggle-orch-settings"),
+  orchSettingsBody: document.querySelector("#orch-settings-body"),
   registryTaskFilter: document.querySelector("#registry-task-filter"),
   registryProviderFilter: document.querySelector("#registry-provider-filter"),
   registryHealthFilter: document.querySelector("#registry-health-filter"),
@@ -180,6 +184,18 @@ async function promptForApiKey() {
       els.apiKeyDialog.close();
       resolve();
     };
+  });
+}
+
+/** Shared chevron collapse/expand wiring for the Model Routing / Orchestration / Live enforcement settings panels. */
+function wireCollapsePanel(toggleEl, bodyEl) {
+  if (!toggleEl || !bodyEl) {
+    return;
+  }
+  toggleEl.addEventListener("click", () => {
+    const expanded = toggleEl.getAttribute("aria-expanded") === "true";
+    toggleEl.setAttribute("aria-expanded", String(!expanded));
+    bodyEl.hidden = expanded;
   });
 }
 
@@ -272,11 +288,9 @@ els.refreshStatus.addEventListener("click", () => refreshStatus({ manual: true }
 els.refreshOrchestration?.addEventListener("click", () => refreshOrchestration({ manual: true }));
 els.saveOrchSettings?.addEventListener("click", saveOrchestrationSettings);
 els.refreshRegistry?.addEventListener("click", refreshModelRegistry);
-els.toggleModelRouting?.addEventListener("click", () => {
-  const expanded = els.toggleModelRouting.getAttribute("aria-expanded") === "true";
-  els.toggleModelRouting.setAttribute("aria-expanded", String(!expanded));
-  els.modelRoutingBody.hidden = expanded;
-});
+wireCollapsePanel(els.toggleModelRouting, els.modelRoutingBody);
+wireCollapsePanel(els.toggleOrchestration, els.orchestrationBody);
+wireCollapsePanel(els.toggleOrchSettings, els.orchSettingsBody);
 els.registryTaskFilter?.addEventListener("change", () => {
   renderRegistryTable();
 });

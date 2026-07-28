@@ -8,6 +8,7 @@ import { createBoundedResponseAccumulator, estimateRequestContext } from "./orch
 import { classifyError, boundedDiagnostic } from "./orchestration/errorClassification.js";
 import { selectRoute, buildRankedAttempts } from "./routing/router.js";
 import { extractRoutingHints, requiresJsonValidation, isValidJson } from "./routing/hints.js";
+import { getBenchmarkData } from "./routing/benchmarks.js";
 import {
   activeExecutionCount,
   applyFallbackLimit,
@@ -116,11 +117,16 @@ export function registerOpenAiRoutes(app, getConfig, orchestration, getStatuses 
     // an absolute override. See src/routing/router.js.
     const hints = extractRoutingHints(req.headers);
     const contextEstimate = estimateRequestContext(req.body);
+    // Cached (6h TTL) — this almost never triggers a real network call on
+    // the hot request path. Empty rows when no OpenRouter key is
+    // configured, which selectRoute treats as "internal-only scoring".
+    const benchmarks = await safely(() => getBenchmarkData(config.integrations?.openrouterApiKey), { rows: [] });
     let route = selectRoute({
       config,
       statuses: getStatuses(),
       taskProfile: { taskType: task, estimatedInputTokens: contextEstimate.estimatedInputTokens },
-      hints
+      hints,
+      benchmarkRows: benchmarks?.rows ?? []
     });
     let attempts = route ? buildRankedAttempts(route.ranking, config) : [];
     if (!route || !attempts.length) {

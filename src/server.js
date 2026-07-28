@@ -122,7 +122,7 @@ app.get("/api/routing/registry", async (req, res) => {
   const registry = benchmarks.enabled ? annotateRegistryWithBenchmarks(rawRegistry, benchmarks.rows) : rawRegistry;
   res.json({
     registry,
-    taskRanking: rankRegistryByTask(rawRegistry, config.routing?.taskRoutes),
+    taskRanking: rankRegistryByTask(registry, config.routing?.taskRoutes),
     taskTypes: TASK_TYPES,
     methodology: scoringMethodology(),
     benchmarks: {

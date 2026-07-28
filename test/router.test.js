@@ -162,10 +162,81 @@ test("rankRegistryByTask orders by score descending, rank 1 = highest score", ()
   }
 });
 
-test("scoringMethodology exposes the real live weights and cost preference, not a static description that could drift", () => {
+test("selectRoute picks the cheaper 'good enough' model over a pricier higher-index one when benchmark data is available", () => {
+  const cfg = config();
+  cfg.providers.claude.models = [{ id: "premium-model", name: "premium-model" }];
+  cfg.providers.codex.models = [{ id: "cheap-model", name: "cheap-model" }];
+  cfg.providers.claude.model = "premium-model";
+  cfg.providers.codex.model = "cheap-model";
+  delete cfg.providers.antigravity;
+
+  const benchmarkRows = [
+    { source: "artificial-analysis", model_permaslug: "premium-model", intelligence_index: 90, pricing: { prompt: "0.00006" } },
+    { source: "artificial-analysis", model_permaslug: "cheap-model", intelligence_index: 80, pricing: { prompt: "0.000005" } }
+  ];
+
+  const route = selectRoute({
+    config: cfg,
+    statuses: { claude: { ok: true }, codex: { ok: true } },
+    taskProfile: { taskType: "plan", estimatedInputTokens: 100 },
+    benchmarkRows
+  });
+
+  assert.equal(route.provider, "codex", "the cheaper model within the good-enough floor must win, not the pricier higher-scoring one");
+  const winnerReasons = route.ranking.find((c) => c.provider === "codex").reasons;
+  assert.ok(winnerReasons.some((r) => r.includes("good enough")), "the win must be explainable — reasons must cite the value scoring");
+});
+
+test("selectRoute does not let a below-floor cheap model beat a good-enough pricier one", () => {
+  const cfg = config();
+  cfg.providers.claude.models = [{ id: "best-model", name: "best-model" }];
+  cfg.providers.codex.models = [{ id: "good-enough-model", name: "good-enough-model" }];
+  cfg.providers.antigravity.models = [{ id: "too-weak-model", name: "too-weak-model" }];
+  cfg.providers.antigravity.enabled = false; // stays hard-ineligible for automatic routing regardless
+  cfg.providers.claude.model = "best-model";
+  cfg.providers.codex.model = "good-enough-model";
+  cfg.providers.cursor = {
+    enabled: true,
+    model: "too-weak-model",
+    models: [{ id: "too-weak-model", name: "too-weak-model" }]
+  };
+
+  const benchmarkRows = [
+    { source: "artificial-analysis", model_permaslug: "best-model", intelligence_index: 90, pricing: { prompt: "0.00008" } },
+    { source: "artificial-analysis", model_permaslug: "good-enough-model", intelligence_index: 80, pricing: { prompt: "0.00003" } },
+    { source: "artificial-analysis", model_permaslug: "too-weak-model", intelligence_index: 30, pricing: { prompt: "0.000001" } }
+  ];
+
+  const route = selectRoute({
+    config: cfg,
+    statuses: { claude: { ok: true }, codex: { ok: true }, cursor: { ok: true } },
+    taskProfile: { taskType: "code", estimatedInputTokens: 100 },
+    benchmarkRows
+  });
+
+  assert.equal(route.provider, "codex", "cheapest-overall-but-below-quality-floor must lose to a pricier-but-good-enough candidate");
+});
+
+test("selectRoute leaves candidates with no matched benchmark scored purely on the internal formula", () => {
+  const cfg = config();
+  const route = selectRoute({
+    config: cfg,
+    statuses: { claude: { ok: true }, codex: { ok: true } },
+    taskProfile: { taskType: "code", estimatedInputTokens: 100 },
+    benchmarkRows: [{ source: "artificial-analysis", model_permaslug: "totally-unrelated-model-xyz", intelligence_index: 99, pricing: { prompt: "0.000001" } }]
+  });
+  assert.ok(route, "must still produce a route when no registry entry matches the benchmark data");
+  for (const candidate of route.ranking) {
+    assert.ok(!candidate.reasons?.some((r) => r.includes("good enough") || r.includes("quality floor")), "no candidate should have value-scoring reasons applied when nothing matched");
+  }
+});
+
+test("scoringMethodology exposes the real live weights, cost preference, and value-scoring floor ratio", () => {
   const methodology = scoringMethodology();
-  assert.equal(methodology.kind, "internal-deterministic");
+  assert.equal(methodology.kind, "internal-deterministic-plus-value");
   assert.ok(methodology.weights.taskRoutePreference);
+  assert.ok(methodology.weights.valueBonusMax);
   assert.ok(methodology.taskCostPreference.plan);
-  assert.match(methodology.description, /not an external benchmark/i);
+  assert.ok(methodology.qualityFloorRatio > 0 && methodology.qualityFloorRatio < 1);
+  assert.match(methodology.description, /good enough/i);
 });
