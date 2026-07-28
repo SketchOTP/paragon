@@ -67,11 +67,19 @@ select {
   align-items: center;
 }
 
+.hero-header-image-wrap {
+  height: 110px;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+}
+
 .hero-header-image {
-  height: 120px;
+  height: 260px;
   width: auto;
   object-fit: contain;
   display: block;
+  flex-shrink: 0;
 }
 
 .hero-actions {
