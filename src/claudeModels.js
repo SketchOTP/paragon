@@ -1,8 +1,19 @@
-import { spawn, execSync } from "node:child_process";
+import { execSync } from "node:child_process";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 
-/** Documented Claude Code models (help center + common aliases). */
+/**
+ * Documented Claude Code models (help center + common aliases). This is a
+ * fallback floor only — loadClaudeBundledCatalog() below (a string scan of
+ * the actually-installed binary) is what surfaces new releases without a
+ * code change here. Verified against the installed claude binary
+ * (2.1.220) on 2026-07-28: claude-opus-5, claude-sonnet-5, claude-fable-5,
+ * and claude-mythos-5 are all real, live strings in that build.
+ */
 export const CLAUDE_DOCUMENTED_MODELS = [
+  { id: "claude-opus-5", name: "Opus 5" },
+  { id: "claude-sonnet-5", name: "Sonnet 5" },
+  { id: "claude-fable-5", name: "Fable 5" },
+  { id: "claude-mythos-5", name: "Mythos 5" },
   { id: "claude-opus-4-8", name: "Opus 4.8" },
   { id: "claude-opus-4-7", name: "Opus 4.7" },
   { id: "claude-sonnet-4-6", name: "Sonnet 4.6" },
@@ -14,53 +25,20 @@ export const CLAUDE_DOCUMENTED_MODELS = [
   { id: "claude-opus-4-20250514", name: "Opus 4" },
   { id: "claude-3-7-sonnet-20250219", name: "Sonnet 3.7" },
   { id: "claude-3-5-haiku-20241022", name: "Haiku 3.5" },
-  { id: "opus", name: "Opus (alias)" },
-  { id: "sonnet", name: "Sonnet (alias)" },
-  { id: "haiku", name: "Haiku (alias)" }
+  { id: "opus", name: "Opus (alias, resolves to latest)" },
+  { id: "sonnet", name: "Sonnet (alias, resolves to latest)" },
+  { id: "haiku", name: "Haiku (alias, resolves to latest)" },
+  { id: "fable", name: "Fable (alias, resolves to latest)" }
 ];
 
-const DISCOVERY_ARG_SETS = [
-  ["model", "list"],
-  ["models"]
-];
-
-const BINARY_MODEL_PATTERN = /claude-(?:opus|sonnet|haiku)-[a-z0-9.-]+/g;
-
-function runClaude(command, args, timeoutMs = 15000) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
-      cwd: process.cwd(),
-      env: { ...process.env, NO_COLOR: "1" },
-      stdio: ["ignore", "pipe", "pipe"]
-    });
-
-    let stdout = "";
-    let stderr = "";
-    const timer = setTimeout(() => {
-      child.kill("SIGTERM");
-      reject(new Error(`${command} ${args.join(" ")} timed out`));
-    }, timeoutMs);
-
-    child.stdout.on("data", (chunk) => {
-      stdout += chunk.toString();
-    });
-    child.stderr.on("data", (chunk) => {
-      stderr += chunk.toString();
-    });
-    child.on("error", (error) => {
-      clearTimeout(timer);
-      reject(error);
-    });
-    child.on("exit", (code) => {
-      clearTimeout(timer);
-      if (code === 0) {
-        resolve({ stdout, stderr });
-        return;
-      }
-      reject(new Error(stderr.trim() || `${command} exited ${code}`));
-    });
-  });
-}
+// There is no real "list models" subcommand for the claude CLI — `claude
+// --help` confirms the only commands are agents/auth/auto-mode/doctor/
+// install/mcp/plugin/project/setup-token/ultrareview/update. The previous
+// ["model","list"]/["models"] arg sets here were never real subcommands:
+// they got silently treated as a chat prompt (one returned a conversational
+// answer, the other hung until timeout). Verified by hand, not assumed.
+// loadClaudeBundledCatalog() below is the only real discovery mechanism.
+const BINARY_MODEL_PATTERN = /claude-(?:opus|sonnet|haiku|fable|mythos)-[a-z0-9.-]+/g;
 
 function resolveClaudeBinary(command = "claude") {
   if (command.includes("/")) {
@@ -74,7 +52,7 @@ function resolveClaudeBinary(command = "claude") {
 }
 
 function isClaudeModelId(id) {
-  if (!/^claude-(opus|sonnet|haiku)-/.test(id)) {
+  if (!/^claude-(opus|sonnet|haiku|fable|mythos)-/.test(id)) {
     return false;
   }
   if (id.endsWith("-v1") || id.endsWith("-fast")) {
@@ -125,7 +103,7 @@ export function parseClaudeModelListOutput(stdout) {
   const seen = new Set();
   for (const line of text.split("\n")) {
     const trimmed = line.trim();
-    const idMatch = trimmed.match(/\b(claude-(?:opus|sonnet|haiku)-[a-z0-9.-]+)\b/i);
+    const idMatch = trimmed.match(/\b(claude-(?:opus|sonnet|haiku|fable|mythos)-[a-z0-9.-]+)\b/i);
     if (idMatch && isClaudeModelId(idMatch[1]) && !seen.has(idMatch[1])) {
       seen.add(idMatch[1]);
       models.push({ id: idMatch[1], name: displayNameForClaudeModel(idMatch[1]) });
@@ -179,18 +157,6 @@ export async function discoverClaudeModels(command = "claude") {
   );
   if (bundled.length) {
     return bundled;
-  }
-
-  for (const args of DISCOVERY_ARG_SETS) {
-    try {
-      const result = await runClaude(command, args, 5000);
-      const models = parseClaudeModelListOutput(result.stdout);
-      if (models.length) {
-        return mergeClaudeModelCatalogs(CLAUDE_DOCUMENTED_MODELS, models);
-      }
-    } catch {
-      // Try the next discovery command shape.
-    }
   }
 
   return CLAUDE_DOCUMENTED_MODELS;

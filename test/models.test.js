@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { parseModels } from "../src/cli.js";
-import { discoverClaudeModels, loadClaudeBundledCatalog } from "../src/claudeModels.js";
+import {
+  CLAUDE_DOCUMENTED_MODELS,
+  discoverClaudeModels,
+  loadClaudeBundledCatalog,
+  parseClaudeModelListOutput
+} from "../src/claudeModels.js";
 import { loadCodexBundledCatalog } from "../src/codexModels.js";
 import { loadGeminiCliModelCatalog } from "../src/geminiModels.js";
 import { alignProviderModel, parseCodexModelsCatalog } from "../src/modelList.js";
@@ -66,6 +71,37 @@ test("loadClaudeBundledCatalog reads model ids from installed binary when presen
     return;
   }
   assert.ok(models.some((model) => model.id.startsWith("claude-sonnet-4")));
+});
+
+test("CLAUDE_DOCUMENTED_MODELS includes the current model family names (opus/sonnet/fable/mythos 5)", () => {
+  // Regression guard: the discovery regex/id-filter must recognize these
+  // family names, not just opus/sonnet/haiku — this is the exact bug that
+  // made the dashboard's model list stale after Fable 5/Mythos 5 shipped.
+  for (const id of ["claude-opus-5", "claude-sonnet-5", "claude-fable-5", "claude-mythos-5"]) {
+    assert.ok(CLAUDE_DOCUMENTED_MODELS.some((model) => model.id === id), `expected ${id} in the documented floor list`);
+  }
+});
+
+test("parseClaudeModelListOutput recognizes fable/mythos ids, not just opus/sonnet/haiku", () => {
+  const models = parseClaudeModelListOutput("claude-fable-5\nclaude-mythos-5\nclaude-opus-5");
+  assert.deepEqual(
+    models.map((m) => m.id).sort(),
+    ["claude-fable-5", "claude-mythos-5", "claude-opus-5"]
+  );
+});
+
+test("loadClaudeBundledCatalog picks up fable/mythos strings from the installed binary when present", () => {
+  const models = loadClaudeBundledCatalog("claude");
+  if (!models.length) {
+    return;
+  }
+  const ids = models.map((m) => m.id);
+  // Only assert if the installed binary is new enough to contain these —
+  // don't turn this into a change-detector against a specific CLI version.
+  const hasFableFamily = ids.some((id) => id.startsWith("claude-fable-") || id.startsWith("claude-mythos-"));
+  if (hasFableFamily) {
+    assert.ok(ids.includes("claude-fable-5"));
+  }
 });
 
 test("loadGeminiCliModelCatalog does not inject alias placeholders", () => {
