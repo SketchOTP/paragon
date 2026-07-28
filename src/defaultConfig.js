@@ -1,6 +1,6 @@
 import { DEFAULT_ORCHESTRATION_CONFIG } from "./orchestration/governorPolicy.js";
 
-export const BUILTIN_PROVIDERS = ["claude", "codex", "cursor", "gemini"];
+export const BUILTIN_PROVIDERS = ["claude", "codex", "cursor", "gemini", "antigravity"];
 
 /** Legacy exposed-model id accepted as an alias for "paragon" (pre-rename). */
 export const LEGACY_EXPOSED_MODEL_ALIAS = "routerbot-local";
@@ -59,6 +59,21 @@ export const defaultConfig = {
       command: "gemini",
       model: "",
       models: [],
+      timeoutMs: 300000
+    },
+    // Disabled by default — running this provider requires
+    // --dangerously-skip-permissions (see src/cli.js providerSpecs), which
+    // auto-approves all tool/command execution the agent attempts. Enable
+    // explicitly per-deployment only after accepting that risk.
+    antigravity: {
+      type: "builtin",
+      label: "Antigravity CLI",
+      icon: "🪐",
+      enabled: false,
+      command: "agy",
+      model: "",
+      models: [],
+      stdinMode: "none",
       timeoutMs: 300000
     }
   },

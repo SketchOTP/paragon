@@ -68,6 +68,33 @@ const providerSpecs = {
       "text",
       ...modelArg("-m", model)
     ]
+  },
+  // Real CLI contract verified by hand against the installed `agy` binary
+  // (--help, and live --print tests) — not inferred from docs. Two things
+  // that differ from every other builtin provider here:
+  //  1. The prompt must be a direct argument to --print, not piped via
+  //     stdin (confirmed: piping via stdin produced a canned, unrelated
+  //     response every time; passing it as an arg answered correctly).
+  //  2. Even a trivial prompt attempts a tool/command call, which headless
+  //     mode silently denies (zero output) unless permissions are skipped.
+  //     There is no equivalent to claude's `--tools ""` (fully disable
+  //     tools) — --dangerously-skip-permissions is required for this
+  //     provider to produce any output at all. --sandbox is added as
+  //     partial mitigation. This is a materially different risk profile
+  //     from the other builtin providers (operator-approved).
+  antigravity: {
+    authArgs: [],
+    statusArgs: ["models"],
+    modelsArgs: ["models"],
+    runArgs: ({ model, prompt }) => [
+      "--print",
+      prompt ?? "",
+      "--dangerously-skip-permissions",
+      "--sandbox",
+      "--output-format",
+      "text",
+      ...modelArg("--model", model)
+    ]
   }
 };
 
@@ -99,7 +126,9 @@ export function expandArgs(args, model) {
 
 function envForProvider(provider) {
   const env = { ...process.env, NO_COLOR: "1" };
-  if (provider !== "gemini") {
+  // antigravity is Gemini-family too (agy models lists gemini-3.x variants)
+  // and shares the same conflicting env-var surface as gemini itself.
+  if (provider !== "gemini" && provider !== "antigravity") {
     return env;
   }
   delete env.GEMINI_API_KEY;
@@ -557,7 +586,11 @@ export async function runProvider(provider, providerConfig, prompt, onChunk, { o
   return runProcess({
     provider,
     command: providerConfig.command,
-    args: spec.runArgs({ model: providerConfig.model }),
+    // `prompt` is passed through for providers whose runArgs embeds it as a
+    // trailing CLI argument (e.g. antigravity's `--print <prompt>`) —
+    // providers that take the prompt via stdin instead simply destructure
+    // only `{ model }` and ignore it.
+    args: spec.runArgs({ model: providerConfig.model, prompt }),
     stdinText: stdinMode === "none" ? undefined : prompt,
     timeoutMs: providerConfig.timeoutMs,
     logType: "completion",

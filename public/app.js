@@ -1,4 +1,4 @@
-const BUILTIN_ORDER = ["claude", "codex", "cursor", "gemini"];
+const BUILTIN_ORDER = ["claude", "codex", "cursor", "gemini", "antigravity"];
 const taskOrder = ["code", "debug", "review", "plan", "explain", "docs", "quick"];
 const API_KEY_STORAGE = "paragon-api-key";
 
@@ -17,6 +17,7 @@ const DEFAULT_PROVIDER_ICON = {
   codex: "⚡",
   cursor: "🖱️",
   gemini: "✨",
+  antigravity: "🪐",
   http: "🌐",
   cli: "🔧",
   default: "🤖"
