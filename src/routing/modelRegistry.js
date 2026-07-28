@@ -84,12 +84,14 @@ export function buildModelRegistry(config, statuses = {}) {
         },
         costClass,
         latencyClass: inferLatencyClass(costClass),
-        // Antigravity requires --dangerously-skip-permissions (auto-approves
-        // all tool/command execution) — never eligible for automatic
-        // routing regardless of score, only reachable via an explicit
-        // forceProvider hint. See docs/evidence for the risk writeup.
-        automaticEligibility: provider !== "antigravity",
-        toolExecutionRisk: provider === "antigravity" ? "unrestricted" : "restricted",
+        // Every builtin provider auto-approves tool/command execution
+        // (operator directive — see src/cli.js providerSpecs for the real
+        // flags verified per CLI). Previously antigravity alone was
+        // excluded from automatic routing for exactly this reason; that
+        // gate no longer applies since the same policy is now uniform
+        // across providers, not antigravity-specific.
+        automaticEligibility: true,
+        toolExecutionRisk: "unrestricted",
         source: providerConfig.models?.length ? "discovered" : "configured",
         lastDiscoveryAt: now
       });

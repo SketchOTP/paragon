@@ -36,14 +36,15 @@ function config(overrides = {}) {
   };
 }
 
-test("selectRoute never picks antigravity automatically, even if scored highest", () => {
-  // Bias everything toward antigravity via taskRoutes preference — should
-  // still be excluded, proving automaticEligibility is a hard gate, not a
-  // scoring penalty that a strong enough signal could overcome.
+test("selectRoute can pick antigravity automatically when it scores best (auto-approve tool execution is now a uniform policy, not an antigravity-only exclusion)", () => {
   const cfg = config();
   cfg.routing.taskRoutes = { code: "antigravity" };
-  const route = selectRoute({ config: cfg, statuses: {}, taskProfile: { taskType: "code", estimatedInputTokens: 100 } });
-  assert.notEqual(route.provider, "antigravity");
+  const route = selectRoute({
+    config: cfg,
+    statuses: { antigravity: { ok: true } },
+    taskProfile: { taskType: "code", estimatedInputTokens: 100 }
+  });
+  assert.equal(route.provider, "antigravity");
 });
 
 test("selectRoute honors an explicit forceProvider/forceModel hint, including forcing antigravity", () => {
@@ -127,10 +128,10 @@ test("selectRoute returns null when nothing is eligible", () => {
   assert.equal(route, null);
 });
 
-test("rankRegistryByTask produces a 1-10 scale (1=best) per task type, excluded entries carry a reason instead of a rank", () => {
+test("rankRegistryByTask produces a 1-10 scale (1=best) per task type; antigravity now ranks like any other provider, and an unhealthy provider is excluded with a reason instead of a rank", () => {
   const cfg = config();
   cfg.providers.antigravity.enabled = true;
-  const registry = buildModelRegistry(cfg, { claude: { ok: true }, codex: { ok: true }, antigravity: { ok: true } });
+  const registry = buildModelRegistry(cfg, { claude: { ok: true }, codex: { ok: false }, antigravity: { ok: true } });
   const ranking = rankRegistryByTask(registry, cfg.routing.taskRoutes);
 
   for (const taskType of TASK_TYPES) {
@@ -139,9 +140,13 @@ test("rankRegistryByTask produces a 1-10 scale (1=best) per task type, excluded 
 
   const codeRanking = ranking.code;
   const antigravityEntry = codeRanking.find((e) => e.provider === "antigravity");
-  assert.equal(antigravityEntry.excluded, true, "antigravity must never get a rank via automatic routing");
-  assert.equal(antigravityEntry.reasonCode, "eligibility.automaticEligibilityDisabled");
-  assert.equal(antigravityEntry.rank, undefined);
+  assert.equal(antigravityEntry.excluded, false, "antigravity must be able to get a rank now that auto-approve is a uniform policy");
+  assert.ok(antigravityEntry.tenScale >= 1 && antigravityEntry.tenScale <= 10);
+
+  const codexEntry = codeRanking.find((e) => e.provider === "codex");
+  assert.equal(codexEntry.excluded, true, "an unhealthy provider must still be excluded with a reason instead of a rank");
+  assert.equal(codexEntry.reasonCode, "eligibility.unhealthyProvider");
+  assert.equal(codexEntry.rank, undefined);
 
   const eligible = codeRanking.filter((e) => !e.excluded);
   for (const entry of eligible) {
@@ -192,7 +197,7 @@ test("selectRoute does not let a below-floor cheap model beat a good-enough pric
   cfg.providers.claude.models = [{ id: "best-model", name: "best-model" }];
   cfg.providers.codex.models = [{ id: "good-enough-model", name: "good-enough-model" }];
   cfg.providers.antigravity.models = [{ id: "too-weak-model", name: "too-weak-model" }];
-  cfg.providers.antigravity.enabled = false; // stays hard-ineligible for automatic routing regardless
+  cfg.providers.antigravity.enabled = false; // disabled purely to keep this test's candidate pool to the three models under test
   cfg.providers.claude.model = "best-model";
   cfg.providers.codex.model = "good-enough-model";
   cfg.providers.cursor = {

@@ -9,6 +9,22 @@ import { addLog } from "./logStore.js";
 
 export { getAuthSession };
 
+// Auto-approved tool/command execution is enabled across every builtin
+// provider (operator directive: "allowed for any model ... normal with
+// the coding work we are doing"). Verified against each CLI's real
+// --help output before changing flags, not assumed:
+//  - claude: --tools "" was fully disabling every tool (not just
+//    auto-approving them) — changed to --tools default. --permission-mode
+//    dontAsk already auto-approves.
+//  - codex: --ask-for-approval never was already auto-approving, but
+//    --sandbox read-only blocked every write regardless of approval —
+//    changed to workspace-write (scoped to the working directory, not
+//    --dangerously-bypass-approvals-and-sandbox's unsandboxed full access).
+//  - cursor: --mode ask is documented as "read-only" Q&A — cursor could
+//    never write or edit a file through PARAGON as previously configured,
+//    independent of any permission setting. Removed --mode ask, added
+//    --force (alias --yolo) to auto-approve tool calls in the CLI's
+//    normal execution mode.
 const providerSpecs = {
   claude: {
     authArgs: ["auth", "login"],
@@ -21,7 +37,7 @@ const providerSpecs = {
       "--permission-mode",
       "dontAsk",
       "--tools",
-      "",
+      "default",
       ...modelArg("--model", model)
     ]
   },
@@ -35,7 +51,7 @@ const providerSpecs = {
       "exec",
       "--skip-git-repo-check",
       "--sandbox",
-      "read-only",
+      "workspace-write",
       ...modelArg("--model", model),
       "-"
     ]
@@ -47,8 +63,7 @@ const providerSpecs = {
     runArgs: ({ model }) => [
       "--print",
       "--trust",
-      "--mode",
-      "ask",
+      "--force",
       ...modelArg("--model", model)
     ]
   },
@@ -60,11 +75,9 @@ const providerSpecs = {
   //     response every time; passing it as an arg answered correctly).
   //  2. Even a trivial prompt attempts a tool/command call, which headless
   //     mode silently denies (zero output) unless permissions are skipped.
-  //     There is no equivalent to claude's `--tools ""` (fully disable
-  //     tools) — --dangerously-skip-permissions is required for this
-  //     provider to produce any output at all. --sandbox is added as
-  //     partial mitigation. This is a materially different risk profile
-  //     from the other builtin providers (operator-approved).
+  //     --dangerously-skip-permissions is required for this provider to
+  //     produce any output at all — same auto-approve policy as the other
+  //     providers above, just via this CLI's own flag name.
   antigravity: {
     authArgs: [],
     statusArgs: ["models"],

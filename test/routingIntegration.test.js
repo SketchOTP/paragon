@@ -75,13 +75,17 @@ test("x-paragon-force-provider hint is honored and visible in telemetry, even in
   await res.json().catch(() => {});
 });
 
-test("antigravity is never chosen by automatic routing even when enabled, only via an explicit force hint", async () => {
+test("antigravity can be chosen by automatic routing once it has a real candidate model, and forcing it still works too", async () => {
   const configRes = await fetch(`${BASE}/api/config`, { headers: authHeaders() });
   const config = await configRes.json();
   config.providers.antigravity.enabled = true;
-  // Bias every task route toward antigravity — if automatic eligibility
-  // were only a soft scoring signal instead of a hard gate, this would be
-  // enough to make it win.
+  // A fresh sandbox config has no discovered models for antigravity
+  // (models: []), so it would never be a routing candidate regardless of
+  // eligibility — give it one so this actually exercises automatic
+  // selection, not just "nothing to choose from".
+  config.providers.antigravity.models = [{ id: "antigravity-test-model", name: "antigravity-test-model" }];
+  config.providers.antigravity.model = "antigravity-test-model";
+  // Bias every task route toward antigravity.
   for (const task of Object.keys(config.routing.taskRoutes)) {
     config.routing.taskRoutes[task] = "antigravity";
   }
@@ -92,14 +96,16 @@ test("antigravity is never chosen by automatic routing even when enabled, only v
     headers: authHeaders(),
     body: JSON.stringify({ model: "paragon", messages: [{ role: "user", content: "implement a function" }] })
   });
+  assert.equal(res.headers.get("x-paragon-route-reason"), "scored.deterministic");
+
   const runId = res.headers.get("x-paragon-run-id");
   await res.json().catch(() => {});
 
   const runRes = await fetch(`${BASE}/api/orchestration/runs/${runId}`, { headers: authHeaders() });
   const run = await runRes.json();
-  assert.notEqual(run.provider, "antigravity");
+  assert.equal(run.provider, "antigravity", "with a real candidate and every task-route preference biased toward it, automatic routing must be able to select it");
 
-  // Forcing it explicitly must still work — the gate is "not automatic," not "never reachable."
+  // Forcing it explicitly must still work too.
   const forcedRes = await fetch(`${BASE}/v1/chat/completions`, {
     method: "POST",
     headers: authHeaders({ "X-Paragon-Force-Provider": "antigravity" }),
