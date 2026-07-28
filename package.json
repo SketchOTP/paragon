@@ -1,16 +1,16 @@
 {
-  "name": "routerbot",
-  "version": "0.2.2",
+  "name": "paragon",
+  "version": "0.2.3",
   "description": "Self-hosted OpenAI-compatible API router — Claude, Codex, Gemini, Ollama, vLLM, and custom backends behind one base URL",
   "type": "module",
   "license": "MIT",
   "author": "Tym Huseby",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/SketchOTP/routerbot.git"
+    "url": "git+https://github.com/SketchOTP/paragon.git"
   },
-  "bugs": "https://github.com/SketchOTP/routerbot/issues",
-  "homepage": "https://github.com/SketchOTP/routerbot#readme",
+  "bugs": "https://github.com/SketchOTP/paragon/issues",
+  "homepage": "https://github.com/SketchOTP/paragon#readme",
   "keywords": [
     "cursor",
     "openai",
