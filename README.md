@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="public/routerbot.png" alt="RouterBot" width="120" />
+  <img src="public/paragon.png" alt="PARAGON" width="120" />
 </p>
 
-<h1 align="center">RouterBot</h1>
+<h1 align="center">PARAGON</h1>
 
 <p align="center">
   <strong>One OpenAI-compatible endpoint — route to every AI backend you run.</strong>
@@ -19,23 +19,19 @@
 
 ---
 
-RouterBot is a self-hosted **OpenAI-compatible API router**. Point any client that supports a custom OpenAI base URL, model name, and API key at RouterBot — IDEs, chat UIs, agents, scripts, or your own app. RouterBot classifies each request, picks a backend provider, runs your configured CLIs or HTTP APIs, and falls back automatically when something fails.
+PARAGON is a self-hosted **OpenAI-compatible API router**. Point any client that supports a custom OpenAI base URL, model name, and API key at PARAGON — IDEs, chat UIs, agents, scripts, or your own app. PARAGON classifies each request, picks a backend provider, runs your configured CLIs or HTTP APIs, and falls back automatically when something fails.
 
 **Works with:** Continue, Open WebUI, LibreChat, LangChain, custom HTTP clients, and any tool that speaks `POST /v1/chat/completions` and `GET /v1/models`. Cursor is a common example, not a requirement.
 
 No vendor lock-in to one CLI — mix Anthropic, OpenAI, Google, and local models behind one dashboard and one API key.
 
-## What's new in v0.2.1
+## What's new in v0.2.3
 
-- **Unified provider sign-in** — one auth panel for Claude, Codex, Cursor Agent, and Gemini; detects already-signed-in state; **Re-sign in** when you need a fresh login
-- **Real model lists** — dropdowns show only models each provider actually exposes (no synthetic placeholders); Codex discovery from the installed CLI
-- **Inbound API activity** — Activity log records `GET /v1/models` and `POST /v1/chat/completions` (start, success, errors, duration)
-- **Quieter dashboard** — status polling no longer spams the log or closes open dropdowns
-- **22 automated tests** — auth flows, model alignment, release hygiene scan
+- **Renamed from RouterBot to PARAGON.** Existing installs keep working with zero manual steps — see [Upgrading from RouterBot](#upgrading-from-routerbot) below.
 
-## Why RouterBot?
+## Why PARAGON?
 
-| Problem | RouterBot |
+| Problem | PARAGON |
 |---------|-----------|
 | Each app wants its own base URL and backend | One `/v1` endpoint, many providers |
 | Switching between Claude / Codex / Gemini is manual | Task-based routing (`code` → Codex, `plan` → Claude, …) |
@@ -60,15 +56,15 @@ No vendor lock-in to one CLI — mix Anthropic, OpenAI, Google, and local models
 **Requirements:** Node.js 20+, and whichever CLIs you enable on your `PATH`.
 
 ```bash
-git clone git@github.com:SketchOTP/routerbot.git
-cd routerbot
+git clone git@github.com:SketchOTP/paragon.git
+cd paragon
 npm install
 npm start
 ```
 
 Open the dashboard: **http://127.0.0.1:4117**
 
-On first run, RouterBot prints a generated API key — save it for API clients and remote dashboard access.
+On first run, PARAGON prints a generated API key — save it for API clients and remote dashboard access.
 
 Optional: seed config from the example:
 
@@ -84,9 +80,9 @@ Any OpenAI-compatible client needs three values from the dashboard:
 
 | Setting | Value |
 |---------|-------|
-| **Base URL** | RouterBot URL ending in `/v1` (e.g. `http://127.0.0.1:4117/v1`) |
-| **API key** | Your RouterBot API key |
-| **Model** | `routerbot-local` (or your `server.exposedModel`) |
+| **Base URL** | PARAGON URL ending in `/v1` (e.g. `http://127.0.0.1:4117/v1`) |
+| **API key** | Your PARAGON API key |
+| **Model** | `paragon` (or your `server.exposedModel`) |
 
 **Local only:** `http://127.0.0.1:4117/v1`
 
@@ -97,8 +93,8 @@ Any OpenAI-compatible client needs three values from the dashboard:
 | Setting | Value |
 |---------|-------|
 | Override OpenAI Base URL | `https://YOUR_HOST:10000/v1` (or local URL above) |
-| API key | RouterBot API key |
-| Model | `routerbot-local` |
+| API key | PARAGON API key |
+| Model | `paragon` |
 
 ### Example: curl
 
@@ -106,7 +102,7 @@ Any OpenAI-compatible client needs three values from the dashboard:
 curl -s http://127.0.0.1:4117/v1/chat/completions \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"model":"routerbot-local","messages":[{"role":"user","content":"Hello"}]}'
+  -d '{"model":"paragon","messages":[{"role":"user","content":"Hello"}]}'
 ```
 
 ## Dashboard tour
@@ -150,11 +146,11 @@ One key protects both the OpenAI API (`/v1`) and the admin API (`/api`).
 | **First startup** | Printed in the terminal when `data/config.json` has no key |
 | **Dashboard** | `http://127.0.0.1:4117` → Server settings → API key |
 | **Config file** | `grep apiKey data/config.json` |
-| **Environment** | `ROUTERBOT_API_KEY=…` (overrides file) |
+| **Environment** | `PARAGON_API_KEY=…` (overrides file) |
 
 Rotate anytime in Server settings → **Save** → update your clients.
 
-If port `4117` is in use, RouterBot is already running (e.g. systemd) — use `sudo systemctl restart routerbot` instead of a second `npm start`.
+If port `4117` is in use, PARAGON is already running (e.g. systemd) — use `sudo systemctl restart paragon` instead of a second `npm start`.
 
 ## Providers
 
@@ -199,7 +195,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) to extend built-in adapters.
 
 ## Routing & fallback
 
-1. RouterBot classifies the prompt (`code`, `debug`, `plan`, …).
+1. PARAGON classifies the prompt (`code`, `debug`, `plan`, …).
 2. It uses the mapped provider from the dashboard (or `routing.defaultProvider`).
 3. On failure, it walks `routing.fallbackChain` (default: `codex` → `cursor`).
 
@@ -207,7 +203,7 @@ Configure both in the **Routing** panel; new providers appear in dropdowns autom
 
 ## Public access
 
-Remote clients cannot reach `localhost`. Expose RouterBot over HTTPS when callers run on another machine or in the cloud.
+Remote clients cannot reach `localhost`. Expose PARAGON over HTTPS when callers run on another machine or in the cloud.
 
 ### Tailscale (recommended)
 
@@ -237,14 +233,14 @@ Use the HTTPS URL + `/v1` as your client base URL.
 ## Run at boot (systemd)
 
 ```bash
-chmod +x scripts/install-systemd.sh scripts/tailscale-setup.sh scripts/check-routerbot.sh
+chmod +x scripts/install-systemd.sh scripts/tailscale-setup.sh scripts/check-paragon.sh
 ./scripts/install-systemd.sh
 ```
 
 ```bash
-ROUTERBOT_USER=your-user ./scripts/install-systemd.sh
-sudo systemctl status routerbot
-./scripts/check-routerbot.sh
+PARAGON_USER=your-user ./scripts/install-systemd.sh
+sudo systemctl status paragon
+./scripts/check-paragon.sh
 ```
 
 ## Configuration
@@ -257,13 +253,22 @@ sudo systemctl status routerbot
 
 | Variable | Description |
 |----------|-------------|
-| `ROUTERBOT_HOST` | Bind address (default `127.0.0.1`) |
-| `ROUTERBOT_PORT` | Port (default `4117`) |
-| `ROUTERBOT_API_KEY` | API key override |
+| `PARAGON_HOST` | Bind address (default `127.0.0.1`) |
+| `PARAGON_PORT` | Port (default `4117`) |
+| `PARAGON_API_KEY` | API key override |
+
+## Upgrading from RouterBot
+
+Existing RouterBot installs upgrade in place — no manual config edits required:
+
+- `ROUTERBOT_*` environment variables still work (with a one-time deprecation warning); set the `PARAGON_*` equivalent when convenient.
+- The pre-rename model id `routerbot-local` is still accepted as an alias for `paragon` in `/v1/models` and `/v1/chat/completions` for one migration release.
+- `data/config.json` migrates automatically on first read — `configVersion` bumps and `exposedModel` updates if it was still the old default. No other settings, credentials, or provider configuration are touched.
+- Rename `deploy/routerbot*.service` → `deploy/paragon*.service` and re-run `./scripts/install-systemd.sh` when you're ready to move the systemd unit names over; the old units keep running until then.
 
 ## Security
 
-Read **[SECURITY.md](SECURITY.md)** before exposing RouterBot on the public internet.
+Read **[SECURITY.md](SECURITY.md)** before exposing PARAGON on the public internet.
 
 - Use a strong, unique API key when using Tailscale Funnel or tunnels.
 - Never commit `data/config.json` (contains keys and hostnames).
