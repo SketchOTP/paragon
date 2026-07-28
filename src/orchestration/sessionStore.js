@@ -52,12 +52,30 @@ export function createSessionStore(dataDir) {
     return updated;
   }
 
-  function activeDurationMinutes(session, now = Date.now()) {
+  // Note: the persisted field `activeDurationMs` accumulates actual provider
+  // execution time (summed run durationMs, via recordActivity's
+  // activeDurationDeltaMs) — it is NOT wall-clock time. The three duration
+  // concepts below are kept explicitly distinct rather than conflated under
+  // one ambiguous "duration" name (PARAGON-D-002A finding).
+
+  /** Wall-clock time since the session started — what "session active for 8h" evidence means. */
+  function wallClockDurationMinutes(session, now = Date.now()) {
     const start = Date.parse(session.startTime);
     if (!Number.isFinite(start)) {
       return 0;
     }
-    return Math.round((now - start) / 60000);
+    const end = session.endTime ? Date.parse(session.endTime) : now;
+    return Math.round((end - start) / 60000);
+  }
+
+  /** Sum of actual provider-execution durationMs across every run in this session. */
+  function activeProviderDurationMinutes(session) {
+    return Math.round(session.activeDurationMs / 60000);
+  }
+
+  /** Wall-clock time minus active provider-execution time — waiting/thinking/idle time. */
+  function idleDurationMinutes(session, now = Date.now()) {
+    return Math.max(0, wallClockDurationMinutes(session, now) - activeProviderDurationMinutes(session));
   }
 
   async function close(sessionId, now = new Date().toISOString()) {
@@ -70,5 +88,13 @@ export function createSessionStore(dataDir) {
     return updated;
   }
 
-  return { ...store, getOrCreate, recordActivity, activeDurationMinutes, close };
+  return {
+    ...store,
+    getOrCreate,
+    recordActivity,
+    wallClockDurationMinutes,
+    activeProviderDurationMinutes,
+    idleDurationMinutes,
+    close
+  };
 }

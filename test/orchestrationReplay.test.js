@@ -102,10 +102,10 @@ test("synthetic replay: pathological long/large/subagent-heavy session produces 
   // --- Assemble what the shadow governor would report ---
 
   const session = runtime.sessions.get(sessionId);
-  const activeDurationMinutes = runtime.sessions.activeDurationMinutes(session);
+  const wallClockDurationMinutes = runtime.sessions.wallClockDurationMinutes(session);
   const contextDecisions = evaluateShadowGovernor(policy, {
     estimatedInputTokens: rootContext.estimatedInputTokens,
-    activeDurationMinutes,
+    activeDurationMinutes: wallClockDurationMinutes,
     subagentCounts: null
   });
 
@@ -130,7 +130,7 @@ test("synthetic replay: pathological long/large/subagent-heavy session produces 
 
   // --- Assertions: this is the truthful report PARAGON would produce ---
 
-  assert.ok(activeDurationMinutes >= policy.session.longSessionMinutes, "session should exceed the long-session threshold");
+  assert.ok(wallClockDurationMinutes >= policy.session.longSessionMinutes, "session should exceed the long-session threshold");
   assert.ok(longSessionWarning, "expected a session.longRunning shadow warning");
 
   assert.ok(ceilingWarning, "expected a context.absoluteCeiling shadow warning");

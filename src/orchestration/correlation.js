@@ -62,11 +62,17 @@ export function extractCorrelation(headers = {}) {
   };
 }
 
-export function correlationResponseHeaders(correlation) {
+/**
+ * `mode` must be the orchestration policy's actual configured mode
+ * ("off" or "shadow") — never hardcoded. A response header claiming
+ * "shadow" while the operator has configured "off" would misrepresent
+ * what PARAGON is actually doing (PARAGON-D-002A finding).
+ */
+export function correlationResponseHeaders(correlation, mode) {
   return {
     "X-Paragon-Job-ID": correlation.jobId,
     "X-Paragon-Session-ID": correlation.sessionId,
     "X-Paragon-Run-ID": correlation.runId,
-    "X-Paragon-Enforcement-Mode": "shadow"
+    "X-Paragon-Enforcement-Mode": mode ?? "off"
   };
 }
