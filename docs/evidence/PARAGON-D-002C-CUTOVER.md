@@ -12,10 +12,11 @@ themselves: `/home/sketch/paragon-cutover-backup/20260728_093259/STAGE4_CUTOVER_
 During PARAGON-D-002B Stage 4A discovery, a command inspecting
 `data/config.json`'s structure printed the full `server.tunnels` object,
 including a real ngrok auth token, into conversational output. It was
-never written to any file or committed. **This must be rotated/revoked
-at https://dashboard.ngrok.com/authtokens before the cutover runbook is
-executed** — this is an account-level action on a third-party service
-that the agent cannot and did not attempt to perform.
+never written to any file or committed. **Operator confirmed 2026-07-28:
+the token has been revoked and ngrok is no longer in use.** The migrated
+config for this cutover already excludes `server.tunnels` entirely (see
+Configuration migration, below) — ngrok plays no role in the clean
+deployment.
 
 ## What was verified read-only (no state changed)
 
@@ -116,14 +117,47 @@ minimal request count by design:
 
 Instance was stopped after validation — nothing left running.
 
+## Runbook revision (v2)
+
+The operator reviewed the v1 runbook before running it and caught two real
+defects, both confirmed against the actual repo scripts:
+
+1. v1 called `scripts/install-systemd.sh` directly for the 4118 dry run.
+   That script unconditionally enables+starts `paragon-tailscale.service`,
+   whose `ExecStart` is `scripts/tailscale-setup.sh` — which defaults
+   `LOCAL_PORT` to `4117` (nothing sets `PARAGON_PORT`), independent of
+   the `4118` value in `data/config.json`. That would re-touch the live
+   Tailscale serve/funnel mapping during what was supposed to be an
+   isolated systemd-wiring dry run.
+2. v1's final command (`tailscale funnel 4117 on`) is not valid syntax for
+   the installed CLI (v1.98.9, confirmed via `tailscale funnel --help`)
+   and would not correctly restore the public listener on `:10000`.
+
+v2 (now in place at `STAGE4_CUTOVER_RUNBOOK.sh`) installs only
+`paragon.service` by hand (same `sed` substitution `install-systemd.sh`
+does, minus the tailscale unit) so Tailscale state is untouched until the
+real cutover step, and uses `--bg --https=<port> <target>` syntax matching
+`scripts/tailscale-setup.sh`'s own working invocation. One further fix
+made while reviewing v2: the "turn mapping off" lines had a stray extra
+positional argument (`tailscale funnel --https=10000 4117 off`) that
+`serve`/`funnel` don't accept — corrected to `--https=10000 off`.
+
+Trade-off accepted: v2 does not install `paragon-tailscale.service`, so a
+future reboot brings `paragon.service` back up but does not re-run
+Tailscale serve/funnel setup automatically. Flagged as a follow-up, not a
+cutover blocker — the running config survives reboot either way since
+`tailscale serve`/`funnel` state itself persists independent of the
+oneshot unit that originally set it.
+
 ## What remains (root required — not performed by this agent)
 
-1. Rotate the leaked ngrok token (manual, ngrok dashboard).
-2. Run `STAGE4_CUTOVER_RUNBOOK.sh` — installs `paragon.service` via the
-   repo's own `scripts/install-systemd.sh` (system-level, not hand-authored
-   by the agent), validates it on a borrowed port 4118 first, then performs
-   the actual swap: stop+disable `routerbot.service`, point the clean
-   service at `:4117`, restore Tailscale Funnel, validate publicly.
+1. ~~Rotate the leaked ngrok token~~ — done, confirmed by operator
+   2026-07-28.
+2. Run `STAGE4_CUTOVER_RUNBOOK.sh` (v2) — installs `paragon.service`
+   directly (not via `install-systemd.sh`, see above), validates it on a
+   borrowed port 4118 first, then performs the actual swap: stop+disable
+   `routerbot.service`, point the clean service at `:4117`, restore
+   Tailscale serve+Funnel, validate publicly.
 3. Post-cutover validation and canary per the directive's Stage 5.
 
 ## Verdict
