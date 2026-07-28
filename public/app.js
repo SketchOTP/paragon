@@ -92,6 +92,7 @@ const els = {
   settingParagonBase: document.querySelector("#setting-paragon-base"),
   settingExposedModel: document.querySelector("#setting-exposed-model"),
   settingApiKey: document.querySelector("#setting-api-key"),
+  settingOpenrouterApiKey: document.querySelector("#setting-openrouter-api-key"),
   settingsPanel: document.querySelector("#settings-panel"),
   toggleSettings: document.querySelector("#toggle-settings"),
   editFallback: document.querySelector("#edit-fallback"),
@@ -136,6 +137,7 @@ const els = {
   registryProviderFilter: document.querySelector("#registry-provider-filter"),
   registryHealthFilter: document.querySelector("#registry-health-filter"),
   registryUpdatedNote: document.querySelector("#registry-updated-note"),
+  registryBenchmarkNote: document.querySelector("#registry-benchmark-note"),
   registrySourcesBtn: document.querySelector("#registry-sources-btn"),
   registrySourcesDialog: document.querySelector("#registry-sources-dialog"),
   registrySourcesContent: document.querySelector("#registry-sources-content"),
@@ -322,6 +324,7 @@ els.settingFunnelPort.addEventListener("input", updateServerFromSettings);
 els.settingParagonBase.addEventListener("input", updateServerFromSettings);
 els.settingExposedModel.addEventListener("input", updateServerFromSettings);
 els.settingApiKey.addEventListener("input", updateServerFromSettings);
+els.settingOpenrouterApiKey?.addEventListener("input", updateServerFromSettings);
 els.toggleSettings.addEventListener("click", () => {
   els.settingsPanel.hidden = !els.settingsPanel.hidden;
 });
@@ -506,6 +509,9 @@ function render() {
   els.settingParagonBase.value = config.server.cursorBaseUrl ?? "";
   els.settingExposedModel.value = config.server.exposedModel ?? "";
   els.settingApiKey.value = config.server.apiKey ?? "";
+  if (els.settingOpenrouterApiKey) {
+    els.settingOpenrouterApiKey.value = config.integrations?.openrouterApiKey ?? "";
+  }
 
   renderConnectionBanner();
   renderHealthGauge();
@@ -520,6 +526,9 @@ function updateServerFromSettings() {
   config.server.cursorBaseUrl = els.settingParagonBase.value.trim();
   config.server.exposedModel = els.settingExposedModel.value.trim();
   config.server.apiKey = els.settingApiKey.value;
+  if (els.settingOpenrouterApiKey) {
+    config.integrations = { ...config.integrations, openrouterApiKey: els.settingOpenrouterApiKey.value.trim() };
+  }
   renderConnectionBanner();
 }
 
@@ -1532,6 +1541,37 @@ function rankPillClass(tenScale) {
   return "rank-worst";
 }
 
+/** codingIndex is the more relevant Artificial Analysis metric for coding-flavored task types; intelligenceIndex is the general fallback. */
+function benchmarkIndexForTask(entry, taskType) {
+  const b = entry.externalBenchmark;
+  if (!b) {
+    return null;
+  }
+  const codingTasks = new Set(["code", "debug", "review"]);
+  const value = codingTasks.has(taskType) ? (b.codingIndex ?? b.intelligenceIndex) : (b.intelligenceIndex ?? b.codingIndex);
+  return value ?? null;
+}
+
+function benchmarkPromptPrice(entry) {
+  const raw = entry.externalBenchmark?.pricing?.prompt;
+  const value = raw == null ? NaN : Number(raw);
+  return Number.isFinite(value) ? value : null;
+}
+
+/** "Good enough vs cost": among eligible, benchmarked candidates within 15% of the best index for this task, the cheapest one is the value pick — not simply the highest-scoring model. */
+function computeValuePickKey(rows, taskType) {
+  const candidates = rows
+    .filter((r) => !r.rankInfo?.excluded && benchmarkIndexForTask(r, taskType) != null && benchmarkPromptPrice(r) != null)
+    .map((r) => ({ key: `${r.provider}::${r.model}`, index: benchmarkIndexForTask(r, taskType), price: benchmarkPromptPrice(r) }));
+  if (!candidates.length) {
+    return null;
+  }
+  const maxIndex = Math.max(...candidates.map((c) => c.index));
+  const goodEnough = candidates.filter((c) => c.index >= maxIndex * 0.85);
+  goodEnough.sort((a, b) => a.price - b.price);
+  return goodEnough[0]?.key ?? null;
+}
+
 function buildRegistryRows() {
   if (!registryData) {
     return [];
@@ -1554,6 +1594,9 @@ function buildRegistryRows() {
     rows = rows.filter((r) => r.health === healthFilter);
   }
 
+  const valuePickKey = computeValuePickKey(rows, taskType);
+  rows = rows.map((r) => ({ ...r, isValuePick: valuePickKey === `${r.provider}::${r.model}` }));
+
   const { key, dir } = registrySort;
   const mult = dir === "asc" ? 1 : -1;
   rows.sort((a, b) => {
@@ -1568,6 +1611,9 @@ function buildRegistryRows() {
     } else if (key === "contextWindow") {
       av = a.contextWindow ?? -1;
       bv = b.contextWindow ?? -1;
+    } else if (key === "benchmarkIndex") {
+      av = benchmarkIndexForTask(a, taskType) ?? -1;
+      bv = benchmarkIndexForTask(b, taskType) ?? -1;
     } else {
       av = String(a[key] ?? "");
       bv = String(b[key] ?? "");
@@ -1580,8 +1626,22 @@ function buildRegistryRows() {
   return rows;
 }
 
+function benchmarkCell(entry, taskType) {
+  const b = entry.externalBenchmark;
+  if (!b) {
+    return `<span class="orch-empty" title="No matched external benchmark for this model">—</span>`;
+  }
+  const index = benchmarkIndexForTask(entry, taskType);
+  const sourceShort = b.source === "artificial-analysis" ? "AA" : b.source === "design-arena" ? "DA" : escapeHtml(b.source);
+  const price = benchmarkPromptPrice(entry);
+  const priceLabel = price != null ? `$${(price * 1e6).toFixed(2)}/M` : "";
+  const valueBadge = entry.isValuePick ? ` <span class="registry-badge eligible" title="Good enough (within 15% of the best index for this task) at the lowest price among matched candidates">best value</span>` : "";
+  return `<span title="Matched to ${escapeAttr(b.matchedAs)} (${escapeAttr(b.source)})">${sourceShort} ${index ?? "—"} ${priceLabel}</span>${valueBadge}`;
+}
+
 function renderRegistryTable() {
   const rows = buildRegistryRows();
+  const taskType = els.registryTaskFilter.value || registryData?.taskTypes?.[0];
   els.registryTableBody.innerHTML = rows.length
     ? rows
         .map((entry) => {
@@ -1595,6 +1655,7 @@ function renderRegistryTable() {
           <td>${escapeHtml(providerLabel(entry.provider, config?.providers?.[entry.provider]))}</td>
           <td><code>${escapeHtml(entry.model)}</code></td>
           <td>${rankCell}</td>
+          <td>${benchmarkCell(entry, taskType)}</td>
           <td><span class="registry-badge health-${escapeAttr(entry.health)}">${escapeHtml(entry.health)}</span></td>
           <td><span class="registry-badge cost-${escapeAttr(entry.costClass)}">${escapeHtml(entry.costClass)}</span></td>
           <td>${escapeHtml(entry.latencyClass)}</td>
@@ -1603,7 +1664,7 @@ function renderRegistryTable() {
         </tr>`;
         })
         .join("")
-    : `<tr><td colspan="8" class="orch-empty">No models discovered yet — click "Load models" on a provider card above, or Refresh.</td></tr>`;
+    : `<tr><td colspan="9" class="orch-empty">No models discovered yet — click "Load models" on a provider card above, or Refresh.</td></tr>`;
 
   els.registryTable.querySelectorAll("th[data-sort-key]").forEach((th) => {
     const key = th.dataset.sortKey;
@@ -1640,6 +1701,7 @@ function renderSourcesDialog() {
     return;
   }
   const m = registryData.methodology;
+  const bm = registryData.benchmarks;
   const taskType = els.registryTaskFilter.value || registryData.taskTypes[0];
   const ranked = (registryData.taskRanking[taskType] ?? []).filter((r) => !r.excluded).slice(0, 8);
 
@@ -1654,9 +1716,19 @@ function renderSourcesDialog() {
     )
     .join("");
 
+  let benchmarkSection;
+  if (!bm?.enabled) {
+    benchmarkSection = `<p class="methodology-note"><strong>External benchmarks:</strong> not configured. Add an OpenRouter API key in Server settings above to pull real, source-disclosed benchmark data (Artificial Analysis intelligence/coding indices and Design Arena Elo/win-rate, aggregated by <a href="https://openrouter.ai/docs/api/api-reference/benchmarks/list-benchmarks" target="_blank" rel="noopener noreferrer">OpenRouter's benchmarks API</a>). Without it, the "External benchmark" column stays empty rather than guessing.</p>`;
+  } else if (bm.error) {
+    benchmarkSection = `<p class="methodology-note"><strong>External benchmarks:</strong> configured, but the last fetch failed: ${escapeHtml(bm.error)}. Check the key in Server settings.</p>`;
+  } else {
+    benchmarkSection = `<p class="methodology-note"><strong>External benchmarks:</strong> ${bm.matchedCount} of ${registryData.registry.length} local models matched to a benchmark row (fetched ${bm.cachedAt ? new Date(bm.cachedAt).toLocaleString() : "just now"} from OpenRouter's benchmarks API, source data: Artificial Analysis / Design Arena${bm.sourceMeta?.as_of ? `, as of ${escapeHtml(bm.sourceMeta.as_of)}` : ""}). Matching is best-effort name normalization — a model with no exact benchmark entry (common for provider-internal composite reasoning-effort variants) shows "—" rather than a guessed score. "Best value" marks the cheapest matched candidate within 15% of the highest benchmark index for this task — not simply the highest-scoring (and often most expensive) model.</p>`;
+  }
+
   els.registrySourcesContent.innerHTML = `
     <p class="methodology-note"><strong>Kind:</strong> ${escapeHtml(m.kind)}</p>
     <p class="methodology-note">${escapeHtml(m.description)}</p>
+    ${benchmarkSection}
     <p class="methodology-note"><strong>Live weight table</strong> (points applied per factor):</p>
     <table class="methodology-weights"><thead><tr><th>Factor</th><th>Points</th></tr></thead><tbody>${weightsRows}</tbody></table>
     <p class="methodology-note"><strong>Live results for "${escapeHtml(taskType)}"</strong> (top ${ranked.length}, computed just now):</p>
@@ -1681,6 +1753,16 @@ async function refreshModelRegistry() {
     renderRegistryTable();
     if (els.registryUpdatedNote) {
       els.registryUpdatedNote.textContent = `Updated ${new Date(registryData.builtAt).toLocaleTimeString()} — refreshes automatically every 30s.`;
+    }
+    if (els.registryBenchmarkNote) {
+      const bm = registryData.benchmarks;
+      if (!bm?.enabled) {
+        els.registryBenchmarkNote.textContent = "External benchmarks: not configured";
+      } else if (bm.error) {
+        els.registryBenchmarkNote.textContent = `External benchmarks: fetch failed (${bm.error.slice(0, 60)})`;
+      } else {
+        els.registryBenchmarkNote.textContent = `External benchmarks: ${bm.matchedCount} models matched`;
+      }
     }
   } catch {
     // Best-effort panel; a failed fetch here must not disturb the rest of the dashboard.

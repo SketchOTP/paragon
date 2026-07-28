@@ -80,5 +80,12 @@ export const defaultConfig = {
       quick: "cursor"
     }
   },
-  orchestration: DEFAULT_ORCHESTRATION_CONFIG
+  orchestration: DEFAULT_ORCHESTRATION_CONFIG,
+  integrations: {
+    // Optional — enables real external benchmark citations (Artificial
+    // Analysis / Design Arena, via OpenRouter's benchmarks API) in the
+    // Model Routing panel. Without it, task-fit ranking stays
+    // internal-only (see src/routing/router.js scoringMethodology()).
+    openrouterApiKey: ""
+  }
 };

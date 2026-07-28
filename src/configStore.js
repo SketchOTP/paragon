@@ -34,7 +34,8 @@ export function mergeConfig(base, incoming) {
       taskRoutes: { ...base.routing.taskRoutes, ...incoming?.routing?.taskRoutes },
       fallbackChain: incoming?.routing?.fallbackChain ?? base.routing.fallbackChain
     },
-    orchestration: mergeOrchestrationConfig(base.orchestration, incoming?.orchestration)
+    orchestration: mergeOrchestrationConfig(base.orchestration, incoming?.orchestration),
+    integrations: { ...base.integrations, ...incoming?.integrations }
   };
 }
 

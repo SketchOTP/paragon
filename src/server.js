@@ -14,6 +14,7 @@ import { createOrchestrationRuntime } from "./orchestration/telemetry.js";
 import { registerOrchestrationRoutes } from "./orchestration/api.js";
 import { buildModelRegistry } from "./routing/modelRegistry.js";
 import { rankRegistryByTask, scoringMethodology, TASK_TYPES } from "./routing/router.js";
+import { getBenchmarkData, annotateRegistryWithBenchmarks } from "./routing/benchmarks.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 let cachedConfig = await readConfig();
@@ -114,14 +115,23 @@ app.get("/api/status", async (req, res) => {
   res.json(body);
 });
 
-app.get("/api/routing/registry", async (_req, res) => {
+app.get("/api/routing/registry", async (req, res) => {
   const config = await getConfig();
-  const registry = buildModelRegistry(config, getStatuses());
+  const rawRegistry = buildModelRegistry(config, getStatuses());
+  const benchmarks = await getBenchmarkData(config.integrations?.openrouterApiKey, { force: req.query.refreshBenchmarks === "1" });
+  const registry = benchmarks.enabled ? annotateRegistryWithBenchmarks(rawRegistry, benchmarks.rows) : rawRegistry;
   res.json({
     registry,
-    taskRanking: rankRegistryByTask(registry, config.routing?.taskRoutes),
+    taskRanking: rankRegistryByTask(rawRegistry, config.routing?.taskRoutes),
     taskTypes: TASK_TYPES,
     methodology: scoringMethodology(),
+    benchmarks: {
+      enabled: benchmarks.enabled,
+      error: benchmarks.error,
+      cachedAt: benchmarks.cachedAt,
+      sourceMeta: benchmarks.meta,
+      matchedCount: registry.filter((e) => e.externalBenchmark).length
+    },
     builtAt: new Date().toISOString()
   });
 });

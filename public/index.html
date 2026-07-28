@@ -192,6 +192,11 @@
             <span class="field-label">API key</span>
             <input id="setting-api-key" type="password" autocomplete="new-password" />
           </label>
+          <label class="field field-span">
+            <span class="field-label">OpenRouter API key (optional — model benchmarks)</span>
+            <input id="setting-openrouter-api-key" type="password" autocomplete="new-password" placeholder="sk-or-..." />
+            <span class="field-hint">Enables real external benchmark citations (Artificial Analysis / Design Arena, via OpenRouter) in the Model Routing panel below. Leave blank to keep task-fit ranking internal-only.</span>
+          </label>
         </div>
       </section>
 
@@ -260,6 +265,7 @@
               </select>
             </label>
             <button type="button" class="btn ghost sm" id="registry-sources-btn">Sources / methodology</button>
+            <span class="registry-updated-note" id="registry-benchmark-note"></span>
             <span class="registry-updated-note" id="registry-updated-note"></span>
           </div>
           <div class="registry-table-wrap">
@@ -269,6 +275,7 @@
                   <th data-sort-key="provider">Provider</th>
                   <th data-sort-key="model">Model</th>
                   <th data-sort-key="tenScale">Task fit (1-10, 10=worst)</th>
+                  <th data-sort-key="benchmarkIndex">External benchmark</th>
                   <th data-sort-key="health">Health</th>
                   <th data-sort-key="costClass">Cost class</th>
                   <th data-sort-key="latencyClass">Latency class</th>
