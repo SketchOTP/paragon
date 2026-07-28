@@ -4,6 +4,8 @@ import { LEGACY_EXPOSED_MODEL_ALIAS } from "./defaultConfig.js";
 import { messagesToPrompt } from "./prompt.js";
 import { runProvider } from "./cli.js";
 import { addLog } from "./logStore.js";
+import { createBoundedResponseAccumulator } from "./orchestration/contextEstimator.js";
+import { classifyError, boundedDiagnostic } from "./orchestration/errorClassification.js";
 import {
   allProvidersFailedMessage,
   buildProviderAttempts,
@@ -16,7 +18,20 @@ function logParagonRequest(message, { level = "info", provider = "paragon" } = {
   addLog({ type: "request", provider, level, message });
 }
 
-export function registerOpenAiRoutes(app, getConfig) {
+/**
+ * Shadow-only instrumentation hook. All orchestration recording is
+ * best-effort — a storage failure must never affect the actual response.
+ */
+async function safely(fn, fallback = null) {
+  try {
+    return await fn();
+  } catch (error) {
+    console.warn(`orchestration: instrumentation error (non-fatal): ${error.message}`);
+    return fallback;
+  }
+}
+
+export function registerOpenAiRoutes(app, getConfig, orchestration) {
   app.use("/v1", createAuthMiddleware(getConfig, { allowLocalhost: false }));
 
   app.get("/v1/models", async (req, res) => {
@@ -51,6 +66,24 @@ export function registerOpenAiRoutes(app, getConfig) {
     const primary = pickEnabledProvider(config, routedProvider);
     const attempts = buildProviderAttempts(config, primary);
     const started = Date.now();
+
+    // Master switch: orchestration.enabled === false means no telemetry at
+    // all, not even correlation headers — distinct from mode:"off", which
+    // still records correlation/run/session state but suppresses governor
+    // decisions (see evaluateShadowGovernor). See
+    // docs/operations/ORCHESTRATION_OBSERVABILITY.md for the full
+    // enabled/off/shadow semantics (PARAGON-D-002A).
+    const orchestrationActive = Boolean(orchestration && config.orchestration?.enabled);
+    const telemetry = orchestrationActive
+      ? await safely(() => orchestration.beginRequest(req.headers, req.body))
+      : null;
+    if (telemetry) {
+      res.set(telemetry.responseHeaders);
+      await safely(() =>
+        orchestration.recordRoute(telemetry.run.id, { provider: primary, routeClassification: task, fallbackPosition: 0 })
+      );
+    }
+
     logParagonRequest(
       req.body.stream
         ? `POST /v1/chat/completions (stream) · task ${task} → ${primary}`
@@ -67,20 +100,33 @@ export function registerOpenAiRoutes(app, getConfig) {
 
     try {
       if (req.body.stream) {
-        await streamCompletion({ res, config, attempts, prompt, started });
+        await streamCompletion({ res, config, attempts, prompt, started, orchestration, telemetry });
         return;
       }
 
-      const { provider, result } = await runWithFallback(attempts, prompt);
+      const { provider, result } = await runWithFallback(attempts, prompt, { orchestration, runId: telemetry?.run.id });
       const durationMs = Date.now() - started;
       logParagonRequest(
         `POST /v1/chat/completions → 200 (${durationMs}ms) via ${provider}${provider !== primary ? ` (routed ${primary})` : ""}`,
         { provider }
       );
+      const content = sanitizeAssistantContent(result.stdout);
+      if (telemetry) {
+        await safely(() =>
+          orchestration.finishRequest(telemetry, {
+            success: true,
+            provider,
+            model: config.providers[provider]?.model,
+            fallbackPosition: attempts.findIndex((a) => a.name === provider),
+            responseText: content,
+            contextEstimate: telemetry.contextEstimate
+          })
+        );
+      }
       res.json(
         chatCompletion({
           model: config.server.exposedModel,
-          content: sanitizeAssistantContent(result.stdout),
+          content,
           durationMs,
           provider,
           routedProvider: primary
@@ -97,6 +143,17 @@ export function registerOpenAiRoutes(app, getConfig) {
         level: "error",
         message: error.message
       });
+      if (telemetry) {
+        await safely(() =>
+          orchestration.finishRequest(telemetry, {
+            success: false,
+            provider: primary,
+            errorClassification: classifyError(error),
+            errorDiagnostic: boundedDiagnostic(error),
+            timeout: classifyError(error) === "TIMEOUT"
+          })
+        );
+      }
       res.status(500).json({
         error: {
           message: CLIENT_ERROR_MESSAGE,
@@ -119,19 +176,42 @@ function pickEnabledProvider(config, preferred) {
   return fallback[0];
 }
 
-async function runWithFallback(attempts, prompt, onChunk) {
+/**
+ * RUN vs ATTEMPT: one call to this function serves one PARAGON request
+ * (`run`). Each provider it tries within the configured fallback chain is
+ * a separate `attempt`, individually timed and classified — this is what
+ * lets orchestration telemetry answer "which specific provider failed,
+ * when, and why" rather than only "which provider eventually succeeded"
+ * (PARAGON-D-002A). Provider order, selection, and retry policy are
+ * unchanged from before this instrumentation existed.
+ */
+async function runWithFallback(attempts, prompt, { onChunk, orchestration, runId } = {}) {
   let lastError;
 
   for (let index = 0; index < attempts.length; index += 1) {
     const { name, config: providerConfig } = attempts[index];
     const pendingChunks = [];
+    const hasNext = index < attempts.length - 1;
+
+    const attemptRecord =
+      orchestration && runId
+        ? await safely(() =>
+            orchestration.beginAttempt(runId, { provider: name, model: providerConfig.model, fallbackPosition: index })
+          )
+        : null;
+    const onSpawn = attemptRecord
+      ? (pid) => {
+          safely(() => orchestration.recordAttemptProcessId(attemptRecord.id, pid));
+        }
+      : undefined;
 
     try {
       const result = await runProvider(
         name,
         providerConfig,
         prompt,
-        onChunk ? (chunk) => pendingChunks.push(chunk) : undefined
+        onChunk ? (chunk) => pendingChunks.push(chunk) : undefined,
+        { onSpawn }
       );
 
       if (onChunk) {
@@ -148,6 +228,9 @@ async function runWithFallback(attempts, prompt, onChunk) {
           message: `Recovered using ${name} after ${attempts[index - 1].name} failed`
         });
       }
+      if (attemptRecord) {
+        await safely(() => orchestration.finishAttempt(attemptRecord.id, { success: true, followedByAnotherAttempt: false }));
+      }
       return { provider: name, result };
     } catch (error) {
       pendingChunks.length = 0;
@@ -158,7 +241,19 @@ async function runWithFallback(attempts, prompt, onChunk) {
         level: "warn",
         message: formatProviderError(error)
       });
-      if (index < attempts.length - 1) {
+      if (attemptRecord) {
+        await safely(() =>
+          orchestration.finishAttempt(attemptRecord.id, {
+            success: false,
+            timeout: classifyError(error) === "TIMEOUT",
+            errorClassification: classifyError(error),
+            errorDiagnostic: boundedDiagnostic(error),
+            fallbackReason: hasNext ? `failed, falling back to ${attempts[index + 1].name}` : "all attempts exhausted",
+            followedByAnotherAttempt: hasNext
+          })
+        );
+      }
+      if (hasNext) {
         addLog({
           type: "fallback",
           provider: attempts[index + 1].name,
@@ -174,7 +269,7 @@ async function runWithFallback(attempts, prompt, onChunk) {
   throw new Error(CLIENT_ERROR_MESSAGE);
 }
 
-async function streamCompletion({ res, config, attempts, prompt, started }) {
+async function streamCompletion({ res, config, attempts, prompt, started, orchestration, telemetry }) {
   const id = `chatcmpl-${Date.now()}`;
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache, no-transform");
@@ -186,7 +281,12 @@ async function streamCompletion({ res, config, attempts, prompt, started }) {
   };
 
   let roleSent = false;
+  // Bounded counters instead of `streamedText += chunk` — a multi-hundred-KB
+  // streamed response no longer means a second full copy held in memory
+  // purely for telemetry (PARAGON-D-002A).
+  const responseAccumulator = createBoundedResponseAccumulator();
   const onChunk = (chunk) => {
+    responseAccumulator.push(chunk);
     if (!roleSent) {
       send({
         id,
@@ -207,11 +307,22 @@ async function streamCompletion({ res, config, attempts, prompt, started }) {
   };
 
   try {
-    const { provider } = await runWithFallback(attempts, prompt, onChunk);
+    const { provider } = await runWithFallback(attempts, prompt, { onChunk, orchestration, runId: telemetry?.run.id });
     const durationMs = Date.now() - started;
     logParagonRequest(`POST /v1/chat/completions (stream) → 200 (${durationMs}ms) via ${provider}`, {
       provider
     });
+    if (telemetry) {
+      await safely(() =>
+        orchestration.finishRequest(telemetry, {
+          success: true,
+          provider,
+          model: config.providers[provider]?.model,
+          fallbackPosition: attempts.findIndex((a) => a.name === provider),
+          responseEstimate: responseAccumulator.finish()
+        })
+      );
+    }
     send({
       id,
       object: "chat.completion.chunk",
@@ -227,6 +338,18 @@ async function streamCompletion({ res, config, attempts, prompt, started }) {
       level: "error",
       provider: attempts[0]?.name ?? "paragon"
     });
+    if (telemetry) {
+      await safely(() =>
+        orchestration.finishRequest(telemetry, {
+          success: false,
+          provider: attempts[0]?.name ?? null,
+          errorClassification: classifyError(error),
+          errorDiagnostic: boundedDiagnostic(error),
+          timeout: classifyError(error) === "TIMEOUT",
+          responseEstimate: responseAccumulator.finish()
+        })
+      );
+    }
     if (!roleSent) {
       send({
         id,

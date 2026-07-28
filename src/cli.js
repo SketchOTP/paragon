@@ -545,7 +545,7 @@ function sortCursorModels(models) {
   });
 }
 
-export async function runProvider(provider, providerConfig, prompt, onChunk) {
+export async function runProvider(provider, providerConfig, prompt, onChunk, { onSpawn } = {}) {
   const type = providerType(provider, providerConfig);
 
   if (type === "http") {
@@ -561,17 +561,19 @@ export async function runProvider(provider, providerConfig, prompt, onChunk) {
     stdinText: stdinMode === "none" ? undefined : prompt,
     timeoutMs: providerConfig.timeoutMs,
     logType: "completion",
-    onChunk
+    onChunk,
+    onSpawn
   });
 }
 
-function runProcess({ provider, command, args, stdinText, timeoutMs, logType, onChunk, quiet = false }) {
+function runProcess({ provider, command, args, stdinText, timeoutMs, logType, onChunk, onSpawn, quiet = false }) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       cwd: process.cwd(),
       env: envForProvider(provider),
       stdio: ["pipe", "pipe", "pipe"]
     });
+    onSpawn?.(child.pid);
     let stdout = "";
     let stderr = "";
     let settled = false;
@@ -593,6 +595,27 @@ function runProcess({ provider, command, args, stdinText, timeoutMs, logType, on
 
     child.stderr.on("data", (chunk) => {
       stderr += chunk.toString();
+    });
+
+    // Must be attached before the write below: if the child has already
+    // exited (or exits mid-write), writing to its stdin raises EPIPE on the
+    // stream itself. Left unhandled, that's an uncaught 'error' event that
+    // crashes the whole PARAGON process — this converts it into a normal
+    // rejected execution instead. `exit`/`error` below still fire and are
+    // the source of truth when they do; `settled` prevents a double-settle.
+    child.stdin.on("error", (error) => {
+      if (settled) return;
+      if (error.code === "EPIPE") {
+        settled = true;
+        clearTimeout(timer);
+        const wrapped = new Error(`${provider}: stdin closed before the prompt was fully written`);
+        wrapped.code = "EPIPE";
+        reject(wrapped);
+        return;
+      }
+      settled = true;
+      clearTimeout(timer);
+      reject(error);
     });
 
     if (stdinText) {
