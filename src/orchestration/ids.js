@@ -6,6 +6,7 @@ const PREFIXES = {
   job: "job",
   session: "sess",
   run: "run",
+  attempt: "att",
   checkpoint: "ckpt",
   decision: "dec"
 };

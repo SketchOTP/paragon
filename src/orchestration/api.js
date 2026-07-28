@@ -26,11 +26,14 @@ export function registerOrchestrationRoutes(app, orchestration, getConfig, persi
     const activeSessions = sessions.filter((s) => s.status === "active");
     const openRuns = runs.filter((r) => !r.endTime);
     const longest = activeSessions.reduce(
-      (max, s) => Math.max(max, orchestration.sessions.activeDurationMinutes(s)),
+      (max, s) => Math.max(max, orchestration.sessions.wallClockDurationMinutes(s)),
       0
     );
     res.json({
-      enforcementMode: config.orchestration.mode,
+      // Mirrors the per-request X-Paragon-Enforcement-Mode semantics: the
+      // master `enabled` switch overrides whatever `mode` is configured
+      // (PARAGON-D-002A).
+      enforcementMode: config.orchestration.enabled ? config.orchestration.mode : "off",
       activeJobs: jobs.filter((j) => j.status === "active").length,
       activeSessions: activeSessions.length,
       activeRuns: openRuns.length,
@@ -83,6 +86,18 @@ export function registerOrchestrationRoutes(app, orchestration, getConfig, persi
       return;
     }
     res.json(run);
+  });
+
+  app.get("/api/orchestration/runs/:id/attempts", (req, res) => {
+    const run = orchestration.runs.get(req.params.id);
+    if (!run) {
+      res.status(404).json({ error: "Unknown run" });
+      return;
+    }
+    const attempts = orchestration.attempts
+      .byRun(req.params.id)
+      .sort((a, b) => a.fallbackPosition - b.fallbackPosition);
+    res.json({ items: attempts });
   });
 
   app.get("/api/orchestration/usage", (_req, res) => {

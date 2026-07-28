@@ -92,6 +92,40 @@ export function newRun({
   };
 }
 
+/**
+ * One provider/model execution within a run's fallback sequence.
+ * RUN = one incoming PARAGON request. ATTEMPT = one provider try within it.
+ */
+export function newAttempt({
+  attemptId,
+  runId,
+  provider,
+  model,
+  fallbackPosition,
+  startTime,
+  processId
+}) {
+  return {
+    schemaVersion: SCHEMA_VERSION,
+    id: attemptId,
+    runId,
+    provider,
+    model: model ?? null,
+    fallbackPosition: fallbackPosition ?? 0,
+    startTime,
+    endTime: null,
+    durationMs: null,
+    success: null,
+    timeout: false,
+    cancelled: false,
+    errorClassification: null,
+    errorDiagnostic: null,
+    fallbackReason: null,
+    followedByAnotherAttempt: null,
+    processId: processId ?? null
+  };
+}
+
 export function newCheckpoint({
   checkpointId,
   jobId,

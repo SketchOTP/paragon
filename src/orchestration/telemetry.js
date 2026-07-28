@@ -2,13 +2,27 @@ import path from "node:path";
 import { createJobStore } from "./jobStore.js";
 import { createSessionStore } from "./sessionStore.js";
 import { createRunStore } from "./runStore.js";
+import { createAttemptStore } from "./attemptStore.js";
 import { createCheckpointStore } from "./checkpointStore.js";
 import { createDecisionStore } from "./decisionStore.js";
 import { extractCorrelation, correlationResponseHeaders } from "./correlation.js";
 import { estimateRequestContext, estimateResponseSize } from "./contextEstimator.js";
 import { evaluateShadowGovernor } from "./shadowGovernor.js";
 import { objectiveHash } from "./duplication.js";
-import { generateId } from "./ids.js";
+import { generateId, isValidId } from "./ids.js";
+
+function finalUserMessageContent(messages) {
+  if (!Array.isArray(messages)) {
+    return null;
+  }
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i];
+    if (message?.role === "user") {
+      return typeof message.content === "string" ? message.content : JSON.stringify(message.content ?? "");
+    }
+  }
+  return null;
+}
 
 /**
  * Owns all orchestration state stores and exposes the small set of
@@ -22,6 +36,7 @@ export function createOrchestrationRuntime({ dataDir, getPolicy }) {
   const jobs = createJobStore(orchDataDir);
   const sessions = createSessionStore(orchDataDir);
   const runs = createRunStore(orchDataDir);
+  const attempts = createAttemptStore(orchDataDir);
   const checkpoints = createCheckpointStore(orchDataDir);
   const decisions = createDecisionStore(orchDataDir);
 
@@ -30,21 +45,35 @@ export function createOrchestrationRuntime({ dataDir, getPolicy }) {
     const policy = getPolicy();
     const now = new Date().toISOString();
 
+    // A client-supplied run id that collides with an existing, unrelated
+    // run must never silently overwrite that record (PARAGON-D-002A).
+    // Session/job ids are *meant* to be reused across requests — this
+    // guard only applies to run ids, which are meant to be unique per
+    // request.
+    let runId = correlation.runId;
+    if (isValidId(runId) && runs.get(runId)) {
+      runId = generateId("run");
+    }
+    correlation.runId = runId;
+
     await jobs.getOrCreate(correlation.jobId, { repository: correlation.repository, now });
     await jobs.attachSession(correlation.jobId, correlation.sessionId);
     const session = await sessions.getOrCreate(correlation.sessionId, { jobId: correlation.jobId, now });
 
     const contextEstimate = estimateRequestContext(body);
-    const activeDurationMinutes = sessions.activeDurationMinutes(session, Date.parse(now));
+    const wallClockDurationMinutes = sessions.wallClockDurationMinutes(session, Date.parse(now));
 
     const isRoot = correlation.agentRole === "root" || !correlation.parentRunId;
     const siblings = isRoot ? [] : runs.openChildren(correlation.parentRunId);
-    const totalChildRunsInJob = isRoot ? 0 : runs.byJob(correlation.jobId).filter((r) => r.parentRunId).length;
+    // +1 includes the run currently being created — omitting it undercounts
+    // by one and lets the Nth child through the (N > limit) check unflagged
+    // (PARAGON-D-002A finding).
+    const totalChildRunsInJob = isRoot ? 0 : runs.byJob(correlation.jobId).filter((r) => r.parentRunId).length + 1;
     const hasRecursiveChild = !isRoot && runs.get(correlation.parentRunId)?.parentRunId != null;
 
     const decisionInputs = evaluateShadowGovernor(policy, {
       estimatedInputTokens: contextEstimate.estimatedInputTokens,
-      activeDurationMinutes,
+      activeDurationMinutes: wallClockDurationMinutes,
       subagentCounts: isRoot
         ? null
         : { parallelChildRuns: siblings.length + 1, totalChildRunsInJob, hasRecursiveChild }
@@ -59,6 +88,14 @@ export function createOrchestrationRuntime({ dataDir, getPolicy }) {
       await jobs.attachRootRun(correlation.jobId, correlation.runId);
     }
 
+    // Objective hash deliberately never uses messages[0] — that is very
+    // commonly a shared system prompt, and hashing it would make every
+    // sibling child run in a session look like a duplicate of every other
+    // (PARAGON-D-002A finding). It requires an explicit task-type header
+    // AND a final user-authored message; either missing means "no reliable
+    // objective hash" (null), not a guess.
+    const objHash = objectiveHash(correlation.taskType, finalUserMessageContent(body?.messages));
+
     const run = await runs.start({
       runId: correlation.runId,
       parentRunId: correlation.parentRunId,
@@ -70,7 +107,7 @@ export function createOrchestrationRuntime({ dataDir, getPolicy }) {
       startTime: now,
       streaming: Boolean(body?.stream),
       repository: correlation.repository,
-      objectiveHash: objectiveHash(correlation.taskType, body?.messages?.[0]?.content)
+      objectiveHash: objHash
     });
 
     return {
@@ -79,7 +116,7 @@ export function createOrchestrationRuntime({ dataDir, getPolicy }) {
       run,
       decisions: savedDecisions,
       responseHeaders: {
-        ...correlationResponseHeaders(correlation),
+        ...correlationResponseHeaders(correlation, policy.mode),
         "X-Paragon-Context-Estimate": String(contextEstimate.estimatedInputTokens),
         "X-Paragon-Governor-Warnings": String(savedDecisions.length)
       }
@@ -90,20 +127,55 @@ export function createOrchestrationRuntime({ dataDir, getPolicy }) {
     return runs.update(runId, { provider, routeClassification, fallbackPosition });
   }
 
-  async function finishRequest(runId, {
+  // --- Per-attempt telemetry: one HTTP request (run) can try several
+  // providers via the fallback chain. Each try is its own attempt record.
+
+  async function beginAttempt(runId, { provider, model, fallbackPosition }) {
+    return attempts.start({
+      attemptId: generateId("attempt"),
+      runId,
+      provider,
+      model,
+      fallbackPosition,
+      startTime: new Date().toISOString()
+    });
+  }
+
+  async function finishAttempt(attemptId, params) {
+    return attempts.finish(attemptId, { now: new Date().toISOString(), ...params });
+  }
+
+  async function recordAttemptProcessId(attemptId, processId) {
+    if (processId == null) {
+      return null;
+    }
+    return attempts.append?.({ ...attempts.get(attemptId), processId });
+  }
+
+  async function finishRequest(telemetryResult, {
     success,
     provider,
     model,
     fallbackPosition,
     errorClassification = null,
+    errorDiagnostic = null,
     timeout = false,
     cancelled = false,
-    responseText = "",
-    contextEstimate
+    responseText,
+    responseEstimate: suppliedResponseEstimate
   }) {
+    const { run, correlation, contextEstimate } = telemetryResult;
+    const runId = run.id;
     const now = new Date().toISOString();
-    const responseEstimate = estimateResponseSize(responseText);
-    const finished = await runs.finish(runId, { now, success, errorClassification, timeout, cancelled, responseEstimate });
+    const responseEstimate = suppliedResponseEstimate ?? estimateResponseSize(responseText ?? "");
+    const finished = await runs.finish(runId, {
+      now,
+      success,
+      errorClassification,
+      timeout,
+      cancelled,
+      responseEstimate
+    });
     if (!finished) return null;
 
     const withProvider =
@@ -111,7 +183,8 @@ export function createOrchestrationRuntime({ dataDir, getPolicy }) {
         ? await runs.update(runId, {
             provider: provider ?? finished.provider,
             model: model ?? finished.model,
-            fallbackPosition: fallbackPosition ?? finished.fallbackPosition
+            fallbackPosition: fallbackPosition ?? finished.fallbackPosition,
+            errorDiagnostic
           })
         : finished;
 
@@ -132,6 +205,20 @@ export function createOrchestrationRuntime({ dataDir, getPolicy }) {
       activeDurationDeltaMs: withProvider.durationMs ?? 0
     });
 
+    // An untagged request's one-request implicit session/job must not stay
+    // "active" forever — otherwise ordinary untagged traffic silently
+    // inflates active-session/active-job counts without bound
+    // (PARAGON-D-002A finding). Explicit caller-supplied sessions are left
+    // open; only sessions PARAGON itself invented get auto-closed.
+    if (correlation?.sessionIsImplicit) {
+      await sessions.close(withProvider.sessionId, now);
+      const job = jobs.get(withProvider.jobId);
+      const stillHasActiveSessions = (job?.sessionIds ?? []).some((id) => sessions.get(id)?.status === "active");
+      if (job && !stillHasActiveSessions) {
+        await jobs.close(withProvider.jobId, now);
+      }
+    }
+
     return withProvider;
   }
 
@@ -139,10 +226,14 @@ export function createOrchestrationRuntime({ dataDir, getPolicy }) {
     jobs,
     sessions,
     runs,
+    attempts,
     checkpoints,
     decisions,
     beginRequest,
     recordRoute,
+    beginAttempt,
+    finishAttempt,
+    recordAttemptProcessId,
     finishRequest,
     newCheckpointId: () => generateId("checkpoint")
   };
