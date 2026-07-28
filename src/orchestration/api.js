@@ -3,6 +3,7 @@ import { buildUsageSummary } from "./usageLedger.js";
 import { detectDuplication } from "./duplication.js";
 import { newCheckpoint } from "./schemas.js";
 import { generateId } from "./ids.js";
+import { activeExecutionCount, circuitStateSnapshot } from "./liveEnforcement.js";
 
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 500;
@@ -38,7 +39,17 @@ export function registerOrchestrationRoutes(app, orchestration, getConfig, persi
       activeSessions: activeSessions.length,
       activeRuns: openRuns.length,
       maxObservedContextTokens: sessions.reduce((max, s) => Math.max(max, s.maxObservedContextTokens), 0),
-      longestActiveSessionMinutes: longest
+      longestActiveSessionMinutes: longest,
+      // Directly observed live-enforcement state (PARAGON-D-003R) — distinct
+      // from the telemetry counts above, which are per-run historical
+      // records rather than current in-process gauges.
+      liveEnforcement: {
+        activeConcurrentExecutions: activeExecutionCount(),
+        maxConcurrent: config.orchestration.concurrency.maxConcurrent,
+        circuitBreakers: circuitStateSnapshot()
+      },
+      telemetryStorageBytes: orchestration.storageUsageBytes(),
+      retentionDays: config.orchestration.retentionDays
     });
   });
 

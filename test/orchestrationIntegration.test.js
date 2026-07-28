@@ -59,7 +59,7 @@ test("/v1/models is unchanged by orchestration instrumentation", async () => {
   assert.equal(body.data[1].id, "routerbot-local");
 });
 
-test("chat completion with no correlation headers still returns shadow response headers", async () => {
+test("chat completion with no correlation headers still returns orchestration response headers", async () => {
   const res = await fetch(`${BASE}/v1/chat/completions`, {
     method: "POST",
     headers: authHeaders(),
@@ -68,7 +68,9 @@ test("chat completion with no correlation headers still returns shadow response 
   assert.ok(res.headers.get("x-paragon-job-id"));
   assert.ok(res.headers.get("x-paragon-session-id"));
   assert.ok(res.headers.get("x-paragon-run-id"));
-  assert.equal(res.headers.get("x-paragon-enforcement-mode"), "shadow");
+  // Default orchestration mode is "live" as of PARAGON-D-003R (shadow is a
+  // migrate-only legacy value, never a fresh default).
+  assert.equal(res.headers.get("x-paragon-enforcement-mode"), "live");
   // No CLI providers are authenticated in this sandbox, so the request itself
   // fails — that's expected and orthogonal to what this test verifies.
   await res.json();
@@ -156,13 +158,51 @@ test("dashboard API returns bounded, paginated results", async () => {
   assert.equal(body.limit, 2);
 });
 
-test("PUT policy rejects an enforcement mode outside off/shadow", async () => {
+test("PUT policy rejects an enforcement mode outside off/live", async () => {
   const res = await fetch(`${BASE}/api/orchestration/policy`, {
     method: "PUT",
     headers: authHeaders(),
     body: JSON.stringify({ mode: "enforce" })
   });
   assert.equal(res.status, 400);
+});
+
+test("PUT policy rejects the legacy shadow value directly (migration-only, not a valid write)", async () => {
+  const res = await fetch(`${BASE}/api/orchestration/policy`, {
+    method: "PUT",
+    headers: authHeaders(),
+    body: JSON.stringify({ mode: "shadow" })
+  });
+  assert.equal(res.status, 400);
+});
+
+test("live mode actually blocks a request whose estimated context exceeds the absolute ceiling", async () => {
+  const policyRes = await fetch(`${BASE}/api/orchestration/policy`, { headers: authHeaders() });
+  const policy = await policyRes.json();
+  assert.equal(policy.mode, "live", "default mode must be live for this to be a real enforcement test");
+
+  const oversized = "x".repeat(policy.context.absoluteCeilingTokens * 4);
+  const res = await fetch(`${BASE}/v1/chat/completions`, {
+    method: "POST",
+    headers: authHeaders(),
+    body: JSON.stringify({ model: "paragon", messages: [{ role: "user", content: oversized }] })
+  });
+  assert.equal(res.status, 400);
+  const body = await res.json();
+  assert.equal(body.error.type, "paragon_live_enforcement_error");
+  assert.equal(body.error.code, "context.absoluteCeiling");
+
+  const runId = res.headers.get("x-paragon-run-id");
+  assert.ok(runId);
+  const runRes = await fetch(`${BASE}/api/orchestration/runs/${runId}`, { headers: authHeaders() });
+  const run = await runRes.json();
+  assert.equal(run.success, false, "the blocked request must still appear in Activity as a bounded failure");
+
+  const decisionsRes = await fetch(`${BASE}/api/orchestration/decisions?limit=5`, { headers: authHeaders() });
+  const decisions = await decisionsRes.json();
+  const blocked = decisions.items.find((d) => d.runId === runId && d.policyRule === "context.absoluteCeiling");
+  assert.ok(blocked, "the enforcement must appear in Governor Actions");
+  assert.match(blocked.explanation, /^ENFORCED \(live mode\)/);
 });
 
 test("POST checkpoint persists and is retrievable via jobs/sessions", async () => {

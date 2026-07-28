@@ -1,6 +1,6 @@
 export const DEFAULT_ORCHESTRATION_CONFIG = {
   enabled: true,
-  mode: "shadow",
+  mode: "live",
   retentionDays: 30,
   context: {
     warningTokens: 80000,
@@ -11,7 +11,10 @@ export const DEFAULT_ORCHESTRATION_CONFIG = {
   session: {
     checkpointMinutes: 60,
     rolloverMinutes: 120,
-    longSessionMinutes: 480
+    longSessionMinutes: 480,
+    // Hard cutoff for explicit (caller-supplied) sessions only — implicit
+    // one-request sessions are never subject to this (PARAGON-D-003R).
+    hardLimitMinutes: 720
   },
   subagents: {
     parallelLimit: 2,
@@ -23,10 +26,23 @@ export const DEFAULT_ORCHESTRATION_CONFIG = {
     repeatedFailureWarning: 2,
     noProgressWarning: 3,
     repeatedCommandWarning: 3
+  },
+  concurrency: {
+    maxConcurrent: 4
+  },
+  fallback: {
+    maxAttempts: 4
+  },
+  circuitBreaker: {
+    failureThreshold: 3,
+    cooldownMs: 60000
   }
 };
 
-const VALID_MODES = new Set(["off", "shadow"]);
+// "shadow" is accepted only as a migration source value (see
+// migrateOrchestrationMode in configMigrate.js) — it is never valid on a
+// policy that reaches validatePolicy directly.
+const VALID_MODES = new Set(["off", "live"]);
 
 function isPositiveNumber(value) {
   return typeof value === "number" && Number.isFinite(value) && value > 0;
@@ -34,8 +50,9 @@ function isPositiveNumber(value) {
 
 /**
  * Fails safe: returns { ok:false, errors } instead of throwing, so a bad
- * PUT never corrupts the running policy. D-002 only accepts "off"/"shadow" —
- * any enforcement value is rejected outright.
+ * PUT never corrupts the running policy. Only "off"/"live" are accepted —
+ * "shadow" is a legacy value only ever produced by migration, never a
+ * valid target for a direct policy write (PARAGON-D-003R).
  */
 export function validatePolicy(candidate) {
   const errors = [];
@@ -44,7 +61,7 @@ export function validatePolicy(candidate) {
   }
 
   if (!VALID_MODES.has(candidate.mode)) {
-    errors.push(`mode must be one of ${[...VALID_MODES].join(", ")} (D-002 does not implement enforcement)`);
+    errors.push(`mode must be one of ${[...VALID_MODES].join(", ")}`);
   }
 
   const numericFields = [
@@ -55,9 +72,14 @@ export function validatePolicy(candidate) {
     ["session.checkpointMinutes", candidate.session?.checkpointMinutes],
     ["session.rolloverMinutes", candidate.session?.rolloverMinutes],
     ["session.longSessionMinutes", candidate.session?.longSessionMinutes],
+    ["session.hardLimitMinutes", candidate.session?.hardLimitMinutes],
     ["subagents.parallelLimit", candidate.subagents?.parallelLimit],
     ["subagents.totalPerJobLimit", candidate.subagents?.totalPerJobLimit],
-    ["subagents.runtimeWarningMinutes", candidate.subagents?.runtimeWarningMinutes]
+    ["subagents.runtimeWarningMinutes", candidate.subagents?.runtimeWarningMinutes],
+    ["concurrency.maxConcurrent", candidate.concurrency?.maxConcurrent],
+    ["fallback.maxAttempts", candidate.fallback?.maxAttempts],
+    ["circuitBreaker.failureThreshold", candidate.circuitBreaker?.failureThreshold],
+    ["circuitBreaker.cooldownMs", candidate.circuitBreaker?.cooldownMs]
   ];
   for (const [name, value] of numericFields) {
     if (!isPositiveNumber(value)) {
@@ -82,6 +104,9 @@ export function mergeOrchestrationConfig(base, incoming) {
     context: { ...base.context, ...incoming?.context },
     session: { ...base.session, ...incoming?.session },
     subagents: { ...base.subagents, ...incoming?.subagents },
-    loops: { ...base.loops, ...incoming?.loops }
+    loops: { ...base.loops, ...incoming?.loops },
+    concurrency: { ...base.concurrency, ...incoming?.concurrency },
+    fallback: { ...base.fallback, ...incoming?.fallback },
+    circuitBreaker: { ...base.circuitBreaker, ...incoming?.circuitBreaker }
   };
 }

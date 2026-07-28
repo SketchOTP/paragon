@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { generateApiKey } from "./auth.js";
-import { migrateToParagon } from "./configMigrate.js";
+import { migrateToParagon, migrateOrchestrationMode } from "./configMigrate.js";
 import { BUILTIN_PROVIDERS, defaultConfig } from "./defaultConfig.js";
 import { getEnv } from "./env.js";
 import { mergeOrchestrationConfig } from "./orchestration/governorPolicy.js";
@@ -76,21 +76,21 @@ export async function readConfig() {
   try {
     const raw = await fs.readFile(configPath, "utf8");
     config = mergeConfig(defaultConfig, JSON.parse(raw));
-    config = migrateToParagon(config);
+    config = migrateToParagon(migrateOrchestrationMode(config));
     config = await ensureApiKey(config, false);
   } catch (error) {
     if (error.code !== "ENOENT") {
       console.warn(`Could not read config, using defaults: ${error.message}`);
     }
     config = mergeConfig(defaultConfig, {});
-    config = migrateToParagon(config);
+    config = migrateToParagon(migrateOrchestrationMode(config));
     config = await ensureApiKey(config, true);
   }
   return applyEnvOverrides(config);
 }
 
 export async function writeConfig(nextConfig) {
-  const merged = migrateToParagon(mergeConfig(defaultConfig, nextConfig));
+  const merged = migrateToParagon(migrateOrchestrationMode(mergeConfig(defaultConfig, nextConfig)));
   await fs.mkdir(dataDir, { recursive: true });
   await fs.writeFile(configPath, `${JSON.stringify(merged, null, 2)}\n`, "utf8");
   return applyEnvOverrides(merged);

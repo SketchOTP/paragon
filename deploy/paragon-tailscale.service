@@ -7,6 +7,13 @@ Before=paragon.service
 [Service]
 Type=oneshot
 RemainAfterExit=yes
+# Baked in at install time from data/config.json by install-systemd.sh —
+# deliberately NOT sourced from /etc/paragon/environment or left to
+# tailscale-setup.sh's own fallback defaults, so this unit can never
+# silently target the wrong port regardless of what else is configured.
+Environment=PARAGON_PORT=%PARAGON_LOCAL_PORT%
+Environment=PARAGON_TAILSCALE_SERVE_PORT=%PARAGON_SERVE_PORT%
+Environment=PARAGON_TAILSCALE_FUNNEL_PORT=%PARAGON_FUNNEL_PORT%
 ExecStart=%PARAGON_DIR%/scripts/tailscale-setup.sh
 # Idempotent; safe on every boot
 

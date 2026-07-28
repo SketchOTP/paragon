@@ -25,3 +25,20 @@ export function migrateToParagon(config) {
 
   return next;
 }
+
+/**
+ * PARAGON-D-003R: shadow mode is retired. Any config still carrying the
+ * legacy "shadow" mode value is migrated to "live" in place — this is not
+ * a rename, since "live" now actually enforces (see
+ * src/orchestration/liveEnforcement.js). Idempotent: a config already on
+ * "off" or "live" is returned unchanged.
+ */
+export function migrateOrchestrationMode(config) {
+  if (config?.orchestration?.mode !== "shadow") {
+    return config;
+  }
+  return {
+    ...config,
+    orchestration: { ...config.orchestration, mode: "live" }
+  };
+}

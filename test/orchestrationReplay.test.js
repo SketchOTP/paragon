@@ -19,7 +19,7 @@ import { detectDuplication, objectiveHash } from "../src/orchestration/duplicati
  * count is fabricated to hit each documented threshold.
  *
  * This demonstrates exactly what PARAGON would have warned about under
- * shadow mode for the pathological workload described in D-002's directive
+ * the pathological workload described in D-002's directive
  * (the Cursor usage evidence: subagent-heavy, 8h+, 150K+ context sessions).
  */
 function tmpDir() {
@@ -30,7 +30,7 @@ function hoursAgo(h) {
   return new Date(Date.now() - h * 60 * 60 * 1000).toISOString();
 }
 
-test("synthetic replay: pathological long/large/subagent-heavy session produces the expected shadow warnings", async () => {
+test("synthetic replay: pathological long/large/subagent-heavy session produces the expected governor warnings", async () => {
   const dataDir = tmpDir();
   const policy = DEFAULT_ORCHESTRATION_CONFIG;
   const runtime = createOrchestrationRuntime({ dataDir, getPolicy: () => policy });
@@ -146,6 +146,10 @@ test("synthetic replay: pathological long/large/subagent-heavy session produces 
   assert.equal(rootRun.fallbackPosition, 1, "root run should reflect the fallback that occurred");
   assert.equal(rootRun.timeout, true);
 
-  // Nothing was ever enforced — that's the entire point of shadow mode.
-  assert.equal(policy.mode, "shadow");
+  // This replay calls evaluateShadowGovernor directly, which stays a pure
+  // proposal-only evaluator regardless of the runtime's configured mode
+  // (PARAGON-D-003R retired "shadow" as the default/only mode, but did not
+  // touch shadowGovernor.js itself — actual enforcement lives in
+  // liveEnforcement.js and is gated through openaiApi.js, not here).
+  assert.equal(policy.mode, "live");
 });

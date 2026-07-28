@@ -7,12 +7,55 @@ import { addLog } from "./logStore.js";
 import { createBoundedResponseAccumulator } from "./orchestration/contextEstimator.js";
 import { classifyError, boundedDiagnostic } from "./orchestration/errorClassification.js";
 import {
+  activeExecutionCount,
+  applyFallbackLimit,
+  beginExecution,
+  checkConcurrency,
+  checkContextCeiling,
+  endExecution,
+  filterOpenCircuits,
+  recordProviderResult
+} from "./orchestration/liveEnforcement.js";
+import {
   allProvidersFailedMessage,
   buildProviderAttempts,
   CLIENT_ERROR_MESSAGE,
   formatProviderError,
   sanitizeAssistantContent
 } from "./providerFallback.js";
+
+function enforcementErrorResponse(res, { reasonCode, message }, status = 429) {
+  res.status(status).json({
+    error: {
+      message,
+      type: "paragon_live_enforcement_error",
+      code: reasonCode
+    }
+  });
+}
+
+/** Records a blocking live-enforcement decision so it shows in Governor Actions, same as shadow-proposed ones. */
+async function recordEnforcementDecision(orchestration, telemetry, { reasonCode, message }) {
+  if (!telemetry || !orchestration) {
+    return;
+  }
+  await safely(() =>
+    orchestration.decisions.record(
+      { jobId: telemetry.run.jobId, sessionId: telemetry.run.sessionId, runId: telemetry.run.id, now: new Date().toISOString() },
+      [
+        {
+          policyRule: reasonCode,
+          observedValue: true,
+          threshold: true,
+          proposedAction: "blocked_request",
+          explanation: `ENFORCED (live mode): ${message}`,
+          confidence: "high",
+          missingEvidence: []
+        }
+      ]
+    )
+  );
+}
 
 function logParagonRequest(message, { level = "info", provider = "paragon" } = {}) {
   addLog({ type: "request", provider, level, message });
@@ -60,20 +103,21 @@ export function registerOpenAiRoutes(app, getConfig, orchestration) {
 
   app.post("/v1/chat/completions", async (req, res) => {
     const config = await getConfig();
+    const policy = config.orchestration;
     const prompt = messagesToPrompt(req.body.messages);
     const task = classifyTask(prompt);
     const routedProvider = config.routing.taskRoutes[task] ?? config.routing.defaultProvider;
     const primary = pickEnabledProvider(config, routedProvider);
-    const attempts = buildProviderAttempts(config, primary);
+    let attempts = buildProviderAttempts(config, primary);
     const started = Date.now();
 
     // Master switch: orchestration.enabled === false means no telemetry at
     // all, not even correlation headers — distinct from mode:"off", which
     // still records correlation/run/session state but suppresses governor
-    // decisions (see evaluateShadowGovernor). See
-    // docs/operations/ORCHESTRATION_OBSERVABILITY.md for the full
-    // enabled/off/shadow semantics (PARAGON-D-002A).
-    const orchestrationActive = Boolean(orchestration && config.orchestration?.enabled);
+    // decisions and live enforcement (see evaluateShadowGovernor and
+    // liveEnforcement.js). See docs/operations/ORCHESTRATION_OBSERVABILITY.md
+    // for the full enabled/off/live semantics (PARAGON-D-002A, PARAGON-D-003R).
+    const orchestrationActive = Boolean(orchestration && policy?.enabled);
     const telemetry = orchestrationActive
       ? await safely(() => orchestration.beginRequest(req.headers, req.body))
       : null;
@@ -82,6 +126,65 @@ export function registerOpenAiRoutes(app, getConfig, orchestration) {
       await safely(() =>
         orchestration.recordRoute(telemetry.run.id, { provider: primary, routeClassification: task, fallbackPosition: 0 })
       );
+    }
+
+    const isLive = policy?.mode === "live";
+
+    // --- Live enforcement gates, checked before any provider is dispatched.
+    // Each blocking condition finishes the telemetry run as a bounded
+    // failure (so it's visible in Activity/Governor Actions) and returns an
+    // OpenAI-compatible structured error — nothing here is a proposal.
+    if (isLive && telemetry?.enforcement) {
+      const { reasonCode, message, rolloverRequired } = telemetry.enforcement;
+      addLog({ type: "enforcement", provider: primary, level: "warn", message: `${reasonCode}: ${message}` });
+      await safely(() =>
+        orchestration.finishRequest(telemetry, { success: false, provider: primary, errorClassification: "CANCELLED", errorDiagnostic: message })
+      );
+      enforcementErrorResponse(res, { reasonCode, message: rolloverRequired ? `${message} A new session is required.` : message });
+      return;
+    }
+
+    if (isLive) {
+      const contextCheck = checkContextCeiling(policy, telemetry?.contextEstimate?.estimatedInputTokens ?? 0);
+      if (contextCheck.blocked) {
+        addLog({ type: "enforcement", provider: primary, level: "warn", message: `${contextCheck.reasonCode}: ${contextCheck.message}` });
+        await recordEnforcementDecision(orchestration, telemetry, contextCheck);
+        if (telemetry) {
+          await safely(() =>
+            orchestration.finishRequest(telemetry, { success: false, provider: primary, errorClassification: "CANCELLED", errorDiagnostic: contextCheck.message })
+          );
+        }
+        enforcementErrorResponse(res, contextCheck, 400);
+        return;
+      }
+
+      const concurrencyCheck = checkConcurrency(policy);
+      if (concurrencyCheck.blocked) {
+        addLog({ type: "enforcement", provider: primary, level: "warn", message: `${concurrencyCheck.reasonCode}: ${concurrencyCheck.message}` });
+        await recordEnforcementDecision(orchestration, telemetry, concurrencyCheck);
+        if (telemetry) {
+          await safely(() =>
+            orchestration.finishRequest(telemetry, { success: false, provider: primary, errorClassification: "CANCELLED", errorDiagnostic: concurrencyCheck.message })
+          );
+        }
+        enforcementErrorResponse(res, concurrencyCheck, 429);
+        return;
+      }
+
+      attempts = applyFallbackLimit(policy, filterOpenCircuits(attempts));
+      if (!attempts.length) {
+        const message = "No providers available: all candidates are past the fallback limit or circuit-open.";
+        const circuitAllOpen = { reasonCode: "circuitBreaker.allOpen", message };
+        addLog({ type: "enforcement", provider: primary, level: "error", message });
+        await recordEnforcementDecision(orchestration, telemetry, circuitAllOpen);
+        if (telemetry) {
+          await safely(() =>
+            orchestration.finishRequest(telemetry, { success: false, provider: primary, errorClassification: "UNKNOWN", errorDiagnostic: message })
+          );
+        }
+        enforcementErrorResponse(res, circuitAllOpen, 503);
+        return;
+      }
     }
 
     logParagonRequest(
@@ -98,13 +201,22 @@ export function registerOpenAiRoutes(app, getConfig, orchestration) {
       message: `Task ${task} -> ${primary} (${config.providers[primary].model})`
     });
 
+    if (isLive) {
+      beginExecution();
+    }
+
     try {
       if (req.body.stream) {
-        await streamCompletion({ res, config, attempts, prompt, started, orchestration, telemetry });
+        await streamCompletion({ res, config, policy, isLive, attempts, prompt, started, orchestration, telemetry });
         return;
       }
 
-      const { provider, result } = await runWithFallback(attempts, prompt, { orchestration, runId: telemetry?.run.id });
+      const { provider, result } = await runWithFallback(attempts, prompt, {
+        orchestration,
+        runId: telemetry?.run.id,
+        policy,
+        isLive
+      });
       const durationMs = Date.now() - started;
       logParagonRequest(
         `POST /v1/chat/completions → 200 (${durationMs}ms) via ${provider}${provider !== primary ? ` (routed ${primary})` : ""}`,
@@ -161,6 +273,10 @@ export function registerOpenAiRoutes(app, getConfig, orchestration) {
           provider: primary
         }
       });
+    } finally {
+      if (isLive) {
+        endExecution();
+      }
     }
   });
 }
@@ -185,7 +301,7 @@ function pickEnabledProvider(config, preferred) {
  * (PARAGON-D-002A). Provider order, selection, and retry policy are
  * unchanged from before this instrumentation existed.
  */
-async function runWithFallback(attempts, prompt, { onChunk, orchestration, runId } = {}) {
+async function runWithFallback(attempts, prompt, { onChunk, orchestration, runId, policy, isLive } = {}) {
   let lastError;
 
   for (let index = 0; index < attempts.length; index += 1) {
@@ -231,6 +347,9 @@ async function runWithFallback(attempts, prompt, { onChunk, orchestration, runId
       if (attemptRecord) {
         await safely(() => orchestration.finishAttempt(attemptRecord.id, { success: true, followedByAnotherAttempt: false }));
       }
+      if (isLive) {
+        recordProviderResult(policy, name, true);
+      }
       return { provider: name, result };
     } catch (error) {
       pendingChunks.length = 0;
@@ -241,6 +360,9 @@ async function runWithFallback(attempts, prompt, { onChunk, orchestration, runId
         level: "warn",
         message: formatProviderError(error)
       });
+      if (isLive) {
+        recordProviderResult(policy, name, false);
+      }
       if (attemptRecord) {
         await safely(() =>
           orchestration.finishAttempt(attemptRecord.id, {
@@ -269,7 +391,7 @@ async function runWithFallback(attempts, prompt, { onChunk, orchestration, runId
   throw new Error(CLIENT_ERROR_MESSAGE);
 }
 
-async function streamCompletion({ res, config, attempts, prompt, started, orchestration, telemetry }) {
+async function streamCompletion({ res, config, policy, isLive, attempts, prompt, started, orchestration, telemetry }) {
   const id = `chatcmpl-${Date.now()}`;
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache, no-transform");
@@ -307,7 +429,7 @@ async function streamCompletion({ res, config, attempts, prompt, started, orches
   };
 
   try {
-    const { provider } = await runWithFallback(attempts, prompt, { onChunk, orchestration, runId: telemetry?.run.id });
+    const { provider } = await runWithFallback(attempts, prompt, { onChunk, orchestration, runId: telemetry?.run.id, policy, isLive });
     const durationMs = Date.now() - started;
     logParagonRequest(`POST /v1/chat/completions (stream) → 200 (${durationMs}ms) via ${provider}`, {
       provider
