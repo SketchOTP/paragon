@@ -178,8 +178,8 @@ export function createOrchestrationRuntime({ dataDir, getPolicy }) {
     };
   }
 
-  async function recordRoute(runId, { provider, routeClassification, fallbackPosition = 0 }) {
-    return runs.update(runId, { provider, routeClassification, fallbackPosition });
+  async function recordRoute(runId, { provider, model, routeClassification, fallbackPosition = 0 }) {
+    return runs.update(runId, { provider, model, routeClassification, fallbackPosition });
   }
 
   // --- Per-attempt telemetry: one HTTP request (run) can try several

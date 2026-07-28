@@ -126,7 +126,9 @@ const els = {
   orchSettingCircuitCooldown: document.querySelector("#orch-setting-circuit-cooldown"),
   orchSettingSessionHardLimit: document.querySelector("#orch-setting-session-hard-limit"),
   orchSettingRetentionDays: document.querySelector("#orch-setting-retention-days"),
-  orchStorageUsage: document.querySelector("#orch-storage-usage")
+  orchStorageUsage: document.querySelector("#orch-storage-usage"),
+  refreshRegistry: document.querySelector("#refresh-registry"),
+  registryTableBody: document.querySelector("#registry-table-body")
 };
 
 function getStoredApiKey() {
@@ -248,12 +250,15 @@ bindProviderInteractionLock();
 refreshStatus();
 refreshOrchestration();
 loadOrchestrationPolicy();
+refreshModelRegistry();
 setInterval(refreshOrchestration, 30000);
+setInterval(refreshModelRegistry, 30000);
 
 els.save.addEventListener("click", () => saveConfig({ notify: true }));
 els.refreshStatus.addEventListener("click", () => refreshStatus({ manual: true }));
 els.refreshOrchestration?.addEventListener("click", () => refreshOrchestration({ manual: true }));
 els.saveOrchSettings?.addEventListener("click", saveOrchestrationSettings);
+els.refreshRegistry?.addEventListener("click", refreshModelRegistry);
 els.addProvider.addEventListener("click", openAddProviderDialog);
 els.addProviderCancel.addEventListener("click", () => els.addProviderDialog.close());
 els.newProviderType.addEventListener("change", () => {
@@ -1469,6 +1474,52 @@ async function loadOrchestrationPolicy() {
     renderOrchestrationSettings();
   } catch {
     // Settings panel stays blank on failure; the rest of the dashboard is unaffected.
+  }
+}
+
+function contextWindowLabel(tokens) {
+  if (tokens == null) {
+    return "unknown";
+  }
+  return `${Math.round(tokens / 1000)}k`;
+}
+
+async function refreshModelRegistry() {
+  if (!els.registryTableBody) {
+    return;
+  }
+  if (els.refreshRegistry) {
+    els.refreshRegistry.disabled = true;
+  }
+  try {
+    const res = await apiFetch("/api/routing/registry");
+    if (!res.ok) {
+      return;
+    }
+    const body = await res.json();
+    const entries = body.registry ?? [];
+    els.registryTableBody.innerHTML = entries.length
+      ? entries
+          .map(
+            (entry) => `
+        <tr>
+          <td>${escapeHtml(providerLabel(entry.provider, config?.providers?.[entry.provider]))}</td>
+          <td><code>${escapeHtml(entry.model)}</code></td>
+          <td><span class="registry-badge health-${escapeAttr(entry.health)}">${escapeHtml(entry.health)}</span></td>
+          <td><span class="registry-badge cost-${escapeAttr(entry.costClass)}">${escapeHtml(entry.costClass)}</span></td>
+          <td>${escapeHtml(entry.latencyClass)}</td>
+          <td>${escapeHtml(contextWindowLabel(entry.contextWindow))}</td>
+          <td><span class="registry-badge ${entry.automaticEligibility ? "eligible" : "ineligible"}">${entry.automaticEligibility ? "yes" : "force only"}</span></td>
+        </tr>`
+          )
+          .join("")
+      : `<tr><td colspan="7" class="orch-empty">No models discovered yet — click "Load models" on a provider card above, or Refresh.</td></tr>`;
+  } catch {
+    // Best-effort panel; a failed fetch here must not disturb the rest of the dashboard.
+  } finally {
+    if (els.refreshRegistry) {
+      els.refreshRegistry.disabled = false;
+    }
   }
 }
 

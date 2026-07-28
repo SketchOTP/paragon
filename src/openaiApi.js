@@ -4,8 +4,10 @@ import { LEGACY_EXPOSED_MODEL_ALIAS } from "./defaultConfig.js";
 import { messagesToPrompt } from "./prompt.js";
 import { runProvider } from "./cli.js";
 import { addLog } from "./logStore.js";
-import { createBoundedResponseAccumulator } from "./orchestration/contextEstimator.js";
+import { createBoundedResponseAccumulator, estimateRequestContext } from "./orchestration/contextEstimator.js";
 import { classifyError, boundedDiagnostic } from "./orchestration/errorClassification.js";
+import { selectRoute, buildRankedAttempts } from "./routing/router.js";
+import { extractRoutingHints, requiresJsonValidation, isValidJson } from "./routing/hints.js";
 import {
   activeExecutionCount,
   applyFallbackLimit,
@@ -74,7 +76,7 @@ async function safely(fn, fallback = null) {
   }
 }
 
-export function registerOpenAiRoutes(app, getConfig, orchestration) {
+export function registerOpenAiRoutes(app, getConfig, orchestration, getStatuses = () => ({})) {
   app.use("/v1", createAuthMiddleware(getConfig, { allowLocalhost: false }));
 
   app.get("/v1/models", async (req, res) => {
@@ -106,9 +108,39 @@ export function registerOpenAiRoutes(app, getConfig, orchestration) {
     const policy = config.orchestration;
     const prompt = messagesToPrompt(req.body.messages);
     const task = classifyTask(prompt);
-    const routedProvider = config.routing.taskRoutes[task] ?? config.routing.defaultProvider;
-    const primary = pickEnabledProvider(config, routedProvider);
-    let attempts = buildProviderAttempts(config, primary);
+
+    // PARAGON-D-004: deterministic candidate scoring over the model
+    // registry is the real live routing decision — provider AND model,
+    // not just provider from a fixed task->provider table. taskRoutes is
+    // still read (inside selectRoute) as a strong preference signal, not
+    // an absolute override. See src/routing/router.js.
+    const hints = extractRoutingHints(req.headers);
+    const contextEstimate = estimateRequestContext(req.body);
+    let route = selectRoute({
+      config,
+      statuses: getStatuses(),
+      taskProfile: { taskType: task, estimatedInputTokens: contextEstimate.estimatedInputTokens },
+      hints
+    });
+    let attempts = route ? buildRankedAttempts(route.ranking, config) : [];
+    if (!route || !attempts.length) {
+      // Safety net: no eligible candidate in the registry (e.g. nothing
+      // enabled/healthy, or a registry build hiccup) — fall back to the
+      // old static default rather than a hard denial of service. Recorded
+      // with its own reason code so this is never silently confused with
+      // an actual scored decision.
+      route = null;
+      const routedProvider = config.routing.taskRoutes[task] ?? config.routing.defaultProvider;
+      const staticPrimary = pickEnabledProvider(config, routedProvider);
+      attempts = buildProviderAttempts(config, staticPrimary);
+    }
+    const primary = route ? route.provider : attempts[0]?.name;
+    const primaryModel = attempts[0]?.config?.model || config.providers[primary]?.model;
+    const routeReasonCode = route?.reasonCode ?? "fallback.staticDefault";
+    res.set({
+      "X-Paragon-Route-Reason": routeReasonCode,
+      "X-Paragon-Route-Model": primaryModel || ""
+    });
     const started = Date.now();
 
     // Master switch: orchestration.enabled === false means no telemetry at
@@ -124,7 +156,7 @@ export function registerOpenAiRoutes(app, getConfig, orchestration) {
     if (telemetry) {
       res.set(telemetry.responseHeaders);
       await safely(() =>
-        orchestration.recordRoute(telemetry.run.id, { provider: primary, routeClassification: task, fallbackPosition: 0 })
+        orchestration.recordRoute(telemetry.run.id, { provider: primary, model: primaryModel, routeClassification: task, fallbackPosition: 0 })
       );
     }
 
@@ -198,7 +230,7 @@ export function registerOpenAiRoutes(app, getConfig, orchestration) {
       type: "route",
       provider: primary,
       level: "info",
-      message: `Task ${task} -> ${primary} (${config.providers[primary].model})`
+      message: `Task ${task} -> ${primary} (${primaryModel || "default"}) [${routeReasonCode}]`
     });
 
     if (isLive) {
@@ -211,24 +243,63 @@ export function registerOpenAiRoutes(app, getConfig, orchestration) {
         return;
       }
 
-      const { provider, result } = await runWithFallback(attempts, prompt, {
+      let { provider, result } = await runWithFallback(attempts, prompt, {
         orchestration,
         runId: telemetry?.run.id,
         policy,
         isLive
       });
+      let content = sanitizeAssistantContent(result.stdout);
+
+      // Validation-driven escalation (PARAGON-D-004), kept distinct from
+      // service-failure fallback above: PARAGON is a completion proxy with
+      // no test-execution loop, so this is the one output contract it can
+      // honestly check today — did the response satisfy the structured-
+      // output format the caller actually asked for. Streaming responses
+      // are not covered (can't validate before the stream is already
+      // delivered to the caller).
+      if (requiresJsonValidation(req.body) && !hints.disableEscalation && !isValidJson(content)) {
+        const triedIndex = attempts.findIndex((a) => a.name === provider);
+        const remaining = attempts.slice(triedIndex + 1);
+        if (remaining.length) {
+          addLog({
+            type: "escalation",
+            provider,
+            level: "warn",
+            message: `${provider} response failed json validation — escalating to ${remaining[0].name} (distinct from service-failure fallback)`
+          });
+          try {
+            const escalated = await runWithFallback(remaining, prompt, {
+              orchestration,
+              runId: telemetry?.run.id,
+              policy,
+              isLive
+            });
+            provider = escalated.provider;
+            result = escalated.result;
+            content = sanitizeAssistantContent(result.stdout);
+          } catch {
+            addLog({
+              type: "escalation",
+              provider,
+              level: "error",
+              message: "Escalation candidates exhausted — returning the original response despite failed json validation."
+            });
+          }
+        }
+      }
+
       const durationMs = Date.now() - started;
       logParagonRequest(
         `POST /v1/chat/completions → 200 (${durationMs}ms) via ${provider}${provider !== primary ? ` (routed ${primary})` : ""}`,
         { provider }
       );
-      const content = sanitizeAssistantContent(result.stdout);
       if (telemetry) {
         await safely(() =>
           orchestration.finishRequest(telemetry, {
             success: true,
             provider,
-            model: config.providers[provider]?.model,
+            model: attempts.find((a) => a.name === provider)?.config?.model ?? config.providers[provider]?.model,
             fallbackPosition: attempts.findIndex((a) => a.name === provider),
             responseText: content,
             contextEstimate: telemetry.contextEstimate
@@ -439,7 +510,7 @@ async function streamCompletion({ res, config, policy, isLive, attempts, prompt,
         orchestration.finishRequest(telemetry, {
           success: true,
           provider,
-          model: config.providers[provider]?.model,
+          model: attempts.find((a) => a.name === provider)?.config?.model ?? config.providers[provider]?.model,
           fallbackPosition: attempts.findIndex((a) => a.name === provider),
           responseEstimate: responseAccumulator.finish()
         })

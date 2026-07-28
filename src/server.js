@@ -12,6 +12,7 @@ import { getAuthSession, getAuthState, listModels, runStatus, startAuth, submitA
 import { tailscaleUrls } from "./tailscaleUrls.js";
 import { createOrchestrationRuntime } from "./orchestration/telemetry.js";
 import { registerOrchestrationRoutes } from "./orchestration/api.js";
+import { buildModelRegistry } from "./routing/modelRegistry.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 let cachedConfig = await readConfig();
@@ -66,6 +67,20 @@ function invalidateStatusCache() {
   statusSnapshot = { at: 0, body: null };
 }
 
+/**
+ * Reuses the same cached status snapshot the dashboard already warms via
+ * /api/status — the router (D-004) needs a health signal per request but
+ * must never trigger a fresh CLI spawn per chat completion. Returns {}
+ * (all providers "unknown" health) until the cache has been warmed once.
+ */
+function getStatuses() {
+  const statuses = {};
+  for (const entry of statusSnapshot.body?.statuses ?? []) {
+    statuses[entry.provider] = { ok: entry.ok };
+  }
+  return statuses;
+}
+
 app.get("/health", (_req, res) => {
   res.json({ ok: true });
 });
@@ -96,6 +111,11 @@ app.get("/api/status", async (req, res) => {
   const body = { statuses, checkedAt: new Date().toISOString() };
   statusSnapshot = { at: now, body };
   res.json(body);
+});
+
+app.get("/api/routing/registry", async (_req, res) => {
+  const config = await getConfig();
+  res.json({ registry: buildModelRegistry(config, getStatuses()), builtAt: new Date().toISOString() });
 });
 
 app.get("/api/auth/flows", (_req, res) => {
@@ -194,7 +214,7 @@ app.get("/api/logs/stream", (req, res) => {
   req.on("close", unsubscribe);
 });
 
-registerOpenAiRoutes(app, getConfig, orchestration);
+registerOpenAiRoutes(app, getConfig, orchestration, getStatuses);
 // Mounted after `app.use("/api", adminAuth)` above, so these inherit admin auth.
 registerOrchestrationRoutes(app, orchestration, getConfig, async (next) => {
   cachedConfig = await writeConfig(next);

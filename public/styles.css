@@ -999,3 +999,88 @@ button.danger-text {
 .orch-decision.enforced .orch-decision-rule {
   color: var(--bad);
 }
+
+/* Model routing */
+.model-routing-panel {
+  margin-top: 18px;
+}
+
+.registry-table-wrap {
+  overflow-x: auto;
+}
+
+.registry-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.registry-table th {
+  text-align: left;
+  padding: 8px 10px;
+  color: var(--muted);
+  font-weight: 600;
+  text-transform: uppercase;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+
+.registry-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+
+.registry-table tr:last-child td {
+  border-bottom: none;
+}
+
+.registry-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.registry-badge.health-healthy {
+  background: rgba(52, 211, 153, 0.16);
+  color: var(--ok);
+}
+
+.registry-badge.health-unhealthy {
+  background: var(--bad-soft);
+  color: var(--bad);
+}
+
+.registry-badge.health-unknown {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--muted);
+}
+
+.registry-badge.cost-economy {
+  background: rgba(52, 211, 153, 0.12);
+  color: var(--ok);
+}
+
+.registry-badge.cost-standard {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.registry-badge.cost-premium {
+  background: rgba(251, 191, 36, 0.14);
+  color: var(--warn);
+}
+
+.registry-badge.ineligible {
+  background: var(--bad-soft);
+  color: var(--bad);
+}
+
+.registry-badge.eligible {
+  background: rgba(52, 211, 153, 0.12);
+  color: var(--ok);
+}
