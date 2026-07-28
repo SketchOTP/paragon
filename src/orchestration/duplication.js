@@ -19,7 +19,7 @@ function overlaps(a, b) {
   const aEnd = a.endTime ? Date.parse(a.endTime) : Date.now();
   const bStart = Date.parse(b.startTime);
   const bEnd = b.endTime ? Date.parse(b.endTime) : Date.now();
-  return aStart < bEnd && bStart < aEnd;
+  return aStart <= bEnd && bStart <= aEnd;
 }
 
 /** @returns {Array<{runIds:string[], classification:string, reason:string}>} */
