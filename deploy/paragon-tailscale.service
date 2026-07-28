@@ -1,13 +1,13 @@
 [Unit]
-Description=Tailscale serve/funnel for RouterBot (ports 9420 and 10000)
+Description=Tailscale serve/funnel for PARAGON (ports 9420 and 10000)
 After=tailscaled.service network-online.target
 Wants=tailscaled.service
-Before=routerbot.service
+Before=paragon.service
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=%ROUTERBOT_DIR%/scripts/tailscale-setup.sh
+ExecStart=%PARAGON_DIR%/scripts/tailscale-setup.sh
 # Idempotent; safe on every boot
 
 [Install]

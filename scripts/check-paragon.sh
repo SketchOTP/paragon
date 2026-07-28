@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Smoke-check RouterBot local health and optional Tailscale URLs.
+# Smoke-check PARAGON local health and optional Tailscale URLs.
 set -euo pipefail
 
-LOCAL_PORT="${ROUTERBOT_PORT:-4117}"
-HOST="${ROUTERBOT_TAILSCALE_HOST:-}"
-SERVE_PORT="${ROUTERBOT_TAILSCALE_SERVE_PORT:-9420}"
-FUNNEL_PORT="${ROUTERBOT_TAILSCALE_FUNNEL_PORT:-10000}"
+LOCAL_PORT="${PARAGON_PORT:-${ROUTERBOT_PORT:-4117}}"
+HOST="${PARAGON_TAILSCALE_HOST:-${ROUTERBOT_TAILSCALE_HOST:-}}"
+SERVE_PORT="${PARAGON_TAILSCALE_SERVE_PORT:-${ROUTERBOT_TAILSCALE_SERVE_PORT:-9420}}"
+FUNNEL_PORT="${PARAGON_TAILSCALE_FUNNEL_PORT:-${ROUTERBOT_TAILSCALE_FUNNEL_PORT:-10000}}"
 
 ok() { echo "OK: $*"; }
 bad() { echo "FAIL: $*"; exit 1; }
@@ -13,13 +13,13 @@ bad() { echo "FAIL: $*"; exit 1; }
 if curl -sf "http://127.0.0.1:${LOCAL_PORT}/health" >/dev/null; then
   ok "local health http://127.0.0.1:${LOCAL_PORT}/health"
 else
-  bad "local health check failed — is RouterBot running?"
+  bad "local health check failed — is PARAGON running?"
 fi
 
-if systemctl is-active --quiet routerbot 2>/dev/null; then
-  ok "systemd: routerbot is active"
+if systemctl is-active --quiet paragon 2>/dev/null; then
+  ok "systemd: paragon is active"
 else
-  echo "WARN: systemd routerbot is not active (optional if running manually)"
+  echo "WARN: systemd paragon is not active (optional if running manually)"
 fi
 
 if [[ -n "${HOST}" ]]; then
@@ -34,5 +34,5 @@ if [[ -n "${HOST}" ]]; then
     echo "WARN: funnel check failed — run ./scripts/tailscale-setup.sh"
   fi
 else
-  echo "INFO: set ROUTERBOT_TAILSCALE_HOST to check Tailscale URLs"
+  echo "INFO: set PARAGON_TAILSCALE_HOST to check Tailscale URLs"
 fi
