@@ -13,6 +13,7 @@ import { tailscaleUrls } from "./tailscaleUrls.js";
 import { createOrchestrationRuntime } from "./orchestration/telemetry.js";
 import { registerOrchestrationRoutes } from "./orchestration/api.js";
 import { buildModelRegistry } from "./routing/modelRegistry.js";
+import { rankRegistryByTask, scoringMethodology, TASK_TYPES } from "./routing/router.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 let cachedConfig = await readConfig();
@@ -115,7 +116,14 @@ app.get("/api/status", async (req, res) => {
 
 app.get("/api/routing/registry", async (_req, res) => {
   const config = await getConfig();
-  res.json({ registry: buildModelRegistry(config, getStatuses()), builtAt: new Date().toISOString() });
+  const registry = buildModelRegistry(config, getStatuses());
+  res.json({
+    registry,
+    taskRanking: rankRegistryByTask(registry, config.routing?.taskRoutes),
+    taskTypes: TASK_TYPES,
+    methodology: scoringMethodology(),
+    builtAt: new Date().toISOString()
+  });
 });
 
 app.get("/api/auth/flows", (_req, res) => {

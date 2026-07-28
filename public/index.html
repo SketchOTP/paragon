@@ -227,31 +227,70 @@
 
       <section class="panel model-routing-panel" id="model-routing-panel">
         <div class="panel-head">
-          <h2>Model Routing</h2>
+          <button type="button" class="panel-collapse-toggle" id="toggle-model-routing" aria-expanded="false" aria-controls="model-routing-body">
+            <svg class="chevron" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M8.12 9.29 12 13.17l3.88-3.88a1 1 0 1 1 1.41 1.42l-4.59 4.58a1 1 0 0 1-1.41 0L6.7 10.71a1 1 0 1 1 1.42-1.42Z"/></svg>
+            <h2>Model Routing</h2>
+          </button>
           <button type="button" id="refresh-registry" class="btn ghost">Refresh</button>
         </div>
-        <p class="mode-banner live" id="model-routing-note">
-          Every request is scored live against the table below — provider AND model are chosen per request,
-          not read from a fixed task table. "Default" above and the routes below are a preference signal into
-          that score, not an absolute mapping.
-        </p>
-        <div class="registry-table-wrap">
-          <table class="registry-table" id="registry-table">
-            <thead>
-              <tr>
-                <th>Provider</th>
-                <th>Model</th>
-                <th>Health</th>
-                <th>Cost class</th>
-                <th>Latency class</th>
-                <th>Context window</th>
-                <th>Auto-eligible</th>
-              </tr>
-            </thead>
-            <tbody id="registry-table-body"></tbody>
-          </table>
+        <div id="model-routing-body" class="model-routing-body" hidden>
+          <p class="mode-banner live" id="model-routing-note">
+            Every request is scored live against the table below — provider AND model are chosen per request,
+            not read from a fixed task table. "Default" above and the routes below are a preference signal into
+            that score, not an absolute mapping.
+          </p>
+          <div class="registry-filter-bar">
+            <label class="field compact">
+              <span class="field-label">Rank for task</span>
+              <select id="registry-task-filter"></select>
+            </label>
+            <label class="field compact">
+              <span class="field-label">Provider</span>
+              <select id="registry-provider-filter">
+                <option value="">All</option>
+              </select>
+            </label>
+            <label class="field compact">
+              <span class="field-label">Health</span>
+              <select id="registry-health-filter">
+                <option value="">All</option>
+                <option value="healthy">Healthy</option>
+                <option value="unhealthy">Unhealthy</option>
+                <option value="unknown">Unknown</option>
+              </select>
+            </label>
+            <button type="button" class="btn ghost sm" id="registry-sources-btn">Sources / methodology</button>
+            <span class="registry-updated-note" id="registry-updated-note"></span>
+          </div>
+          <div class="registry-table-wrap">
+            <table class="registry-table" id="registry-table">
+              <thead>
+                <tr>
+                  <th data-sort-key="provider">Provider</th>
+                  <th data-sort-key="model">Model</th>
+                  <th data-sort-key="tenScale">Task fit (1-10, 10=worst)</th>
+                  <th data-sort-key="health">Health</th>
+                  <th data-sort-key="costClass">Cost class</th>
+                  <th data-sort-key="latencyClass">Latency class</th>
+                  <th data-sort-key="contextWindow">Context window</th>
+                  <th data-sort-key="automaticEligibility">Auto-eligible</th>
+                </tr>
+              </thead>
+              <tbody id="registry-table-body"></tbody>
+            </table>
+          </div>
         </div>
       </section>
+
+      <dialog id="registry-sources-dialog" class="sheet sheet-wide">
+        <div class="sheet-body">
+          <h2>Model routing: sources &amp; methodology</h2>
+          <div id="registry-sources-content"></div>
+          <div class="sheet-actions">
+            <button type="button" class="btn primary" id="registry-sources-close">Close</button>
+          </div>
+        </div>
+      </dialog>
 
       <section class="panel orchestration-panel" id="orchestration-panel">
         <div class="panel-head">

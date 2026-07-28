@@ -983,6 +983,58 @@ button.danger-text {
   margin-top: 18px;
 }
 
+.model-routing-panel .panel-head {
+  margin-bottom: 0;
+}
+
+.panel-collapse-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+  color: var(--ink);
+}
+
+.panel-collapse-toggle .chevron {
+  transition: transform 0.15s ease;
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
+.panel-collapse-toggle[aria-expanded="true"] .chevron {
+  transform: rotate(180deg);
+}
+
+.panel-collapse-toggle h2 {
+  margin: 0;
+}
+
+.model-routing-body {
+  margin-top: 14px;
+}
+
+.registry-filter-bar {
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+
+.registry-filter-bar .field.compact {
+  margin-bottom: 0;
+  min-width: 140px;
+}
+
+.registry-updated-note {
+  font-size: 11px;
+  color: var(--muted);
+  margin-left: auto;
+}
+
 .registry-table-wrap {
   overflow-x: auto;
 }
@@ -1003,6 +1055,55 @@ button.danger-text {
   letter-spacing: 0.04em;
   border-bottom: 1px solid var(--line);
   white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+}
+
+.registry-table th:hover {
+  color: var(--accent);
+}
+
+.registry-table th .sort-arrow {
+  display: inline-block;
+  margin-left: 4px;
+  opacity: 0.4;
+  font-size: 9px;
+}
+
+.registry-table th.sort-active .sort-arrow {
+  opacity: 1;
+  color: var(--accent);
+}
+
+.registry-table tr.rank-excluded td {
+  opacity: 0.55;
+}
+
+.registry-rank-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 26px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 999px;
+  font-weight: 700;
+  font-size: 11px;
+}
+
+.registry-rank-pill.rank-best {
+  background: rgba(52, 211, 153, 0.16);
+  color: var(--ok);
+}
+
+.registry-rank-pill.rank-mid {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.registry-rank-pill.rank-worst {
+  background: rgba(251, 191, 36, 0.14);
+  color: var(--warn);
 }
 
 .registry-table td {
@@ -1061,4 +1162,47 @@ button.danger-text {
 .registry-badge.eligible {
   background: rgba(52, 211, 153, 0.12);
   color: var(--ok);
+}
+
+.methodology-note {
+  font-size: 13px;
+  color: var(--muted);
+  line-height: 1.5;
+  margin: 0 0 14px;
+}
+
+.methodology-weights {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  margin-bottom: 14px;
+}
+
+.methodology-weights th,
+.methodology-weights td {
+  text-align: left;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--line);
+}
+
+.methodology-weights th {
+  color: var(--muted);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.methodology-breakdown {
+  font-size: 12px;
+  color: var(--muted);
+  max-height: 220px;
+  overflow-y: auto;
+  padding: 10px 12px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+}
+
+.methodology-breakdown li {
+  margin-bottom: 4px;
 }

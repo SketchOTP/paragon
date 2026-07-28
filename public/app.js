@@ -128,7 +128,18 @@ const els = {
   orchSettingRetentionDays: document.querySelector("#orch-setting-retention-days"),
   orchStorageUsage: document.querySelector("#orch-storage-usage"),
   refreshRegistry: document.querySelector("#refresh-registry"),
-  registryTableBody: document.querySelector("#registry-table-body")
+  registryTableBody: document.querySelector("#registry-table-body"),
+  registryTable: document.querySelector("#registry-table"),
+  toggleModelRouting: document.querySelector("#toggle-model-routing"),
+  modelRoutingBody: document.querySelector("#model-routing-body"),
+  registryTaskFilter: document.querySelector("#registry-task-filter"),
+  registryProviderFilter: document.querySelector("#registry-provider-filter"),
+  registryHealthFilter: document.querySelector("#registry-health-filter"),
+  registryUpdatedNote: document.querySelector("#registry-updated-note"),
+  registrySourcesBtn: document.querySelector("#registry-sources-btn"),
+  registrySourcesDialog: document.querySelector("#registry-sources-dialog"),
+  registrySourcesContent: document.querySelector("#registry-sources-content"),
+  registrySourcesClose: document.querySelector("#registry-sources-close")
 };
 
 function getStoredApiKey() {
@@ -259,6 +270,34 @@ els.refreshStatus.addEventListener("click", () => refreshStatus({ manual: true }
 els.refreshOrchestration?.addEventListener("click", () => refreshOrchestration({ manual: true }));
 els.saveOrchSettings?.addEventListener("click", saveOrchestrationSettings);
 els.refreshRegistry?.addEventListener("click", refreshModelRegistry);
+els.toggleModelRouting?.addEventListener("click", () => {
+  const expanded = els.toggleModelRouting.getAttribute("aria-expanded") === "true";
+  els.toggleModelRouting.setAttribute("aria-expanded", String(!expanded));
+  els.modelRoutingBody.hidden = expanded;
+});
+els.registryTaskFilter?.addEventListener("change", () => {
+  renderRegistryTable();
+});
+els.registryProviderFilter?.addEventListener("change", renderRegistryTable);
+els.registryHealthFilter?.addEventListener("change", renderRegistryTable);
+els.registryTable?.addEventListener("click", (event) => {
+  const th = event.target.closest("th[data-sort-key]");
+  if (!th) {
+    return;
+  }
+  const key = th.dataset.sortKey;
+  if (registrySort.key === key) {
+    registrySort.dir = registrySort.dir === "asc" ? "desc" : "asc";
+  } else {
+    registrySort = { key, dir: key === "tenScale" ? "asc" : "asc" };
+  }
+  renderRegistryTable();
+});
+els.registrySourcesBtn?.addEventListener("click", () => {
+  renderSourcesDialog();
+  els.registrySourcesDialog.showModal();
+});
+els.registrySourcesClose?.addEventListener("click", () => els.registrySourcesDialog.close());
 els.addProvider.addEventListener("click", openAddProviderDialog);
 els.addProviderCancel.addEventListener("click", () => els.addProviderDialog.close());
 els.newProviderType.addEventListener("change", () => {
@@ -1484,6 +1523,147 @@ function contextWindowLabel(tokens) {
   return `${Math.round(tokens / 1000)}k`;
 }
 
+let registryData = null;
+let registrySort = { key: "tenScale", dir: "asc" };
+
+function rankPillClass(tenScale) {
+  if (tenScale <= 3) return "rank-best";
+  if (tenScale <= 7) return "rank-mid";
+  return "rank-worst";
+}
+
+function buildRegistryRows() {
+  if (!registryData) {
+    return [];
+  }
+  const taskType = els.registryTaskFilter.value || registryData.taskTypes[0];
+  const ranking = registryData.taskRanking[taskType] ?? [];
+  const rankByKey = new Map(ranking.map((r) => [`${r.provider}::${r.model}`, r]));
+
+  let rows = registryData.registry.map((entry) => ({
+    ...entry,
+    rankInfo: rankByKey.get(`${entry.provider}::${entry.model}`) ?? null
+  }));
+
+  const providerFilter = els.registryProviderFilter.value;
+  const healthFilter = els.registryHealthFilter.value;
+  if (providerFilter) {
+    rows = rows.filter((r) => r.provider === providerFilter);
+  }
+  if (healthFilter) {
+    rows = rows.filter((r) => r.health === healthFilter);
+  }
+
+  const { key, dir } = registrySort;
+  const mult = dir === "asc" ? 1 : -1;
+  rows.sort((a, b) => {
+    let av;
+    let bv;
+    if (key === "tenScale") {
+      av = a.rankInfo?.excluded === false ? a.rankInfo.tenScale : 999;
+      bv = b.rankInfo?.excluded === false ? b.rankInfo.tenScale : 999;
+    } else if (key === "automaticEligibility") {
+      av = a.automaticEligibility ? 0 : 1;
+      bv = b.automaticEligibility ? 0 : 1;
+    } else if (key === "contextWindow") {
+      av = a.contextWindow ?? -1;
+      bv = b.contextWindow ?? -1;
+    } else {
+      av = String(a[key] ?? "");
+      bv = String(b[key] ?? "");
+    }
+    if (av < bv) return -1 * mult;
+    if (av > bv) return 1 * mult;
+    return 0;
+  });
+
+  return rows;
+}
+
+function renderRegistryTable() {
+  const rows = buildRegistryRows();
+  els.registryTableBody.innerHTML = rows.length
+    ? rows
+        .map((entry) => {
+          const rankInfo = entry.rankInfo;
+          const rankCell =
+            rankInfo && !rankInfo.excluded
+              ? `<span class="registry-rank-pill ${rankPillClass(rankInfo.tenScale)}" title="Rank ${rankInfo.rank} of ${rankInfo.of} eligible models for this task; score ${rankInfo.score}">${rankInfo.tenScale}/10</span>`
+              : `<span class="registry-badge ineligible" title="${escapeAttr(rankInfo?.reasonCode ?? "not ranked")}">excluded</span>`;
+          return `
+        <tr class="${rankInfo?.excluded ? "rank-excluded" : ""}">
+          <td>${escapeHtml(providerLabel(entry.provider, config?.providers?.[entry.provider]))}</td>
+          <td><code>${escapeHtml(entry.model)}</code></td>
+          <td>${rankCell}</td>
+          <td><span class="registry-badge health-${escapeAttr(entry.health)}">${escapeHtml(entry.health)}</span></td>
+          <td><span class="registry-badge cost-${escapeAttr(entry.costClass)}">${escapeHtml(entry.costClass)}</span></td>
+          <td>${escapeHtml(entry.latencyClass)}</td>
+          <td>${escapeHtml(contextWindowLabel(entry.contextWindow))}</td>
+          <td><span class="registry-badge ${entry.automaticEligibility ? "eligible" : "ineligible"}">${entry.automaticEligibility ? "yes" : "force only"}</span></td>
+        </tr>`;
+        })
+        .join("")
+    : `<tr><td colspan="8" class="orch-empty">No models discovered yet — click "Load models" on a provider card above, or Refresh.</td></tr>`;
+
+  els.registryTable.querySelectorAll("th[data-sort-key]").forEach((th) => {
+    const key = th.dataset.sortKey;
+    th.classList.toggle("sort-active", key === registrySort.key);
+    const arrow = registrySort.key === key ? (registrySort.dir === "asc" ? "▲" : "▼") : "↕";
+    th.innerHTML = `${th.textContent.replace(/[▲▼↕]$/, "").trim()} <span class="sort-arrow">${arrow}</span>`;
+  });
+}
+
+function populateRegistryFilters() {
+  if (!registryData) {
+    return;
+  }
+  const currentTask = els.registryTaskFilter.value;
+  els.registryTaskFilter.innerHTML = registryData.taskTypes
+    .map((t) => `<option value="${escapeAttr(t)}">${escapeHtml(t)}</option>`)
+    .join("");
+  if (registryData.taskTypes.includes(currentTask)) {
+    els.registryTaskFilter.value = currentTask;
+  }
+
+  const currentProvider = els.registryProviderFilter.value;
+  const providers = [...new Set(registryData.registry.map((e) => e.provider))].sort();
+  els.registryProviderFilter.innerHTML =
+    `<option value="">All</option>` +
+    providers.map((p) => `<option value="${escapeAttr(p)}">${escapeHtml(providerLabel(p, config?.providers?.[p]))}</option>`).join("");
+  if (providers.includes(currentProvider)) {
+    els.registryProviderFilter.value = currentProvider;
+  }
+}
+
+function renderSourcesDialog() {
+  if (!registryData) {
+    return;
+  }
+  const m = registryData.methodology;
+  const taskType = els.registryTaskFilter.value || registryData.taskTypes[0];
+  const ranked = (registryData.taskRanking[taskType] ?? []).filter((r) => !r.excluded).slice(0, 8);
+
+  const weightsRows = Object.entries(m.weights)
+    .map(([key, value]) => `<tr><td>${escapeHtml(key)}</td><td>${value >= 0 ? "+" : ""}${value}</td></tr>`)
+    .join("");
+
+  const resultsList = ranked
+    .map(
+      (r) =>
+        `<li><strong>${escapeHtml(r.provider)} / ${escapeHtml(r.model)}</strong> — score ${r.score}, rank ${r.rank} of ${r.of} (${r.tenScale}/10). ${escapeHtml((r.reasons ?? []).join("; ") || "no scoring factors applied")}</li>`
+    )
+    .join("");
+
+  els.registrySourcesContent.innerHTML = `
+    <p class="methodology-note"><strong>Kind:</strong> ${escapeHtml(m.kind)}</p>
+    <p class="methodology-note">${escapeHtml(m.description)}</p>
+    <p class="methodology-note"><strong>Live weight table</strong> (points applied per factor):</p>
+    <table class="methodology-weights"><thead><tr><th>Factor</th><th>Points</th></tr></thead><tbody>${weightsRows}</tbody></table>
+    <p class="methodology-note"><strong>Live results for "${escapeHtml(taskType)}"</strong> (top ${ranked.length}, computed just now):</p>
+    <ul class="methodology-breakdown">${resultsList || "<li>No eligible candidates for this task type right now.</li>"}</ul>
+  `;
+}
+
 async function refreshModelRegistry() {
   if (!els.registryTableBody) {
     return;
@@ -1496,24 +1676,12 @@ async function refreshModelRegistry() {
     if (!res.ok) {
       return;
     }
-    const body = await res.json();
-    const entries = body.registry ?? [];
-    els.registryTableBody.innerHTML = entries.length
-      ? entries
-          .map(
-            (entry) => `
-        <tr>
-          <td>${escapeHtml(providerLabel(entry.provider, config?.providers?.[entry.provider]))}</td>
-          <td><code>${escapeHtml(entry.model)}</code></td>
-          <td><span class="registry-badge health-${escapeAttr(entry.health)}">${escapeHtml(entry.health)}</span></td>
-          <td><span class="registry-badge cost-${escapeAttr(entry.costClass)}">${escapeHtml(entry.costClass)}</span></td>
-          <td>${escapeHtml(entry.latencyClass)}</td>
-          <td>${escapeHtml(contextWindowLabel(entry.contextWindow))}</td>
-          <td><span class="registry-badge ${entry.automaticEligibility ? "eligible" : "ineligible"}">${entry.automaticEligibility ? "yes" : "force only"}</span></td>
-        </tr>`
-          )
-          .join("")
-      : `<tr><td colspan="7" class="orch-empty">No models discovered yet — click "Load models" on a provider card above, or Refresh.</td></tr>`;
+    registryData = await res.json();
+    populateRegistryFilters();
+    renderRegistryTable();
+    if (els.registryUpdatedNote) {
+      els.registryUpdatedNote.textContent = `Updated ${new Date(registryData.builtAt).toLocaleTimeString()} — refreshes automatically every 30s.`;
+    }
   } catch {
     // Best-effort panel; a failed fetch here must not disturb the rest of the dashboard.
   } finally {

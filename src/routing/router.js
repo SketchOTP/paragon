@@ -104,6 +104,60 @@ function scoreCandidate(entry, taskProfile, taskRoutes) {
   return { score, reasons };
 }
 
+export const TASK_TYPES = Object.keys(TASK_COST_PREFERENCE);
+
+/**
+ * Real, inspectable methodology for the "Model Routing" dashboard's task
+ * ranking — not an external benchmark. Exposed via /api/routing/registry
+ * so the dashboard's "sources" popup shows the actual live formula rather
+ * than a static description that could drift from the code.
+ */
+export function scoringMethodology() {
+  return {
+    kind: "internal-deterministic",
+    description:
+      "PARAGON has no live internet access and runs no evaluation harness against these models, so this is not an external benchmark citation. " +
+      "It is PARAGON's own deterministic routing formula, computed live from real inputs (health checks, circuit-breaker state, configured cost class, " +
+      "your routing.taskRoutes preferences) — the exact same formula that picks the live route for real requests, not a separate/different score.",
+    weights: WEIGHTS,
+    taskCostPreference: TASK_COST_PREFERENCE
+  };
+}
+
+/**
+ * Ranks every eligible registry entry against every task type, 1-10 scale
+ * (1 = best fit, 10 = worst), derived by ordinal position within that
+ * task's eligible candidates — not an absolute quality score, since there
+ * is no ground-truth benchmark backing it. Ineligible entries (unhealthy,
+ * circuit-open, automatic-eligibility disabled) are listed with their
+ * exclusion reason instead of a rank.
+ */
+export function rankRegistryByTask(registry, taskRoutes, taskTypes = TASK_TYPES) {
+  const result = {};
+  for (const taskType of taskTypes) {
+    const taskProfile = { taskType, estimatedInputTokens: null };
+    const scored = registry.map((entry) => {
+      const eligibility = passesHardEligibility(entry, taskProfile);
+      if (!eligibility.ok) {
+        return { provider: entry.provider, model: entry.model, excluded: true, reasonCode: eligibility.reasonCode, score: null, reasons: [] };
+      }
+      const { score, reasons } = scoreCandidate(entry, taskProfile, taskRoutes);
+      return { provider: entry.provider, model: entry.model, excluded: false, score, reasons };
+    });
+
+    const eligible = scored.filter((s) => !s.excluded).sort((a, b) => b.score - a.score);
+    const n = eligible.length;
+    eligible.forEach((item, index) => {
+      item.rank = index + 1;
+      item.of = n;
+      item.tenScale = n <= 1 ? 1 : Math.max(1, Math.min(10, Math.round(1 + (index / (n - 1)) * 9)));
+    });
+
+    result[taskType] = [...eligible, ...scored.filter((s) => s.excluded)];
+  }
+  return result;
+}
+
 /**
  * @param {object} params
  * @param {object} params.config - full PARAGON config

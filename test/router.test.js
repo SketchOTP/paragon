@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { selectRoute, buildRankedAttempts } from "../src/routing/router.js";
+import { selectRoute, buildRankedAttempts, rankRegistryByTask, scoringMethodology, TASK_TYPES } from "../src/routing/router.js";
+import { buildModelRegistry } from "../src/routing/modelRegistry.js";
 import { resetForTests } from "../src/orchestration/liveEnforcement.js";
 
 test.beforeEach(() => {
@@ -124,4 +125,47 @@ test("selectRoute returns null when nothing is eligible", () => {
   }
   const route = selectRoute({ config: cfg, statuses: {}, taskProfile: { taskType: "code", estimatedInputTokens: 100 } });
   assert.equal(route, null);
+});
+
+test("rankRegistryByTask produces a 1-10 scale (1=best) per task type, excluded entries carry a reason instead of a rank", () => {
+  const cfg = config();
+  cfg.providers.antigravity.enabled = true;
+  const registry = buildModelRegistry(cfg, { claude: { ok: true }, codex: { ok: true }, antigravity: { ok: true } });
+  const ranking = rankRegistryByTask(registry, cfg.routing.taskRoutes);
+
+  for (const taskType of TASK_TYPES) {
+    assert.ok(ranking[taskType], `missing ranking for task type ${taskType}`);
+  }
+
+  const codeRanking = ranking.code;
+  const antigravityEntry = codeRanking.find((e) => e.provider === "antigravity");
+  assert.equal(antigravityEntry.excluded, true, "antigravity must never get a rank via automatic routing");
+  assert.equal(antigravityEntry.reasonCode, "eligibility.automaticEligibilityDisabled");
+  assert.equal(antigravityEntry.rank, undefined);
+
+  const eligible = codeRanking.filter((e) => !e.excluded);
+  for (const entry of eligible) {
+    assert.ok(entry.tenScale >= 1 && entry.tenScale <= 10);
+  }
+  // Best (rank 1) must have the lowest tenScale among eligible entries.
+  const best = eligible.find((e) => e.rank === 1);
+  assert.ok(eligible.every((e) => e.tenScale >= best.tenScale));
+});
+
+test("rankRegistryByTask orders by score descending, rank 1 = highest score", () => {
+  const cfg = config();
+  const registry = buildModelRegistry(cfg, { claude: { ok: true }, codex: { ok: true } });
+  const ranking = rankRegistryByTask(registry, cfg.routing.taskRoutes).code;
+  const eligible = ranking.filter((e) => !e.excluded).sort((a, b) => a.rank - b.rank);
+  for (let i = 1; i < eligible.length; i += 1) {
+    assert.ok(eligible[i - 1].score >= eligible[i].score, "rank order must follow score order");
+  }
+});
+
+test("scoringMethodology exposes the real live weights and cost preference, not a static description that could drift", () => {
+  const methodology = scoringMethodology();
+  assert.equal(methodology.kind, "internal-deterministic");
+  assert.ok(methodology.weights.taskRoutePreference);
+  assert.ok(methodology.taskCostPreference.plan);
+  assert.match(methodology.description, /not an external benchmark/i);
 });
