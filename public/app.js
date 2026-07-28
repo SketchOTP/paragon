@@ -56,6 +56,8 @@ const AUTH_POLL_INTERVAL_MS = 8000;
 let config;
 let statuses = {};
 let fallbackDraft = [];
+let orchestrationPolicy = null;
+let logsConnectionState = "connecting";
 
 const els = {
   providers: document.querySelector("#providers"),
@@ -109,7 +111,20 @@ const els = {
   orchSessions: document.querySelector("#orch-sessions"),
   orchAgents: document.querySelector("#orch-agents"),
   orchProviders: document.querySelector("#orch-providers"),
-  orchGovernor: document.querySelector("#orch-governor")
+  orchGovernor: document.querySelector("#orch-governor"),
+  orchGovernorHeading: document.querySelector("#orch-governor-heading"),
+  modeBanner: document.querySelector("#mode-banner"),
+  saveOrchSettings: document.querySelector("#save-orch-settings"),
+  orchSettingsStatus: document.querySelector("#orch-settings-status"),
+  orchSettingMode: document.querySelector("#orch-setting-mode"),
+  orchSettingContextCeiling: document.querySelector("#orch-setting-context-ceiling"),
+  orchSettingMaxConcurrent: document.querySelector("#orch-setting-max-concurrent"),
+  orchSettingMaxFallback: document.querySelector("#orch-setting-max-fallback"),
+  orchSettingCircuitThreshold: document.querySelector("#orch-setting-circuit-threshold"),
+  orchSettingCircuitCooldown: document.querySelector("#orch-setting-circuit-cooldown"),
+  orchSettingSessionHardLimit: document.querySelector("#orch-setting-session-hard-limit"),
+  orchSettingRetentionDays: document.querySelector("#orch-setting-retention-days"),
+  orchStorageUsage: document.querySelector("#orch-storage-usage")
 };
 
 function getStoredApiKey() {
@@ -230,11 +245,13 @@ connectLogs();
 bindProviderInteractionLock();
 refreshStatus();
 refreshOrchestration();
+loadOrchestrationPolicy();
 setInterval(refreshOrchestration, 30000);
 
 els.save.addEventListener("click", () => saveConfig({ notify: true }));
 els.refreshStatus.addEventListener("click", () => refreshStatus({ manual: true }));
 els.refreshOrchestration?.addEventListener("click", () => refreshOrchestration({ manual: true }));
+els.saveOrchSettings?.addEventListener("click", saveOrchestrationSettings);
 els.addProvider.addEventListener("click", openAddProviderDialog);
 els.addProviderCancel.addEventListener("click", () => els.addProviderDialog.close());
 els.newProviderType.addEventListener("change", () => {
@@ -1266,12 +1283,31 @@ async function refreshStatus({ manual = false } = {}) {
   }
 }
 
+function renderLogsEmptyState() {
+  if (els.logs.children.length > 0) {
+    return;
+  }
+  const messages = {
+    connecting: "Connecting…",
+    connected: "No activity yet.",
+    error: "Connection lost — retrying…"
+  };
+  els.logs.innerHTML = `<p class="orch-empty">${escapeHtml(messages[logsConnectionState] ?? "No activity yet.")}</p>`;
+}
+
 function connectLogs() {
+  renderLogsEmptyState();
   const key = getStoredApiKey();
   const url = key ? `/api/logs/stream?key=${encodeURIComponent(key)}` : "/api/logs/stream";
   const events = new EventSource(url);
+  events.onopen = () => {
+    logsConnectionState = "connected";
+    renderLogsEmptyState();
+  };
   events.onmessage = (event) => prependLog(JSON.parse(event.data));
   events.onerror = async () => {
+    logsConnectionState = "error";
+    renderLogsEmptyState();
     events.close();
     if (!getStoredApiKey()) {
       await promptForApiKey();
@@ -1281,6 +1317,8 @@ function connectLogs() {
 }
 
 function prependLog(entry) {
+  const placeholder = els.logs.querySelector(".orch-empty");
+  placeholder?.remove();
   const item = document.createElement("div");
   item.className = `log ${entry.level ?? ""}`;
   const time = new Date(entry.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
@@ -1343,6 +1381,9 @@ async function refreshOrchestration({ manual = false } = {}) {
     const usage = await usageRes.json();
     const decisions = await decisionsRes.json();
 
+    const isLive = status.enforcementMode === "live";
+    const live = status.liveEnforcement;
+
     els.orchOverview.innerHTML = [
       orchStat("Active jobs", status.activeJobs),
       orchStat("Active sessions", status.activeSessions),
@@ -1350,8 +1391,35 @@ async function refreshOrchestration({ manual = false } = {}) {
       orchStat("Root vs child", `${usage.byRootVsChild?.root ?? 0} / ${usage.byRootVsChild?.child ?? 0}`),
       orchStat("Max observed context", `${status.maxObservedContextTokens ?? 0} tok`),
       orchStat("Longest active session", `${status.longestActiveSessionMinutes ?? 0}m`),
-      orchStat("Enforcement mode", status.enforcementMode ?? "shadow")
+      orchStat("Enforcement mode", status.enforcementMode ?? "off"),
+      ...(live
+        ? [
+            orchStat("Concurrent executions", `${live.activeConcurrentExecutions} / ${live.maxConcurrent}`),
+            orchStat(
+              "Circuit breakers",
+              Object.keys(live.circuitBreakers ?? {}).length
+                ? Object.entries(live.circuitBreakers)
+                    .map(([p, s]) => `${p}:${s}`)
+                    .join(", ")
+                : "all closed"
+            )
+          ]
+        : [])
     ].join("");
+
+    if (els.modeBanner) {
+      els.modeBanner.className = `mode-banner ${isLive ? "live" : "off"}`;
+      els.modeBanner.textContent = isLive
+        ? "LIVE ORCHESTRATION ACTIVE — PARAGON is directly enforcing context, concurrency, timeout, fallback, and circuit-breaker limits."
+        : "Orchestration is off — no telemetry-driven enforcement is active.";
+    }
+    if (els.orchGovernorHeading) {
+      els.orchGovernorHeading.textContent = isLive ? "Governor — recent enforcement actions" : "Governor — recent actions";
+    }
+    if (els.orchStorageUsage && typeof status.telemetryStorageBytes === "number") {
+      const kb = (status.telemetryStorageBytes / 1024).toFixed(1);
+      els.orchStorageUsage.textContent = `Telemetry storage: ${kb} KB (retained ${status.retentionDays} days, compacted automatically)`;
+    }
 
     renderCountMap(els.orchContext, usage.byContextBand, "No requests observed yet.");
     renderCountMap(els.orchSessions, usage.bySessionDurationBand, "No sessions observed yet.");
@@ -1360,18 +1428,89 @@ async function refreshOrchestration({ manual = false } = {}) {
 
     els.orchGovernor.innerHTML = decisions.items?.length
       ? decisions.items
-          .map(
-            (d) =>
-              `<div class="orch-decision"><span class="orch-decision-rule">${escapeHtml(d.policyRule)}</span> — ${escapeHtml(d.explanation)}</div>`
-          )
+          .map((d) => {
+            const enforced = d.explanation?.startsWith("ENFORCED");
+            return `<div class="orch-decision${enforced ? " enforced" : ""}"><span class="orch-decision-rule">${escapeHtml(d.policyRule)}</span> — ${escapeHtml(d.explanation)}</div>`;
+          })
           .join("")
-      : '<p class="orch-empty">No governor decisions recorded yet — shadow mode has nothing to propose.</p>';
+      : `<p class="orch-empty">No governor actions recorded yet — ${isLive ? "nothing has tripped a policy yet" : "orchestration is off"}.</p>`;
   } catch {
     // Best-effort dashboard panel; a failed fetch here must not disturb the rest of the UI.
   } finally {
     if (els.refreshOrchestration) {
       els.refreshOrchestration.disabled = false;
     }
+  }
+}
+
+function renderOrchestrationSettings() {
+  if (!orchestrationPolicy || !els.orchSettingMode) {
+    return;
+  }
+  els.orchSettingMode.value = orchestrationPolicy.mode ?? "live";
+  els.orchSettingContextCeiling.value = orchestrationPolicy.context?.absoluteCeilingTokens ?? "";
+  els.orchSettingMaxConcurrent.value = orchestrationPolicy.concurrency?.maxConcurrent ?? "";
+  els.orchSettingMaxFallback.value = orchestrationPolicy.fallback?.maxAttempts ?? "";
+  els.orchSettingCircuitThreshold.value = orchestrationPolicy.circuitBreaker?.failureThreshold ?? "";
+  els.orchSettingCircuitCooldown.value = orchestrationPolicy.circuitBreaker?.cooldownMs ?? "";
+  els.orchSettingSessionHardLimit.value = orchestrationPolicy.session?.hardLimitMinutes ?? "";
+  els.orchSettingRetentionDays.value = orchestrationPolicy.retentionDays ?? "";
+}
+
+async function loadOrchestrationPolicy() {
+  try {
+    const res = await apiFetch("/api/orchestration/policy");
+    if (!res.ok) {
+      return;
+    }
+    orchestrationPolicy = await res.json();
+    renderOrchestrationSettings();
+  } catch {
+    // Settings panel stays blank on failure; the rest of the dashboard is unaffected.
+  }
+}
+
+async function saveOrchestrationSettings() {
+  if (!orchestrationPolicy) {
+    return;
+  }
+  els.saveOrchSettings.disabled = true;
+  els.orchSettingsStatus.textContent = "";
+  els.orchSettingsStatus.className = "settings-save-note";
+  try {
+    const candidate = {
+      ...orchestrationPolicy,
+      mode: els.orchSettingMode.value,
+      context: { ...orchestrationPolicy.context, absoluteCeilingTokens: Number(els.orchSettingContextCeiling.value) },
+      concurrency: { ...orchestrationPolicy.concurrency, maxConcurrent: Number(els.orchSettingMaxConcurrent.value) },
+      fallback: { ...orchestrationPolicy.fallback, maxAttempts: Number(els.orchSettingMaxFallback.value) },
+      circuitBreaker: {
+        ...orchestrationPolicy.circuitBreaker,
+        failureThreshold: Number(els.orchSettingCircuitThreshold.value),
+        cooldownMs: Number(els.orchSettingCircuitCooldown.value)
+      },
+      session: { ...orchestrationPolicy.session, hardLimitMinutes: Number(els.orchSettingSessionHardLimit.value) },
+      retentionDays: Number(els.orchSettingRetentionDays.value)
+    };
+    const response = await apiFetch("/api/orchestration/policy", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(candidate)
+    });
+    const body = await response.json();
+    if (!response.ok) {
+      throw new Error(body.error?.details?.join("; ") ?? body.error?.message ?? "Save failed");
+    }
+    orchestrationPolicy = body;
+    renderOrchestrationSettings();
+    els.orchSettingsStatus.textContent = "Saved — took effect immediately, no restart required.";
+    els.orchSettingsStatus.className = "settings-save-note success";
+    refreshOrchestration();
+  } catch (error) {
+    els.orchSettingsStatus.textContent = error.message || "Save failed";
+    els.orchSettingsStatus.className = "settings-save-note error";
+  } finally {
+    els.saveOrchSettings.disabled = false;
   }
 }
 

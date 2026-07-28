@@ -28,6 +28,7 @@ const orchestration = createOrchestrationRuntime({
   dataDir,
   getPolicy: () => cachedConfig.orchestration
 });
+orchestration.startRetentionScheduler();
 
 const STATUS_CACHE_MS = 15000;
 let statusSnapshot = { at: 0, body: null };

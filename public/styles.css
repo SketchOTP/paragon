@@ -1,17 +1,26 @@
 :root {
-  color-scheme: light;
-  --bg: #f5f5f7;
-  --bg-elevated: #ffffff;
-  --ink: #1d1d1f;
-  --muted: #86868b;
-  --line: rgba(0, 0, 0, 0.08);
-  --shadow: 0 2px 16px rgba(0, 0, 0, 0.06);
-  --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.1);
-  --accent: #0071e3;
-  --accent-soft: rgba(0, 113, 227, 0.12);
-  --ok: #34c759;
-  --warn: #ff9f0a;
-  --bad: #ff3b30;
+  color-scheme: dark;
+  /* PARAGON neon-purple identity — near-black base, purple/magenta glow,
+     cyan reserved for limited secondary accents only. */
+  --bg: #0a0712;
+  --bg-elevated: #140f22;
+  --surface-2: #1c1530;
+  --surface-3: #241b3d;
+  --ink: #f2ecff;
+  --muted: #a495c9;
+  --line: rgba(180, 140, 255, 0.16);
+  --shadow: 0 2px 20px rgba(90, 30, 160, 0.28);
+  --shadow-lg: 0 14px 44px rgba(90, 30, 160, 0.38);
+  --accent: #a855f7;
+  --accent-2: #7c3aed;
+  --accent-soft: rgba(168, 85, 247, 0.16);
+  --cyan: #22d3ee;
+  --ok: #34d399;
+  --warn: #fbbf24;
+  --bad: #f87171;
+  --bad-soft: rgba(248, 113, 113, 0.14);
+  --on-accent: #f8f5ff;
+  --glow: 0 0 26px rgba(168, 85, 247, 0.45);
   --radius: 14px;
   --radius-sm: 10px;
 }
@@ -64,7 +73,7 @@ select {
   border-radius: 18px;
   object-fit: contain;
   background: #000;
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.1);
+  box-shadow: var(--glow);
   flex-shrink: 0;
 }
 
@@ -124,11 +133,11 @@ h1 {
 
 .btn.primary {
   background: var(--accent);
-  color: #fff;
+  color: var(--on-accent);
 }
 
 .btn.secondary {
-  background: rgba(0, 0, 0, 0.06);
+  background: rgba(255, 255, 255, 0.07);
   color: var(--ink);
 }
 
@@ -145,7 +154,7 @@ h1 {
   display: grid;
   place-items: center;
   border-radius: 50%;
-  background: rgba(0, 0, 0, 0.06);
+  background: rgba(255, 255, 255, 0.07);
   color: var(--ink);
 }
 
@@ -225,13 +234,13 @@ h1 {
   width: 10px;
   height: 10px;
   border-radius: 50%;
-  background: rgba(0, 0, 0, 0.1);
+  background: rgba(255, 255, 255, 0.12);
   transition: background 0.2s;
 }
 
 .health-dot.ok {
   background: var(--ok);
-  box-shadow: 0 0 0 2px rgba(52, 199, 89, 0.25);
+  box-shadow: 0 0 0 2px rgba(52, 211, 153, 0.3);
 }
 
 .health-dot.bad {
@@ -239,7 +248,7 @@ h1 {
 }
 
 .health-dot.off {
-  background: rgba(0, 0, 0, 0.12);
+  background: rgba(255, 255, 255, 0.14);
 }
 
 .health-dot[title] {
@@ -305,7 +314,7 @@ select {
   width: 100%;
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
-  background: #fafafa;
+  background: var(--surface-2);
   color: var(--ink);
   min-height: 38px;
   padding: 0 12px;
@@ -358,7 +367,7 @@ select:focus {
   height: 48px;
   border-radius: 12px;
   border: 1px solid var(--line);
-  background: #fafafa;
+  background: var(--surface-2);
   display: grid;
   place-items: center;
   font-size: 28px;
@@ -371,7 +380,7 @@ select:focus {
 
 .provider-emoji:hover {
   transform: scale(1.06);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+  box-shadow: 0 4px 16px rgba(168, 85, 247, 0.35);
 }
 
 .provider-emoji:active {
@@ -416,7 +425,7 @@ select:focus {
   aspect-ratio: 1;
   border: 1px solid transparent;
   border-radius: 10px;
-  background: #fafafa;
+  background: var(--surface-2);
   font-size: 22px;
   line-height: 1;
   cursor: pointer;
@@ -463,7 +472,7 @@ select:focus {
 
 .provider-status.ok {
   background: var(--ok);
-  box-shadow: 0 0 8px rgba(52, 199, 89, 0.5);
+  box-shadow: 0 0 8px rgba(52, 211, 153, 0.55);
 }
 
 .provider-status.bad {
@@ -499,7 +508,7 @@ select:focus {
 .toggle-slider {
   position: absolute;
   inset: 0;
-  background: rgba(0, 0, 0, 0.12);
+  background: rgba(255, 255, 255, 0.14);
   border-radius: 999px;
   cursor: pointer;
   transition: background 0.2s;
@@ -512,9 +521,9 @@ select:focus {
   height: 22px;
   left: 2px;
   top: 2px;
-  background: #fff;
+  background: var(--on-accent);
   border-radius: 50%;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
   transition: transform 0.2s;
 }
 
@@ -544,7 +553,7 @@ select:focus {
   padding: 0;
   border-radius: 8px;
   border: 0;
-  background: rgba(0, 0, 0, 0.06);
+  background: rgba(255, 255, 255, 0.07);
   cursor: pointer;
   font-size: 16px;
 }
@@ -597,7 +606,7 @@ select:focus {
   padding: 10px 14px;
   border-radius: var(--radius-sm);
   background: var(--accent);
-  color: #fff;
+  color: var(--on-accent);
   text-decoration: none;
   font-weight: 500;
   font-size: 13px;
@@ -650,7 +659,7 @@ select:focus {
   gap: 4px;
   margin-bottom: 14px;
   padding: 10px 12px;
-  background: #fafafa;
+  background: var(--surface-2);
   border-radius: var(--radius-sm);
   min-height: 40px;
 }
@@ -714,7 +723,7 @@ select:focus {
 .log {
   padding: 8px 10px;
   border-radius: 8px;
-  background: #fafafa;
+  background: var(--surface-2);
   font-family: ui-monospace, "SF Mono", Menlo, monospace;
   font-size: 11px;
   line-height: 1.4;
@@ -724,7 +733,7 @@ select:focus {
 
 .log.error {
   border-left-color: var(--bad);
-  background: #fff5f5;
+  background: var(--bad-soft);
 }
 
 .log.warn {
@@ -790,7 +799,7 @@ dialog::backdrop {
   align-items: center;
   gap: 8px;
   padding: 10px 12px;
-  background: #fafafa;
+  background: var(--surface-2);
   border-radius: var(--radius-sm);
   border: 1px solid var(--line);
 }
@@ -853,7 +862,7 @@ button.danger-text {
   padding: 0.65rem 1.1rem;
   border-radius: 999px;
   background: var(--ink);
-  color: #fff;
+  color: var(--bg);
   font-size: 0.9rem;
   font-weight: 500;
   box-shadow: var(--shadow-lg);
@@ -869,7 +878,7 @@ button.danger-text {
 }
 
 .app-notice.success {
-  background: #1a7f37;
+  background: var(--ok);
 }
 
 .app-notice.error {
@@ -881,14 +890,38 @@ button.danger-text {
   margin-top: 18px;
 }
 
-.shadow-banner {
+.mode-banner {
   margin: 0 0 14px;
   padding: 8px 12px;
   border-radius: var(--radius-sm);
-  background: var(--accent-soft);
-  color: var(--accent);
   font-size: 13px;
   font-weight: 600;
+}
+
+.mode-banner.live {
+  background: var(--accent-soft);
+  color: var(--accent);
+  box-shadow: 0 0 0 1px rgba(168, 85, 247, 0.3) inset;
+}
+
+.mode-banner.off {
+  background: rgba(255, 255, 255, 0.07);
+  color: var(--muted);
+}
+
+.settings-save-note {
+  margin: 10px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+  min-height: 16px;
+}
+
+.settings-save-note.success {
+  color: var(--ok);
+}
+
+.settings-save-note.error {
+  color: var(--bad);
 }
 
 .orch-grid {
@@ -958,4 +991,13 @@ button.danger-text {
 
 .orch-decision .orch-decision-rule {
   font-weight: 600;
+}
+
+.orch-decision.enforced {
+  border-color: var(--bad);
+  background: var(--bad-soft);
+}
+
+.orch-decision.enforced .orch-decision-rule {
+  color: var(--bad);
 }

@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 import { createJobStore } from "./jobStore.js";
 import { createSessionStore } from "./sessionStore.js";
@@ -79,9 +80,62 @@ export function createOrchestrationRuntime({ dataDir, getPolicy }) {
         : { parallelChildRuns: siblings.length + 1, totalChildRunsInJob, hasRecursiveChild }
     });
 
+    // Live enforcement: in "live" mode, a subset of the same conditions
+    // shadowGovernor only proposes against actually block the run. Kept
+    // separate from evaluateShadowGovernor (which must stay pure) so shadow
+    // mode's read-only guarantee is never at risk of drifting
+    // (PARAGON-D-003R).
+    let enforcement = null;
+    if (policy.mode === "live") {
+      const parallelChildRuns = siblings.length + 1;
+      if (!isRoot && parallelChildRuns > policy.subagents.parallelLimit) {
+        enforcement = {
+          reasonCode: "subagents.parallelLimit",
+          message: `${parallelChildRuns} overlapping child runs exceed the configured parallel limit of ${policy.subagents.parallelLimit}.`
+        };
+      } else if (!isRoot && totalChildRunsInJob > policy.subagents.totalPerJobLimit) {
+        enforcement = {
+          reasonCode: "subagents.totalPerJobLimit",
+          message: `${totalChildRunsInJob} total child runs exceed the configured per-job limit of ${policy.subagents.totalPerJobLimit}.`
+        };
+      } else if (!isRoot && hasRecursiveChild && !policy.subagents.recursiveChildrenAllowed) {
+        enforcement = {
+          reasonCode: "subagents.recursiveChildrenProhibited",
+          message: "A child run spawned its own child run, which the configured policy prohibits."
+        };
+      } else if (
+        !correlation.sessionIsImplicit &&
+        policy.session.hardLimitMinutes &&
+        wallClockDurationMinutes >= policy.session.hardLimitMinutes
+      ) {
+        enforcement = {
+          reasonCode: "session.hardLimit",
+          message: `Session active for ${wallClockDurationMinutes}m, past the configured hard limit of ${policy.session.hardLimitMinutes}m. Roll over to a new session.`,
+          rolloverRequired: true
+        };
+      }
+    }
+
+    const enforcementDecisions = enforcement
+      ? [
+          {
+            policyRule: enforcement.reasonCode,
+            observedValue: true,
+            threshold: true,
+            proposedAction: "blocked_request",
+            explanation: `ENFORCED (live mode): ${enforcement.message}`,
+            confidence: "high",
+            missingEvidence: []
+          }
+        ]
+      : [];
+
     const savedDecisions =
-      decisionInputs.length > 0
-        ? await decisions.record({ jobId: correlation.jobId, sessionId: correlation.sessionId, runId: correlation.runId, now }, decisionInputs)
+      decisionInputs.length > 0 || enforcementDecisions.length > 0
+        ? await decisions.record(
+            { jobId: correlation.jobId, sessionId: correlation.sessionId, runId: correlation.runId, now },
+            [...decisionInputs, ...enforcementDecisions]
+          )
         : [];
 
     if (isRoot) {
@@ -115,6 +169,7 @@ export function createOrchestrationRuntime({ dataDir, getPolicy }) {
       contextEstimate,
       run,
       decisions: savedDecisions,
+      enforcement,
       responseHeaders: {
         ...correlationResponseHeaders(correlation, policy.mode),
         "X-Paragon-Context-Estimate": String(contextEstimate.estimatedInputTokens),
@@ -222,6 +277,48 @@ export function createOrchestrationRuntime({ dataDir, getPolicy }) {
     return withProvider;
   }
 
+  const allStores = [jobs, sessions, runs, attempts, checkpoints, decisions];
+  let retentionTimer = null;
+
+  /** Runs compactWithRetention on every store using the currently configured retentionDays. Safe to call repeatedly. */
+  async function runRetentionCompaction() {
+    const retentionDays = getPolicy()?.retentionDays;
+    let removed = 0;
+    for (const store of allStores) {
+      removed += await store.compactWithRetention(retentionDays);
+    }
+    return removed;
+  }
+
+  /** Starts a periodic retention sweep (default every 6h) plus one immediate run. Idempotent — restarting cancels the prior timer. */
+  function startRetentionScheduler(intervalMs = 6 * 60 * 60 * 1000) {
+    stopRetentionScheduler();
+    runRetentionCompaction().catch((error) => console.warn(`orchestration: retention compaction failed (non-fatal): ${error.message}`));
+    retentionTimer = setInterval(() => {
+      runRetentionCompaction().catch((error) => console.warn(`orchestration: retention compaction failed (non-fatal): ${error.message}`));
+    }, intervalMs);
+    retentionTimer.unref?.();
+    return retentionTimer;
+  }
+
+  function stopRetentionScheduler() {
+    if (retentionTimer) {
+      clearInterval(retentionTimer);
+      retentionTimer = null;
+    }
+  }
+
+  /** Total on-disk bytes across every orchestration JSONL store — surfaced in the dashboard settings panel. */
+  function storageUsageBytes() {
+    return allStores.reduce((sum, store) => {
+      try {
+        return sum + fs.statSync(store.filePath).size;
+      } catch {
+        return sum;
+      }
+    }, 0);
+  }
+
   return {
     jobs,
     sessions,
@@ -235,6 +332,10 @@ export function createOrchestrationRuntime({ dataDir, getPolicy }) {
     finishAttempt,
     recordAttemptProcessId,
     finishRequest,
-    newCheckpointId: () => generateId("checkpoint")
+    newCheckpointId: () => generateId("checkpoint"),
+    runRetentionCompaction,
+    startRetentionScheduler,
+    stopRetentionScheduler,
+    storageUsageBytes
   };
 }

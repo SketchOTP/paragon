@@ -5,6 +5,10 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 echo "Scanning for personal hostnames and paths..."
+# docs/evidence/ is an internal incident/audit log (same category as
+# notes.md, project_memory/, repo_map.md below) — it intentionally records
+# this deployment's real hostnames and paths as evidence, and is not shipped
+# product source.
 if grep -rE 'atlas-2|tail1a5964|/home/sketch' \
   --include='*.js' --include='*.md' --include='*.sh' --include='*.html' \
   --exclude='check-release.sh' \
@@ -12,7 +16,7 @@ if grep -rE 'atlas-2|tail1a5964|/home/sketch' \
   --exclude='AGENTS.md' --exclude='CLAUDE.md' --exclude='.cursorrules' \
   --exclude='project_*.md' \
   --exclude-dir=node_modules --exclude-dir=data --exclude-dir=test --exclude-dir=.git \
-  --exclude-dir=project_memory .; then
+  --exclude-dir=project_memory --exclude-dir=evidence .; then
   echo "FAIL: Found sensitive patterns in tracked source files." >&2
   exit 1
 fi

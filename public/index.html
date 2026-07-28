@@ -229,10 +229,10 @@
 
       <section class="panel orchestration-panel" id="orchestration-panel">
         <div class="panel-head">
-          <h2>Orchestration Observability</h2>
+          <h2>Orchestration</h2>
           <button type="button" id="refresh-orchestration" class="btn ghost">Refresh</button>
         </div>
-        <p class="shadow-banner">Shadow mode: PARAGON is measuring and recommending actions but is not changing execution.</p>
+        <p class="mode-banner" id="mode-banner"></p>
         <div class="orch-grid" id="orch-overview"></div>
         <div class="orch-columns">
           <div class="orch-col">
@@ -253,9 +253,55 @@
           </div>
         </div>
         <div class="orch-col orch-governor">
-          <h3>Governor — recent proposed actions</h3>
+          <h3 id="orch-governor-heading">Governor — recent actions</h3>
           <div id="orch-governor"></div>
         </div>
+      </section>
+
+      <section class="panel settings-panel" id="orch-settings-panel">
+        <div class="panel-head">
+          <h2>Live enforcement settings</h2>
+          <button type="button" id="save-orch-settings" class="btn primary sm">Save</button>
+        </div>
+        <div class="settings-grid" id="orch-settings-grid">
+          <label class="field">
+            <span class="field-label">Mode</span>
+            <select id="orch-setting-mode">
+              <option value="live">Live (enforced)</option>
+              <option value="off">Off</option>
+            </select>
+          </label>
+          <label class="field">
+            <span class="field-label">Context ceiling (tokens)</span>
+            <input type="number" id="orch-setting-context-ceiling" min="1000" step="1000" />
+          </label>
+          <label class="field">
+            <span class="field-label">Max concurrent executions</span>
+            <input type="number" id="orch-setting-max-concurrent" min="1" step="1" />
+          </label>
+          <label class="field">
+            <span class="field-label">Max fallback attempts</span>
+            <input type="number" id="orch-setting-max-fallback" min="1" step="1" />
+          </label>
+          <label class="field">
+            <span class="field-label">Circuit-breaker threshold</span>
+            <input type="number" id="orch-setting-circuit-threshold" min="1" step="1" />
+          </label>
+          <label class="field">
+            <span class="field-label">Circuit-breaker cooldown (ms)</span>
+            <input type="number" id="orch-setting-circuit-cooldown" min="1000" step="1000" />
+          </label>
+          <label class="field">
+            <span class="field-label">Session hard limit (minutes)</span>
+            <input type="number" id="orch-setting-session-hard-limit" min="1" step="1" />
+          </label>
+          <label class="field">
+            <span class="field-label">Telemetry retention (days)</span>
+            <input type="number" id="orch-setting-retention-days" min="1" step="1" />
+          </label>
+        </div>
+        <p class="settings-save-note" id="orch-settings-status" role="status" aria-live="polite"></p>
+        <p class="settings-save-note" id="orch-storage-usage"></p>
       </section>
     </main>
     <script src="/app.js" type="module"></script>
