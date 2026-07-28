@@ -29,8 +29,26 @@ Malformed ids (wrong shape, injected text) are silently discarded and
 replaced — they never cause a 4xx. PARAGON echoes back the resolved ids in
 response headers (`X-Paragon-Job-ID`, `X-Paragon-Session-ID`,
 `X-Paragon-Run-ID`, `X-Paragon-Context-Estimate`,
-`X-Paragon-Governor-Warnings`, `X-Paragon-Enforcement-Mode: shadow`) so a
+`X-Paragon-Governor-Warnings`, `X-Paragon-Enforcement-Mode`) so a
 caller can propagate the same session/parent-run id on its next request.
+
+### `enabled` / `off` / `shadow` semantics (PARAGON-D-002A)
+
+- `orchestration.enabled: false` — the master switch. No telemetry is
+  recorded at all: no correlation ids, no headers beyond what already
+  existed pre-D-002, no job/session/run records.
+- `orchestration.enabled: true, mode: "off"` — correlation and
+  record-keeping continue (jobs/sessions/runs/attempts are still tracked,
+  response headers still returned), but the shadow governor evaluates
+  nothing and produces zero decisions. `X-Paragon-Enforcement-Mode: off`.
+- `orchestration.enabled: true, mode: "shadow"` — full behavior: telemetry
+  plus governor decisions, still never affecting execution.
+  `X-Paragon-Enforcement-Mode: shadow`.
+
+An implicit, untagged session/job closes automatically once its single
+request finishes, in all three states above (closure is a record-keeping
+detail, not a governance decision) — see F4 in
+`PARAGON-D-002A-AUDIT.md`.
 
 ## Admin API
 
@@ -44,6 +62,7 @@ the same admin auth as the rest of `/api` (API key, or loopback if
 | `GET /jobs`, `GET /jobs/:id` | Job records (paginated via `?limit=&offset=`) |
 | `GET /sessions`, `GET /sessions/:id` | Session records |
 | `GET /runs`, `GET /runs/:id` | Run records; filter with `?sessionId=` or `?jobId=` |
+| `GET /runs/:id/attempts` | Individual provider-attempt records within that run's fallback sequence |
 | `GET /usage` | Full usage-ledger aggregation (provider, model, role, context band, duration band, success/failure, fallback, timeout) |
 | `GET /decisions` | Recent shadow-governor decisions |
 | `GET /duplication` | Conservative duplication signals across recorded runs |

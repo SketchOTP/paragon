@@ -52,5 +52,15 @@ export function createJobStore(dataDir) {
     return updated;
   }
 
-  return { ...store, getOrCreate, attachSession, attachRootRun, recordUsage };
+  async function close(jobId, now = new Date().toISOString()) {
+    const job = store.get(jobId);
+    if (!job || job.status === "closed") {
+      return job ?? null;
+    }
+    const updated = { ...job, status: "closed", completedAt: now };
+    await store.append(updated);
+    return updated;
+  }
+
+  return { ...store, getOrCreate, attachSession, attachRootRun, recordUsage, close };
 }

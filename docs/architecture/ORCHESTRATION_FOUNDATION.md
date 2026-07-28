@@ -19,13 +19,14 @@ error so a storage failure can never turn into a client-visible failure.
 
 | Module | Responsibility |
 |---|---|
-| `ids.js` | Collision-resistant id generation/validation (`job_`, `sess_`, `run_`, `ckpt_`, `dec_` prefixes) |
+| `ids.js` | Collision-resistant id generation/validation (`job_`, `sess_`, `run_`, `att_`, `ckpt_`, `dec_` prefixes) |
 | `redaction.js` | Strips credential-shaped keys and bearer/`sk-` tokens from any record before it touches disk |
-| `schemas.js` | Versioned record shapes (`SCHEMA_VERSION = 1`) for job/session/run/checkpoint/decision |
+| `errorClassification.js` | Maps arbitrary provider/process errors to a bounded taxonomy + a separate bounded, redacted diagnostic |
+| `schemas.js` | Versioned record shapes (`SCHEMA_VERSION = 1`) for job/session/run/attempt/checkpoint/decision |
 | `eventStore.js` | Generic append-only JSONL store: serialized write queue, corrupt/partial-line isolation, atomic snapshots, retention-based compaction |
-| `jobStore.js` / `sessionStore.js` / `runStore.js` / `checkpointStore.js` / `decisionStore.js` | Domain wrappers over `eventStore.js` |
+| `jobStore.js` / `sessionStore.js` / `runStore.js` / `attemptStore.js` / `checkpointStore.js` / `decisionStore.js` | Domain wrappers over `eventStore.js` |
 | `correlation.js` | Reads `X-Paragon-*` headers, generates missing ids, never guesses session identity from IP |
-| `contextEstimator.js` | Conservative char-heuristic token estimation (no tokenizer dependency) |
+| `contextEstimator.js` | Conservative char-heuristic token estimation (no tokenizer dependency) + bounded streaming response accumulator |
 | `governorPolicy.js` | Default policy shape + `validatePolicy()` (rejects any `mode` other than `off`/`shadow`) |
 | `shadowGovernor.js` | Pure functions: policy + observed values → decision objects. Never touches execution. |
 | `duplication.js` | Conservative deterministic duplication signals (no LLM) |
@@ -102,36 +103,80 @@ this scale. Retention is enforced via `compactWithRetention(retentionDays)`,
 which is **not** wired to a scheduler in D-002 — it exists as a callable
 primitive; automatic periodic compaction is a D-003-or-later concern.
 
-## Known limitations
+## Corrections applied in PARAGON-D-002A
 
-1. **Per-attempt provider telemetry is request-scoped, not attempt-scoped.**
-   One HTTP request produces one `run` record. If the fallback chain tries
-   three providers before one succeeds, the `run` record reflects the
-   *final* provider/model and a `fallbackPosition` index, but does not
-   store three separate timestamped attempts with individual child PIDs.
-   Capturing that would require restructuring `runWithFallback()` in
-   `openaiApi.js` to emit a sub-record per attempt — deferred as a
-   non-blocking enhancement, since the directive's DATA MODELS section
-   models `run` at the request level.
-2. **Pre-existing crash bug discovered during D-002 testing, not fixed:**
-   `src/cli.js`'s `runProcess()` calls `child.stdin.end(stdinText)` with no
-   `error` handler on the child's stdin stream. If the child process exits
-   before consuming a large stdin write (e.g., an unauthenticated CLI
-   provider that exits immediately, fed a several-hundred-KB prompt), the
-   write fails with `EPIPE` and crashes the entire Node process — this
-   predates D-002 and does not relate to any code in `src/orchestration/`.
-   Fixing it means touching provider execution code, which conflicts with
-   D-002's constraint to make no provider/API behavior changes. Filing
-   this as a discrete, separate fix is recommended before D-003, since
-   D-003 will legitimately need to touch `cli.js` for enforcement anyway.
-3. **`compactWithRetention` is unscheduled.** `retentionDays` is validated
+An independent audit (`PARAGON-D-002A-AUDIT.md`) found and fixed several
+defects in the original D-002 implementation before this branch was
+considered mergeable:
+
+1. **Per-attempt provider telemetry** — originally request-scoped only.
+   `src/orchestration/attemptStore.js` + `schemas.js`'s `newAttempt()` now
+   record one `attempt` per provider tried within a run's fallback
+   sequence (start/end time, success, timeout, classified error, fallback
+   reason, `followedByAnotherAttempt`, observable child PID). `RUN` = one
+   incoming request; `ATTEMPT` = one provider try within it. See
+   `GET /api/orchestration/runs/:id/attempts`.
+2. **EPIPE crash** — `src/cli.js`'s `runProcess()` now attaches a
+   `child.stdin.on("error", ...)` handler before writing, converting a
+   write to an already-closed pipe into a normal rejected execution
+   (`errorClassification: "BROKEN_PIPE"`) instead of an uncaught 'error'
+   event that killed the whole process.
+3. **Unbounded streaming memory** — `streamedText += chunk` is gone.
+   `contextEstimator.js`'s `createBoundedResponseAccumulator()` tracks a
+   running character count and content hash in O(1) space instead of
+   retaining a duplicate copy of the full streamed response.
+4. **Implicit sessions/jobs never closed** — an untagged request's
+   one-request implicit session (and its job, once no sessions remain
+   open) now close in `finishRequest()`. Explicit caller-supplied sessions
+   are untouched. Active-session/active-job counts return to zero for
+   ordinary untagged traffic instead of growing without bound.
+5. **Duration terminology** — `sessionStore.js`'s `activeDurationMinutes()`
+   actually computed wall-clock time despite its name. Split into
+   `wallClockDurationMinutes()`, `activeProviderDurationMinutes()` (sum of
+   real provider execution time), and `idleDurationMinutes()`. Governor
+   session thresholds compare against wall-clock duration, matching the
+   "sessions active 8+ hours" evidence the directive is built on.
+6. **Duplication false positives** — `objectiveHash()` was hashing
+   `messages[0].content`, commonly a shared system prompt. It now hashes
+   only an explicit task-type header plus the *final* user-authored
+   message, and returns `null` (no reliable hash) unless both are present.
+7. **Subagent total-limit off-by-one** — `totalChildRunsInJob` excluded
+   the run currently being evaluated, so with a limit of 4 the 5th child
+   went unflagged. Fixed to include the current run in the count.
+8. **Hardcoded enforcement-mode header** — `X-Paragon-Enforcement-Mode`
+   said `"shadow"` unconditionally. It now reflects the actual configured
+   `orchestration.mode`, and the master `orchestration.enabled` switch
+   (previously read nowhere) now actually gates whether any telemetry is
+   recorded at all.
+9. **Run-id collision** — a client-supplied `X-Paragon-Run-ID` that
+   collided with an existing, unrelated run would silently overwrite it
+   (`eventStore.append()` overwrites by id). `beginRequest()` now detects
+   the collision and mints a fresh id instead.
+10. **Raw error messages as classification** — `errorClassification` used
+    to be `error.message` verbatim. `errorClassification.js` now maps
+    every failure to a bounded taxonomy (`AUTHENTICATION`, `RATE_LIMIT`,
+    `TIMEOUT`, `PROCESS_EXIT`, `BROKEN_PIPE`, `NETWORK`,
+    `MALFORMED_RESPONSE`, `CANCELLED`, `UNKNOWN`), with a separately
+    bounded, redacted `errorDiagnostic` for human debugging.
+
+## Known limitations (remaining after D-002A)
+
+1. **`compactWithRetention` is unscheduled.** `retentionDays` is validated
    and stored in policy but nothing calls the compaction function on a
    timer. Wiring a periodic sweep (e.g., on server startup or a daily
    interval) is straightforward and left for the next iteration rather
    than adding a new background-timer subsystem inside this directive's
    scope.
-4. **No tokenizer parity with real providers.** The char-heuristic
+2. **No tokenizer parity with real providers.** The char-heuristic
    estimator is deliberately conservative and simple; a provider-specific
    tokenizer (e.g., tiktoken for OpenAI-shaped models) would materially
    improve accuracy and could be added without changing the estimator's
    external shape (`estimatedInputTokens`, `method`, `confidence`).
+3. **PID capture is best-effort and fire-and-forget.** `onSpawn` fires
+   synchronously off the child process object but the resulting
+   `recordAttemptProcessId()` write is not awaited by the request path
+   (by design, to avoid adding latency) — under extreme load it is
+   theoretically possible for an attempt's `processId` field to still be
+   `null` if the process finishes and the attempt record is queried before
+   that background write lands. This does not affect correctness of any
+   other field.

@@ -2,16 +2,30 @@ import { hashContent } from "./redaction.js";
 
 /**
  * Conservative, deterministic duplication signal for child runs. Never
- * uses an LLM. A run only counts as CONFIRMED_DUPLICATION when session,
- * repository, task type, and objective hash all agree and the runs
- * overlapped in time — anything less is POSSIBLE_DUPLICATION or
- * INSUFFICIENT_EVIDENCE.
+ * uses an LLM.
+ *
+ * What CONFIRMED_DUPLICATION actually means: two runs are both (a) child
+ * runs — i.e. carry a `parentRunId`, ruling out root requests, (b) in the
+ * same session, (c) hash to the same objective (see objectiveHash below —
+ * this is deliberately never derived from a system prompt, since every
+ * child in a session commonly shares the same system prompt and that
+ * would produce false positives), (d) report the same non-null
+ * `repository`, and (e) have overlapping execution windows. All five
+ * conditions must hold. Any weaker match — same objective hash without
+ * repository or time corroboration — is at most POSSIBLE_DUPLICATION,
+ * and a pair with nothing but a shared hash is INSUFFICIENT_EVIDENCE.
+ *
+ * objectiveHash's caller (telemetry.js) is responsible for only ever
+ * hashing task-type + the final user-authored message, never
+ * `messages[0]` — the first message is very often a shared system
+ * prompt, and hashing it would make every child in a session with a
+ * common preamble look like a duplicate of every other child.
  */
 export function objectiveHash(taskType, objective) {
-  if (!taskType && !objective) {
+  if (!taskType || !objective) {
     return null;
   }
-  return hashContent(`${taskType ?? ""}::${objective ?? ""}`);
+  return hashContent(`${taskType}::${objective}`);
 }
 
 function overlaps(a, b) {

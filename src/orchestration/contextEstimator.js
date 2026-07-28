@@ -5,6 +5,8 @@
  * shape of the result.
  */
 
+import crypto from "node:crypto";
+
 const CHARS_PER_TOKEN_ESTIMATE = 3.5;
 
 function messageCharCount(message) {
@@ -80,5 +82,40 @@ export function estimateResponseSize(text) {
     confidence: "low",
     isExact: false,
     characterCount: chars
+  };
+}
+
+/**
+ * Streaming response-size tracking that never retains the accumulated
+ * text — only O(1) counters plus a running content hash. Use this instead
+ * of concatenating streamed chunks into a full string for telemetry
+ * purposes (PARAGON-D-002A: unbounded `streamedText += chunk` conflicts
+ * with PARAGON's high-volume, bounded-memory design).
+ */
+export function createBoundedResponseAccumulator() {
+  const hash = crypto.createHash("sha256");
+  let charCount = 0;
+  let finished = false;
+
+  return {
+    push(chunk) {
+      const text = String(chunk ?? "");
+      charCount += text.length;
+      hash.update(text);
+    },
+    finish() {
+      if (finished) {
+        throw new Error("createBoundedResponseAccumulator: finish() already called");
+      }
+      finished = true;
+      return {
+        estimatedOutputTokens: estimateTokensFromChars(charCount),
+        method: "char-heuristic",
+        confidence: "low",
+        isExact: false,
+        characterCount: charCount,
+        contentHash: hash.digest("hex").slice(0, 16)
+      };
+    }
   };
 }
