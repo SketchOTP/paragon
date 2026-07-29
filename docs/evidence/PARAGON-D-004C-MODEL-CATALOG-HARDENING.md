@@ -2,9 +2,12 @@
 
 Implementation worktree: `/home/sketch/Projects/paragon-d004c`, branch
 `paragon-d004c-model-catalog`, created from `origin/main` at `2327665`
-(merge of PARAGON-D-004B). Production checkout
+(merge of PARAGON-D-004B), merged to `main` as `aed6920` (PR #7) and
+`91e350c` (PR #8, a production-verification follow-up fix — see
+"Delivery" below). Production checkout
 (`/home/sketch/Projects/paragon-production`, service `paragon.service`)
-was **not** touched by this work — see "Status" below.
+is deployed at `91e350c`, verified live — see "Production refresh
+results" below.
 
 ## Previous inaccurate discovery paths
 
@@ -216,29 +219,132 @@ if it were an available model.
    to `providerTimeoutMs` (120s default) after the refresh had already
    resolved. Fixed with an explicit `clearTimeout` in a `finally` block.
 
-## Status
+## Delivery
 
-**Implementation complete, tested, committed to the
-`paragon-d004c-model-catalog` branch. Not yet pushed, not yet a PR, not
-yet merged, and `paragon-production` / `paragon.service` have not been
-touched.**
+- Branch pushed, PR #7 opened against `main`, CI green, squash-merged as
+  `aed6920`.
+- `paragon-production` fast-forwarded `2327665` → `aed6920` — diff
+  matched the PR exactly (21 files, no unrelated changes), `data/config.json`
+  (API key, Tailscale host, ports 10000/9420, all 5 provider
+  configs/routing weights) untouched by the fast-forward.
+- Pre-restart backup: `data/backups/pre-d004c-20260729_130615/config.json`
+  (no pre-existing `model-catalog.json` to back up — first run of this
+  feature).
+- `paragon.service` restarted (sudo run by the operator; each restart in
+  this report was operator-executed, not run by the agent). Confirmed
+  `ActiveState=active`, `NRestarts=0`, `/health` OK, new PID, ports
+  10000/9420 unchanged, `/v1/models` still lists `paragon`.
 
-Per this session's operating constraints, push/PR/merge/production
-restart/production refresh are each a distinct action requiring explicit
-user confirmation before proceeding — they were not blanket-authorized by
-the directive text alone. The "Production Proof" and "Delivery" sections
-of the original directive (push, PR, merge, production cleanup + restart
-+ refresh, restart-recovery proof) are the next step, pending that
-confirmation.
+### A real bug found during production verification, fixed, and redeployed
+
+The very first production refresh cycle (see "Production refresh
+results" below) revealed `classifyModelFailure()` was misclassifying a
+genuinely invalid Claude model as `TRANSIENT_FAILURE` instead of
+`MODEL_NOT_FOUND`. Root cause: `error.stderr ?? error.stdout` — `??`
+only falls through on `null`/`undefined`, and `cli.js::runProcess` always
+sets `error.stderr` to a string (often `""`), so a diagnostic that landed
+on stdout was silently never read. Confirmed against the real installed
+`claude` CLI:
+
+```
+$ claude -p --tools "" --model claude-does-not-exist-999 <<< "..."
+(stdout) There's an issue with the selected model (claude-does-not-exist-999).
+         It may not exist or you may not have access to it.
+(stderr) (empty)
+exit 1
+```
+
+Fixed (concatenate both streams unconditionally, extended the match
+patterns to the real phrasing), covered by a new regression test
+reproducing the exact stdout-only/empty-stderr shape, shipped as PR #8
+(rebased cleanly onto the post-squash `main` — `git rebase` recognized
+`02f201e`'s content as already applied and skipped it), merged as
+`91e350c`, fast-forwarded into production, service restarted again to
+pick it up. Re-tested against the same real CLI output afterward —
+correctly classified `MODEL_NOT_FOUND`, model excluded from routing.
+
+## Production refresh results (before → after)
+
+Before this session, `paragon-production` had no model-catalog file at
+all — routing eligibility came entirely from whatever was last saved to
+`providerConfig.models` in `config.json`. The first automatic refresh
+(fired on the first restart, per `refreshOnStartupIfStale`) produced:
+
+| Provider | Candidates seen | Added | Removed (retired) | Rejected this cycle | Result state |
+|---|---|---|---|---|---|
+| Claude | 34 (documented + binary-scan candidates) | 34 | 0 | 2 (`claude-mythos-5`, `claude-fable-5` — transient, not hard-rejected) | 8 `validated` (bounded-probed, in budget), 25 `unknown` (candidate-only, outside the 10-probe budget or alias), 1 `rejected` (test artifact below) |
+| Codex | 15 (live `codex debug models`) | 15 | 0 | 0 | 15 `exposed` (authoritative) |
+| Cursor | 193 (`cursor-agent models`) | 193 | 0 | 0 | 193 `exposed` (authoritative) |
+| Antigravity | 8 real records (11 raw lines, 3 filtered as non-model chrome by `parseAgyModelsOutput`) | 8 | 0 | 0 | 8 `exposed` (authoritative) |
+| LM Studio (HTTP) | — | — | — | — | `ok: false, "fetch failed"` — endpoint unreachable (no local LM Studio server running); **previous entries kept, no synthetic fallback**, exactly per directive |
+
+`cliVersion` recorded per provider: Claude `2.1.118 (Claude Code)`, Codex
+`codex-cli 0.122.0`, Cursor `2026.07.23-e383d2b`, Antigravity `1.1.8`.
+
+### Rejected-model-excluded-immediately proof
+
+Manually validated a deliberately-nonexistent model
+(`claude-does-not-exist-999`) via
+`POST /api/model-catalog/providers/claude/models/claude-does-not-exist-999/validate`
+— classified `MODEL_NOT_FOUND`, state `rejected`, and confirmed absent
+from `/api/routing/registry`'s eligible set on the very next call (no
+wait for a scheduled refresh). A subsequent full refresh then correctly
+`retired` that same test entry (absent from the real candidate list) —
+demonstrating authoritative-replace-not-merge live, not just in tests.
+Final generation: `2`.
+
+### Scheduler resume-across-restart proof
+
+Captured `schedule` immediately before the third (resume-proof) restart:
+
+```json
+{"refreshing":false,"lastRefreshStartedAt":"2026-07-29T17:29:36.466Z",
+ "lastRefreshCompletedAt":"2026-07-29T17:30:43.547Z",
+ "lastSuccessfulRefreshAt":"2026-07-29T17:30:43.547Z",
+ "nextRefreshAt":"2026-07-30T17:30:43.547Z"}
+```
+
+Identical `schedule` (byte-for-byte) and `generation` (`2`) immediately
+after the restart — the scheduler resumed waiting for the persisted
+`nextRefreshAt` rather than re-firing an immediate refresh, confirming
+restart-safety with real production state, not just the mocked unit
+tests.
+
+### Requirement-by-requirement confirmation (production, not just tests)
+
+| Requirement | Confirmed |
+|---|---|
+| Static Claude models candidate-only | Yes — 25/34 stayed `unknown` (candidate-only) this cycle |
+| Claude binary strings candidate-only | Yes — `binary_candidate` entries all `unknown` unless bounded-probed |
+| Bundled-only Codex candidate-only | Yes by design (live `codex debug models` succeeded this cycle, so all 15 came in `exposed`; unit tests cover the bundled-only-candidate path directly) |
+| Cursor/Antigravity/HTTP/live-Codex authoritative replacement | Yes — all `exposed` directly, replace-not-merge demonstrated live via the test-artifact retirement |
+| Auto-eligible = exposed or validated only | Yes — verified via `/api/routing/registry` cross-check against catalog state |
+| Models missing from a successful refresh removed | Yes — test artifact `retired`, not deleted or silently kept eligible |
+| Rejected model excluded from the immediately following request | Yes — proven above |
+| Model-specific failures don't disable the whole provider | Yes — Claude kept 8 `validated` models despite 2 rejections in the same cycle |
+| No old configured model bypasses catalog eligibility | Yes — registry gates on catalog state for every provider the catalog has assessed |
+| Provider-default routing attributed honestly | Unchanged code path, not modified by this work |
+| Daily refresh enabled | Yes — `modelCatalog.enabled: true` (default) |
+| Next refresh ~24h later | Yes — `nextRefreshAt` = `lastSuccessfulRefreshAt` + 24h, confirmed |
+| Refresh state survives restart | Yes — proven twice (restart 2 and restart 3) |
+| Overlapping refreshes prevented | `schedule.refreshing` lock (unit-tested); no overlap occurred in production (each refresh completed before the next restart) |
+| No prompt/response/API key/credential persisted in catalog state | Yes — `grep` of `data/model-catalog.json` for credential-like strings returned nothing |
+| Production active, stable NRestarts | Yes — `NRestarts=0` throughout all three restarts |
+| Ports 10000/9420 unchanged | Yes |
+| `/v1/models` still exposes `paragon` | Yes |
+| Production checkout clean | Yes — `git status --short` empty at every checkpoint |
 
 ## Final verdict
 
-**PARAGON_D004C_PARTIAL**
+**PARAGON_D004C_MODEL_CATALOG_COMPLETE**
 
-Rationale: every implementation, test, and cleanup-logic requirement is
-complete and verified in the worktree (tests, catalog state machine,
-scheduler, routing gate, dashboard, API). What remains is exclusively the
-production-deployment portion (push, PR, merge, production catalog
-cleanup, service restart, restart-recovery proof) — deliberately withheld
-pending explicit operator confirmation rather than a defect in the
-implementation itself.
+Every automatic-eligibility path is now gated on real evidence (an
+authoritative account-aware source or a bounded execution probe/prior
+success), stale/rejected/retired models are excluded immediately and
+never silently carried forward, the daily refresh runs without any
+cron/systemd timer and survives a restart with its schedule intact, and
+all of this was verified against the live `paragon-production` service —
+not only the implementation worktree's test suite — including one real
+defect (found via that production verification, not by inspection) fixed
+and redeployed through the same tested pipeline before this verdict was
+issued.
