@@ -138,6 +138,7 @@ const els = {
   toggleOrchSettings: document.querySelector("#toggle-orch-settings"),
   orchSettingsBody: document.querySelector("#orch-settings-body"),
   refreshCatalog: document.querySelector("#refresh-catalog"),
+  validateAllCatalog: document.querySelector("#validate-all-catalog"),
   catalogTableBody: document.querySelector("#catalog-table-body"),
   toggleModelCatalog: document.querySelector("#toggle-model-catalog"),
   modelCatalogBody: document.querySelector("#model-catalog-body"),
@@ -289,7 +290,10 @@ refreshModelRegistry();
 refreshModelCatalog();
 setInterval(refreshOrchestration, 30000);
 setInterval(refreshModelRegistry, 30000);
-setInterval(refreshModelCatalog, 30000);
+// The catalog itself only changes on a refresh (default every 24h) or a
+// manual/validate action — those already re-render the table immediately,
+// so polling every 30s bought nothing but load. Matches the real cadence.
+setInterval(refreshModelCatalog, 24 * 3_600_000);
 
 els.save.addEventListener("click", () => saveConfig({ notify: true }));
 els.refreshStatus.addEventListener("click", () => refreshStatus({ manual: true }));
@@ -297,6 +301,7 @@ els.refreshOrchestration?.addEventListener("click", () => refreshOrchestration({
 els.saveOrchSettings?.addEventListener("click", saveOrchestrationSettings);
 els.refreshRegistry?.addEventListener("click", refreshModelRegistry);
 els.refreshCatalog?.addEventListener("click", () => refreshAllCatalogProviders());
+els.validateAllCatalog?.addEventListener("click", () => validateAllCatalogModels());
 wireCollapsePanel(els.toggleModelRouting, els.modelRoutingBody);
 wireCollapsePanel(els.toggleOrchestration, els.orchestrationBody);
 wireCollapsePanel(els.toggleOrchSettings, els.orchSettingsBody);
@@ -1903,6 +1908,44 @@ async function refreshAllCatalogProviders() {
   } catch {
     // Best-effort; the periodic poll will pick up the eventual result either way.
   } finally {
+    if (els.refreshCatalog) {
+      els.refreshCatalog.disabled = false;
+    }
+    refreshModelCatalog();
+  }
+}
+
+async function validateAllCatalogModels() {
+  if (els.validateAllCatalog) {
+    els.validateAllCatalog.disabled = true;
+  }
+  if (els.refreshCatalog) {
+    els.refreshCatalog.disabled = true;
+  }
+  if (els.catalogUpdatedNote) {
+    els.catalogUpdatedNote.textContent = "Validating every model — each one is probed individually with a minimal request; a model that can't be validated is skipped, not blocking, and stays unvalidated. This can take a while for large catalogs.";
+  }
+  try {
+    const res = await apiFetch("/api/model-catalog/validate-all", { method: "POST" });
+    if (res.ok) {
+      const body = await res.json();
+      renderCatalogTable(body.catalog);
+      if (els.catalogUpdatedNote) {
+        els.catalogUpdatedNote.textContent = `Validate all: ${body.validated} validated, ${body.stillUnvalidated} still unvalidated (of ${body.total}).`;
+      }
+    } else if (res.status === 409) {
+      if (els.catalogUpdatedNote) {
+        els.catalogUpdatedNote.textContent = "A validate-all run is already in progress.";
+      }
+    }
+  } catch {
+    if (els.catalogUpdatedNote) {
+      els.catalogUpdatedNote.textContent = "Validate all failed to complete — check the logs.";
+    }
+  } finally {
+    if (els.validateAllCatalog) {
+      els.validateAllCatalog.disabled = false;
+    }
     if (els.refreshCatalog) {
       els.refreshCatalog.disabled = false;
     }

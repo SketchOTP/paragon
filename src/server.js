@@ -8,15 +8,15 @@ import { dataDir, readConfig, writeConfig } from "./configStore.js";
 import { getEnv } from "./env.js";
 import { getLogs, subscribeLogs, addLog } from "./logStore.js";
 import { registerOpenAiRoutes } from "./openaiApi.js";
-import { getAuthSession, getAuthState, listModels, runProvider, runStatus, startAuth, submitAuthCode } from "./cli.js";
+import { getAuthSession, getAuthState, listModels, runStatus, startAuth, submitAuthCode } from "./cli.js";
 import { tailscaleUrls } from "./tailscaleUrls.js";
 import { createOrchestrationRuntime } from "./orchestration/telemetry.js";
 import { registerOrchestrationRoutes } from "./orchestration/api.js";
 import { buildModelRegistry } from "./routing/modelRegistry.js";
 import { rankRegistryByTask, scoringMethodology, TASK_TYPES } from "./routing/router.js";
 import { getBenchmarkData, annotateRegistryWithBenchmarks } from "./routing/benchmarks.js";
-import { applyExecutionResult, classifyModelFailure, loadCatalog, saveCatalog } from "./modelCatalog.js";
-import { runFullRefresh, refreshProviderCatalog } from "./modelCatalogRefresh.js";
+import { applyExecutionResult, loadCatalog, saveCatalog } from "./modelCatalog.js";
+import { defaultProbe, runFullRefresh, refreshProviderCatalog } from "./modelCatalogRefresh.js";
 import { startModelCatalogScheduler } from "./modelCatalogScheduler.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -310,14 +310,79 @@ app.post("/api/model-catalog/providers/:provider/models/:model/validate", async 
     res.status(404).json({ error: "Unknown provider" });
     return;
   }
+  const result = await defaultProbe(provider, providerConfig, modelId, {});
+  await catalogStore.recordResult(provider, modelId, result);
+  res.json({
+    provider,
+    model: modelId,
+    state: cachedCatalog.providers[provider]?.models[modelId]?.state,
+    classification: result.classification
+  });
+});
+
+let validateAllInFlight = null;
+
+/**
+ * Walks every non-alias, non-retired model currently in the catalog across
+ * every enabled provider and probes each one individually with a minimal,
+ * cheap request (max_tokens: 1 where the provider honors it — see
+ * defaultProbe's doc comment for the CLI-provider caveat). Sequential and
+ * synchronous per model, but each await yields the event loop, so this
+ * never blocks other requests — and a failure on one model is recorded and
+ * skipped, never aborting the run: "don't block, just leave it
+ * unvalidated" is the whole point of this endpoint.
+ */
+app.post("/api/model-catalog/validate-all", async (req, res) => {
+  if (validateAllInFlight) {
+    res.status(409).json({ error: { message: "A validate-all run is already in progress" } });
+    return;
+  }
+
+  const config = await getConfig();
+  const targets = [];
+  for (const [provider, bucket] of Object.entries(cachedCatalog.providers ?? {})) {
+    const providerConfig = config.providers[provider];
+    if (!providerConfig?.enabled) {
+      continue;
+    }
+    for (const model of Object.values(bucket.models ?? {})) {
+      if (model.isAlias || model.state === "retired") {
+        continue;
+      }
+      targets.push({ provider, providerConfig, modelId: model.modelId });
+    }
+  }
+
+  const run = (async () => {
+    const results = { total: targets.length, validated: 0, stillUnvalidated: 0, results: [] };
+    for (const { provider, providerConfig, modelId } of targets) {
+      const outcome = await defaultProbe(provider, providerConfig, modelId, { timeoutMs: 30000 });
+      await catalogStore.recordResult(provider, modelId, outcome);
+      if (outcome.success) {
+        results.validated += 1;
+      } else {
+        results.stillUnvalidated += 1;
+      }
+      results.results.push({
+        provider,
+        model: modelId,
+        success: outcome.success,
+        classification: outcome.classification,
+        state: cachedCatalog.providers[provider]?.models[modelId]?.state
+      });
+    }
+    return results;
+  })();
+
+  validateAllInFlight = run.finally(() => {
+    validateAllInFlight = null;
+  });
+
   try {
-    await runProvider(provider, { ...providerConfig, model: modelId, timeoutMs: 45000 }, "Reply with exactly one word: ok", undefined, {});
-    await catalogStore.recordResult(provider, modelId, { success: true });
-    res.json({ provider, model: modelId, state: cachedCatalog.providers[provider]?.models[modelId]?.state });
+    const summary = await validateAllInFlight;
+    res.json({ ok: true, ...summary, catalog: cachedCatalog });
   } catch (error) {
-    const classification = classifyModelFailure(error);
-    await catalogStore.recordResult(provider, modelId, { success: false, classification });
-    res.json({ provider, model: modelId, state: cachedCatalog.providers[provider]?.models[modelId]?.state, classification });
+    res.status(500).json({ error: { message: error.message } });
   }
 });
 
