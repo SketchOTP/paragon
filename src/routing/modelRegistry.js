@@ -84,14 +84,14 @@ export function buildModelRegistry(config, statuses = {}) {
         },
         costClass,
         latencyClass: inferLatencyClass(costClass),
-        // Every builtin provider auto-approves tool/command execution
-        // (operator directive — see src/cli.js providerSpecs for the real
-        // flags verified per CLI). Previously antigravity alone was
-        // excluded from automatic routing for exactly this reason; that
-        // gate no longer applies since the same policy is now uniform
-        // across providers, not antigravity-specific.
+        // PARAGON-D-004B-R: PARAGON is a transparent model gateway, not an
+        // autonomous repo-editing agent — every builtin provider runs
+        // read-only/tools-disabled in a throwaway isolated directory (see
+        // src/cli.js providerSpecs and src/executionSandbox.js). No
+        // provider can write to a real project through this endpoint, so
+        // none are excluded from automatic routing on tool-risk grounds.
         automaticEligibility: true,
-        toolExecutionRisk: "unrestricted",
+        toolExecutionRisk: "isolated",
         source: providerConfig.models?.length ? "discovered" : "configured",
         lastDiscoveryAt: now
       });

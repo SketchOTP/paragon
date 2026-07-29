@@ -1,6 +1,7 @@
 import { createAuthMiddleware } from "./auth.js";
 import { classifyTask } from "./taskClassifier.js";
 import { LEGACY_EXPOSED_MODEL_ALIAS } from "./defaultConfig.js";
+import { createIsolatedRuntimeDir, releaseIsolatedRuntimeDir } from "./executionSandbox.js";
 import { messagesToPrompt } from "./prompt.js";
 import { runProvider } from "./cli.js";
 import { addLog } from "./logStore.js";
@@ -117,31 +118,46 @@ export function registerOpenAiRoutes(app, getConfig, orchestration, getStatuses 
     // an absolute override. See src/routing/router.js.
     const hints = extractRoutingHints(req.headers);
     const contextEstimate = estimateRequestContext(req.body);
-    // Cached (6h TTL) — this almost never triggers a real network call on
-    // the hot request path. Empty rows when no OpenRouter key is
-    // configured, which selectRoute treats as "internal-only scoring".
-    const benchmarks = await safely(() => getBenchmarkData(config.integrations?.openrouterApiKey), { rows: [] });
-    let route = selectRoute({
-      config,
-      statuses: getStatuses(),
-      taskProfile: { taskType: task, estimatedInputTokens: contextEstimate.estimatedInputTokens },
-      hints,
-      benchmarkRows: benchmarks?.rows ?? []
-    });
-    let attempts = route ? buildRankedAttempts(route.ranking, config) : [];
-    if (!route || !attempts.length) {
-      // Safety net: no eligible candidate in the registry (e.g. nothing
-      // enabled/healthy, or a registry build hiccup) — fall back to the
-      // old static default rather than a hard denial of service. Recorded
-      // with its own reason code so this is never silently confused with
-      // an actual scored decision.
-      route = null;
-      const routedProvider = config.routing.taskRoutes[task] ?? config.routing.defaultProvider;
-      const staticPrimary = pickEnabledProvider(config, routedProvider);
-      attempts = buildProviderAttempts(config, staticPrimary);
-    }
-    const primary = route ? route.provider : attempts[0]?.name;
-    const primaryModel = attempts[0]?.config?.model || config.providers[primary]?.model;
+
+    // PARAGON-D-004B-R: PARAGON is a transparent OpenAI-compatible model
+    // gateway. Clients such as Cursor supply only messages — no workspace
+    // id, path, or mode is ever required or read from the request. Every
+    // provider invocation instead runs inside its own throwaway directory
+    // (never process.cwd(), never a client-supplied path) so it cannot
+    // affect PARAGON's own checkout or any real project.
+    const runtimeDir = createIsolatedRuntimeDir();
+    let primary;
+    let primaryModel;
+
+    try {
+      // Cached (6h TTL) — this almost never triggers a real network call on
+      // the hot request path. Empty rows when no OpenRouter key is
+      // configured, which selectRoute treats as "internal-only scoring".
+      const benchmarks = await safely(() => getBenchmarkData(config.integrations?.openrouterApiKey), { rows: [] });
+      let route = selectRoute({
+        config,
+        statuses: getStatuses(),
+        taskProfile: {
+          taskType: task,
+          estimatedInputTokens: contextEstimate.estimatedInputTokens
+        },
+        hints,
+        benchmarkRows: benchmarks?.rows ?? []
+      });
+      let attempts = route ? buildRankedAttempts(route.ranking, config) : [];
+      if (!route || !attempts.length) {
+        // Safety net: no eligible candidate in the registry (e.g. nothing
+        // enabled/healthy, or a registry build hiccup) — fall back to the
+        // old static default rather than a hard denial of service. Recorded
+        // with its own reason code so this is never silently confused with
+        // an actual scored decision.
+        route = null;
+        const routedProvider = config.routing.taskRoutes[task] ?? config.routing.defaultProvider;
+        const staticPrimary = pickEnabledProvider(config, routedProvider);
+        attempts = buildProviderAttempts(config, staticPrimary);
+      }
+      primary = route ? route.provider : attempts[0]?.name;
+    primaryModel = attempts[0]?.config?.model || config.providers[primary]?.model;
     const routeReasonCode = route?.reasonCode ?? "fallback.staticDefault";
     res.set({
       "X-Paragon-Route-Reason": routeReasonCode,
@@ -245,7 +261,7 @@ export function registerOpenAiRoutes(app, getConfig, orchestration, getStatuses 
 
     try {
       if (req.body.stream) {
-        await streamCompletion({ res, config, policy, isLive, attempts, prompt, started, orchestration, telemetry });
+        await streamCompletion({ res, config, policy, isLive, attempts, prompt, started, orchestration, telemetry, cwd: runtimeDir });
         return;
       }
 
@@ -253,7 +269,8 @@ export function registerOpenAiRoutes(app, getConfig, orchestration, getStatuses 
         orchestration,
         runId: telemetry?.run.id,
         policy,
-        isLive
+        isLive,
+        cwd: runtimeDir
       });
       let content = sanitizeAssistantContent(result.stdout);
 
@@ -279,7 +296,8 @@ export function registerOpenAiRoutes(app, getConfig, orchestration, getStatuses 
               orchestration,
               runId: telemetry?.run.id,
               policy,
-              isLive
+              isLive,
+              cwd: runtimeDir
             });
             provider = escalated.provider;
             result = escalated.result;
@@ -355,6 +373,9 @@ export function registerOpenAiRoutes(app, getConfig, orchestration, getStatuses 
         endExecution();
       }
     }
+    } finally {
+      releaseIsolatedRuntimeDir(runtimeDir);
+    }
   });
 }
 
@@ -378,7 +399,7 @@ function pickEnabledProvider(config, preferred) {
  * (PARAGON-D-002A). Provider order, selection, and retry policy are
  * unchanged from before this instrumentation existed.
  */
-async function runWithFallback(attempts, prompt, { onChunk, orchestration, runId, policy, isLive } = {}) {
+async function runWithFallback(attempts, prompt, { onChunk, orchestration, runId, policy, isLive, cwd } = {}) {
   let lastError;
 
   for (let index = 0; index < attempts.length; index += 1) {
@@ -404,7 +425,7 @@ async function runWithFallback(attempts, prompt, { onChunk, orchestration, runId
         providerConfig,
         prompt,
         onChunk ? (chunk) => pendingChunks.push(chunk) : undefined,
-        { onSpawn }
+        { onSpawn, cwd }
       );
 
       if (onChunk) {
@@ -468,7 +489,7 @@ async function runWithFallback(attempts, prompt, { onChunk, orchestration, runId
   throw new Error(CLIENT_ERROR_MESSAGE);
 }
 
-async function streamCompletion({ res, config, policy, isLive, attempts, prompt, started, orchestration, telemetry }) {
+async function streamCompletion({ res, config, policy, isLive, attempts, prompt, started, orchestration, telemetry, cwd }) {
   const id = `chatcmpl-${Date.now()}`;
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache, no-transform");
@@ -506,7 +527,7 @@ async function streamCompletion({ res, config, policy, isLive, attempts, prompt,
   };
 
   try {
-    const { provider } = await runWithFallback(attempts, prompt, { onChunk, orchestration, runId: telemetry?.run.id, policy, isLive });
+    const { provider } = await runWithFallback(attempts, prompt, { onChunk, orchestration, runId: telemetry?.run.id, policy, isLive, cwd });
     const durationMs = Date.now() - started;
     logParagonRequest(`POST /v1/chat/completions (stream) → 200 (${durationMs}ms) via ${provider}`, {
       provider

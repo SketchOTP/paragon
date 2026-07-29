@@ -136,6 +136,7 @@ app.get("/api/routing/registry", async (req, res) => {
   });
 });
 
+
 app.get("/api/auth/flows", (_req, res) => {
   res.json({ flows: AUTH_FLOWS });
 });
