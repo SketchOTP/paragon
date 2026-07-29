@@ -173,8 +173,23 @@ async function httpCandidates(providerConfig) {
     throw new Error(`HTTP ${response.status} listing models at ${baseUrl}/models`);
   }
   const payload = await response.json();
-  const models = (payload.data ?? []).map((m) => ({ id: m.id, name: m.id }));
-  return models.map((m) => ({ ...m, isAlias: false, discoverySource: "http_models_endpoint" }));
+  // OpenAI-compatible servers are inconsistent about how they declare a
+  // model's kind (`type`, `task`, `object`, `capability` all appear in the
+  // wild). Whatever is present is carried into the catalog so the
+  // chat-capability gate can use real provider metadata rather than only
+  // an id-pattern guess (P0-5).
+  return (payload.data ?? []).map((m) => ({
+    id: m.id,
+    name: m.id,
+    isAlias: false,
+    discoverySource: "http_models_endpoint",
+    metadata: {
+      type: m.type ?? null,
+      task: m.task ?? null,
+      object: m.object ?? null,
+      capability: m.capability ?? null
+    }
+  }));
 }
 
 /**
@@ -259,7 +274,8 @@ export async function refreshProviderCatalog(provider, providerConfig, catalog, 
         displayName: candidate.name,
         isAlias: false,
         state: "exposed",
-        discoverySource: candidate.discoverySource
+        discoverySource: candidate.discoverySource,
+        metadata: candidate.metadata ?? null,
       });
       continue;
     }
@@ -272,7 +288,8 @@ export async function refreshProviderCatalog(provider, providerConfig, catalog, 
         displayName: candidate.name,
         isAlias: true,
         state: "unknown",
-        discoverySource: candidate.discoverySource
+        discoverySource: candidate.discoverySource,
+        metadata: candidate.metadata ?? null,
       });
       continue;
     }
@@ -287,7 +304,8 @@ export async function refreshProviderCatalog(provider, providerConfig, catalog, 
         displayName: candidate.name,
         isAlias: false,
         state: "unknown",
-        discoverySource: candidate.discoverySource
+        discoverySource: candidate.discoverySource,
+        metadata: candidate.metadata ?? null,
       });
       continue;
     }
@@ -298,7 +316,8 @@ export async function refreshProviderCatalog(provider, providerConfig, catalog, 
         displayName: candidate.name,
         isAlias: false,
         state: "validated",
-        discoverySource: candidate.discoverySource
+        discoverySource: candidate.discoverySource,
+        metadata: candidate.metadata ?? null,
       });
     } else {
       rejectedNow += 1;
@@ -313,7 +332,8 @@ export async function refreshProviderCatalog(provider, providerConfig, catalog, 
         displayName: candidate.name,
         isAlias: false,
         state: STATE_FOR_REJECTION(result.classification),
-        discoverySource: candidate.discoverySource
+        discoverySource: candidate.discoverySource,
+        metadata: candidate.metadata ?? null,
       });
     }
   }

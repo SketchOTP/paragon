@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { seedCatalogFile } from "./helpers/seedCatalog.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "..");
@@ -38,6 +39,9 @@ function authHeaders(extra = {}) {
 
 test.before(async () => {
   tmpCwd = fs.mkdtempSync(path.join(os.tmpdir(), "paragon-escalation-integ-"));
+  // PARAGON-D-004C1: fixture providers need a real catalog bucket to be
+  // routable — config alone is no longer trusted (P0-4).
+  seedCatalogFile(tmpCwd, { badjson: ["fixture-model"], goodjson: ["fixture-model"] });
   server = spawn(process.execPath, [path.join(repoRoot, "src/server.js")], {
     cwd: tmpCwd,
     env: { ...process.env, PARAGON_HOST: "127.0.0.1", PARAGON_PORT: String(PORT), PARAGON_MODEL_CATALOG_ENABLED: "0" },

@@ -13,6 +13,7 @@
 
 import { buildModelRegistry } from "./modelRegistry.js";
 import { annotateRegistryWithBenchmarks } from "./benchmarks.js";
+import { isProviderDefaultId } from "../modelCapability.js";
 import { isCircuitOpen, circuitStateSnapshot } from "../orchestration/liveEnforcement.js";
 
 // "good enough" threshold for the value-scoring stage below: a candidate
@@ -54,8 +55,20 @@ const WEIGHTS = {
 };
 
 function passesHardEligibility(entry, { estimatedInputTokens }) {
+  if (entry.pendingAssessment) {
+    return { ok: false, reasonCode: "routing.providerPendingAssessment" };
+  }
+  if (!entry.model) {
+    return { ok: false, reasonCode: "eligibility.noModelResolved" };
+  }
   if (!entry.automaticEligibility) {
     return { ok: false, reasonCode: "eligibility.automaticEligibilityDisabled" };
+  }
+  // P0-5: defense in depth. buildModelRegistry already drops models
+  // positively identified as non-chat, so reaching this means an entry
+  // arrived from a path that skipped that filter.
+  if (entry.capabilities && entry.capabilities.chatCompletions === false) {
+    return { ok: false, reasonCode: "routing.chatCapabilityUnsupported" };
   }
   if (entry.health === "unhealthy") {
     return { ok: false, reasonCode: "eligibility.unhealthyProvider" };
@@ -271,31 +284,95 @@ export function selectRoute({ config, statuses, taskProfile, hints = {}, benchma
   const rawRegistry = buildModelRegistry(config, statuses, catalog);
   const registry = benchmarkRows.length ? annotateRegistryWithBenchmarks(rawRegistry, benchmarkRows) : rawRegistry;
 
-  // Force is resolved directly against config, not the registry — a
-  // provider that hasn't had "Load models" run yet (empty models[], so
-  // zero registry entries) must still be forceable. The registry is only
-  // the input to *scoring*; forcing bypasses scoring entirely.
+  const costOrder = ["economy", "standard", "premium"];
+  const costCeiling = hints.maxCostClass ? costOrder.indexOf(hints.maxCostClass) : null;
+  const overCostCeiling = (entry) =>
+    costCeiling != null && costOrder.indexOf(entry.costClass) > costCeiling;
+  const costFiltered = registry.filter((entry) => !overCostCeiling(entry));
+
+  // PARAGON-D-004C1 (P0-2): a forced route is resolved against the *eligible
+  // registry*, never against config. Previously this returned before cost
+  // filtering, health/circuit/context checks, and catalog validation, so any
+  // `/v1` client could name a rejected or nonexistent model via
+  // X-Paragon-Force-Model and have it dispatched — and an absent model fell
+  // through to providerConfig.model. Forcing now only ever *narrows* the
+  // candidate set; it can never widen it past a gate. An unrestricted
+  // operator override is deliberately out of scope for this hotfix and is
+  // not exposed on the public API.
   if (hints.forceProvider) {
     const providerConfig = config.providers?.[hints.forceProvider];
-    if (providerConfig?.enabled) {
-      const model = hints.forceModel || providerConfig.model || "";
-      return {
-        provider: hints.forceProvider,
-        model,
-        reasonCode: "hint.forceProvider",
-        ranking: [{ provider: hints.forceProvider, model, score: null, reasons: ["explicitly forced by request hint"] }],
-        confidence: "explicit"
-      };
+    if (!providerConfig?.enabled) {
+      return rejection("routing.forcedProviderNotEligible", `Provider "${hints.forceProvider}" is not enabled.`);
     }
-  }
 
-  const costCeiling = hints.maxCostClass ? ["economy", "standard", "premium"].indexOf(hints.maxCostClass) : null;
-  const costFiltered = registry.filter((entry) => {
-    if (costCeiling != null && ["economy", "standard", "premium"].indexOf(entry.costClass) > costCeiling) {
-      return false;
+    const providerEntries = registry.filter((entry) => entry.provider === hints.forceProvider && entry.model);
+    if (!providerEntries.length) {
+      const pending = registry.some((entry) => entry.provider === hints.forceProvider && entry.pendingAssessment);
+      if (pending) {
+        return rejection(
+          "routing.providerPendingAssessment",
+          `Provider "${hints.forceProvider}" has not completed model-catalog assessment yet.`
+        );
+      }
+      // When the caller named a specific model, report at model granularity —
+      // "your model isn't eligible" is more actionable than "this provider
+      // has nothing", even though both are true here.
+      return hints.forceModel
+        ? rejection(
+            "routing.forcedModelNotEligible",
+            `Model "${hints.forceModel}" is not currently exposed or validated for provider "${hints.forceProvider}".`
+          )
+        : rejection("routing.forcedProviderNotEligible", `Provider "${hints.forceProvider}" has no catalog-eligible models.`);
     }
-    return true;
-  });
+
+    let targeted = providerEntries;
+    if (hints.forceModel) {
+      targeted = providerEntries.filter((entry) => entry.model === hints.forceModel);
+      if (!targeted.length) {
+        return rejection(
+          "routing.forcedModelNotEligible",
+          `Model "${hints.forceModel}" is not currently exposed or validated for provider "${hints.forceProvider}".`
+        );
+      }
+      if (overCostCeiling(targeted[0])) {
+        return rejection(
+          "routing.forcedModelNotEligible",
+          `Model "${hints.forceModel}" exceeds the requested max cost class "${hints.maxCostClass}".`
+        );
+      }
+    } else {
+      targeted = targeted.filter((entry) => !overCostCeiling(entry));
+      if (!targeted.length) {
+        return rejection(
+          "routing.forcedProviderNotEligible",
+          `Provider "${hints.forceProvider}" has no eligible model within max cost class "${hints.maxCostClass}".`
+        );
+      }
+    }
+
+    // Still subject to every request-specific hard gate (health, circuit,
+    // context fit, capability) — scored so the best remaining model for the
+    // forced provider wins rather than an arbitrary one.
+    const forcedRanking = scoreAndRankCandidates(targeted, taskProfile, config.routing?.taskRoutes).sort(
+      (a, b) => (b.score ?? -Infinity) - (a.score ?? -Infinity)
+    );
+    const forcedWinner = forcedRanking.find((candidate) => !candidate.excluded);
+    if (!forcedWinner) {
+      const why = forcedRanking[0]?.reasonCode ?? "eligibility.unknown";
+      return rejection(
+        hints.forceModel ? "routing.forcedModelNotEligible" : "routing.forcedProviderNotEligible",
+        `Forced route for "${hints.forceProvider}" failed an eligibility gate (${why}).`
+      );
+    }
+
+    return {
+      provider: forcedWinner.provider,
+      model: forcedWinner.model,
+      reasonCode: "hint.forceProvider",
+      ranking: forcedRanking,
+      confidence: "explicit"
+    };
+  }
 
   const ranking = scoreAndRankCandidates(costFiltered, taskProfile, config.routing?.taskRoutes).sort(
     (a, b) => (b.score ?? -Infinity) - (a.score ?? -Infinity)
@@ -315,12 +392,25 @@ export function selectRoute({ config, statuses, taskProfile, hints = {}, benchma
   };
 }
 
+/** A forced route that failed a gate — surfaced as a bounded 400, never silently downgraded to automatic routing. */
+function rejection(reasonCode, message) {
+  return { rejected: true, reasonCode, message, ranking: [] };
+}
+
 /**
  * Turns a selectRoute() ranking into a provider-attempt chain, one entry
  * per distinct eligible provider (highest-scored model for that provider),
- * in ranked order. This is what actually differs from the old static
- * fallbackChain: each attempt carries the model the scorer picked for it,
- * not just whatever was statically configured on the provider.
+ * in ranked order. Each attempt carries the model the scorer picked for it,
+ * not whatever was statically configured on the provider.
+ *
+ * PARAGON-D-004C1 (P0-8): every attempt must be traceable to a ranked
+ * eligible registry row. A candidate with no resolved model is skipped
+ * outright — the previous `candidate.model || providerConfig.model`
+ * substitution could quietly reintroduce a stale configured model that the
+ * catalog had already removed. A provider-default route is instead carried
+ * explicitly by a validated PROVIDER_DEFAULT_MODEL_ID registry entry, which
+ * is translated to an empty `model` (so the provider picks) only here, at
+ * the point of execution.
  */
 export function buildRankedAttempts(ranking, config, { limit = 4 } = {}) {
   const seen = new Set();
@@ -329,15 +419,54 @@ export function buildRankedAttempts(ranking, config, { limit = 4 } = {}) {
     if (candidate.excluded || seen.has(candidate.provider) || attempts.length >= limit) {
       continue;
     }
+    if (!candidate.model) {
+      continue;
+    }
     const providerConfig = config.providers[candidate.provider];
     if (!providerConfig?.enabled) {
       continue;
     }
+    const providerDefault = isProviderDefaultId(candidate.model);
     seen.add(candidate.provider);
     attempts.push({
       name: candidate.provider,
-      config: { ...providerConfig, model: candidate.model || providerConfig.model }
+      providerDefault,
+      registryModel: candidate.model,
+      config: { ...providerConfig, model: providerDefault ? "" : candidate.model }
     });
   }
   return attempts;
+}
+
+/**
+ * P0-8 assertion, evaluated immediately before dispatch: re-derives each
+ * attempt against the current registry so a chain can never carry a row
+ * that isn't presently eligible. Returns the offending attempts rather
+ * than throwing, so the caller can fail the request with a bounded error.
+ */
+export function verifyAttemptsAgainstRegistry(attempts, registry, config) {
+  const eligible = new Map();
+  for (const entry of registry) {
+    if (entry.model && entry.automaticEligibility && !entry.pendingAssessment) {
+      eligible.set(`${entry.provider}/${entry.model}`, entry);
+    }
+  }
+  const violations = [];
+  for (const attempt of attempts) {
+    const providerConfig = config.providers?.[attempt.name];
+    if (!providerConfig?.enabled) {
+      violations.push({ attempt: attempt.name, reason: "provider not enabled" });
+      continue;
+    }
+    const key = `${attempt.name}/${attempt.registryModel ?? attempt.config?.model}`;
+    const entry = eligible.get(key);
+    if (!entry) {
+      violations.push({ attempt: attempt.name, model: attempt.registryModel ?? attempt.config?.model, reason: "not a currently eligible registry entry" });
+      continue;
+    }
+    if (entry.capabilities && entry.capabilities.chatCompletions === false) {
+      violations.push({ attempt: attempt.name, model: entry.model, reason: "does not support chat completions" });
+    }
+  }
+  return violations;
 }

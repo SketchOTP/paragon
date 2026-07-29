@@ -15,7 +15,7 @@ import { registerOrchestrationRoutes } from "./orchestration/api.js";
 import { buildModelRegistry } from "./routing/modelRegistry.js";
 import { rankRegistryByTask, scoringMethodology, TASK_TYPES } from "./routing/router.js";
 import { getBenchmarkData, annotateRegistryWithBenchmarks } from "./routing/benchmarks.js";
-import { applyExecutionResult, loadCatalog, saveCatalog } from "./modelCatalog.js";
+import { applyExecutionResult, loadCatalog, reconcileConfiguredModels, saveCatalog } from "./modelCatalog.js";
 import { defaultProbe, runFullRefresh, refreshProviderCatalog } from "./modelCatalogRefresh.js";
 import { startModelCatalogScheduler } from "./modelCatalogScheduler.js";
 
@@ -37,12 +37,47 @@ const catalogStore = {
   }
 };
 
+/**
+ * PARAGON-D-004C1 (P0-3): clears any `config.providers[x].model` that the
+ * catalog no longer considers eligible, and persists atomically. Runs at
+ * startup (so models made stale before this code existed are cleaned up
+ * too) and after every catalog refresh. Never substitutes a replacement
+ * model — see reconcileConfiguredModels().
+ */
+async function reconcileConfigWithCatalog(reason) {
+  const { config: nextConfig, cleared } = reconcileConfiguredModels(cachedConfig, cachedCatalog, {
+    ttlHours: cachedConfig.modelCatalog?.validationTtlHours ?? 24
+  });
+  if (!cleared.length) {
+    return cleared;
+  }
+  cachedConfig = await writeConfig(nextConfig);
+  for (const entry of cleared) {
+    addLog({
+      type: "models",
+      provider: entry.provider,
+      level: "warn",
+      message: `routing.configuredModelCleared: "${entry.model}" (catalog state: ${entry.previousState}) cleared from provider config during ${reason}`
+    });
+  }
+  return cleared;
+}
+
 const modelCatalogScheduler = startModelCatalogScheduler(async () => cachedConfig, {
-  onRefreshComplete: (result) => {
+  onRefreshComplete: async (result) => {
     if (result?.catalog) {
       cachedCatalog = result.catalog;
     }
+    await reconcileConfigWithCatalog("scheduled catalog refresh").catch((error) => {
+      console.warn(`model catalog: config reconciliation failed (non-fatal): ${error.message}`);
+    });
   }
+});
+
+// Startup reconciliation: catches configured models that went stale before
+// this implementation existed, without waiting for the next refresh cycle.
+await reconcileConfigWithCatalog("startup reconciliation").catch((error) => {
+  console.warn(`model catalog: startup config reconciliation failed (non-fatal): ${error.message}`);
 });
 // Registering a SIGTERM/SIGINT listener replaces Node's default
 // terminate-immediately behavior, so each handler must explicitly exit —
@@ -131,8 +166,42 @@ app.get("/api/config", async (_req, res) => {
 });
 
 app.put("/api/config", async (req, res) => {
+  const previousProviders = new Set(Object.keys(cachedConfig.providers ?? {}));
   cachedConfig = await writeConfig(req.body);
   res.json(cachedConfig);
+
+  // PARAGON-D-004C1 (P0-4): a newly enabled provider is `pending_assessment`
+  // and contributes nothing routable until real discovery succeeds — so kick
+  // off a bounded refresh for it immediately rather than leaving it dark
+  // until the next 24h cycle. Fire-and-forget: the operator's config write
+  // has already been acknowledged above, and a discovery failure correctly
+  // leaves the provider unavailable rather than trusted.
+  const newlyEnabled = Object.entries(cachedConfig.providers ?? {})
+    .filter(([name, cfg]) => cfg.enabled && (!previousProviders.has(name) || !cachedCatalog.providers?.[name]))
+    .map(([name]) => name);
+  for (const provider of newlyEnabled) {
+    const providerConfig = cachedConfig.providers[provider];
+    const settings = cachedConfig.modelCatalog ?? {};
+    if (settings.enabled === false) {
+      continue;
+    }
+    refreshProviderCatalog(provider, providerConfig, cachedCatalog, {
+      maxValidationProbesPerProvider: settings.maxValidationProbesPerProvider ?? 10
+    })
+      .then(async () => {
+        await saveCatalog(cachedCatalog);
+        await reconcileConfigWithCatalog(`initial assessment of ${provider}`);
+        addLog({ type: "models", provider, level: "info", message: "Initial model-catalog assessment complete" });
+      })
+      .catch((error) => {
+        addLog({
+          type: "models",
+          provider,
+          level: "warn",
+          message: `routing.providerPendingAssessment: initial assessment failed, provider stays unavailable (not trusted): ${error.message}`
+        });
+      });
+  }
 });
 
 app.get("/api/status", async (req, res) => {
@@ -156,7 +225,14 @@ app.get("/api/routing/registry", async (req, res) => {
   const config = await getConfig();
   const rawRegistry = buildModelRegistry(config, getStatuses(), catalogStore.get());
   const benchmarks = await getBenchmarkData(config.integrations?.openrouterApiKey, { force: req.query.refreshBenchmarks === "1" });
-  const registry = benchmarks.enabled ? annotateRegistryWithBenchmarks(rawRegistry, benchmarks.rows) : rawRegistry;
+  // P0-7: stale benchmark data must not influence scoring. Withheld from
+  // annotation entirely so the panel's ranking stays identical to the live
+  // routing decision; staleness is reported in the `benchmarks` block below
+  // so the dashboard can say why scoring went internal-only.
+  const applyBenchmarks = benchmarks.enabled && !benchmarks.stale;
+  const registry = applyBenchmarks
+    ? annotateRegistryWithBenchmarks(rawRegistry, benchmarks.rows, { fetchedAt: benchmarks.lastSuccessfulFetchAt })
+    : rawRegistry;
   res.json({
     registry,
     taskRanking: rankRegistryByTask(registry, config.routing?.taskRoutes),
@@ -164,8 +240,14 @@ app.get("/api/routing/registry", async (req, res) => {
     methodology: scoringMethodology(),
     benchmarks: {
       enabled: benchmarks.enabled,
+      applied: applyBenchmarks,
       error: benchmarks.error,
       cachedAt: benchmarks.cachedAt,
+      lastAttemptAt: benchmarks.lastAttemptAt,
+      lastSuccessfulFetchAt: benchmarks.lastSuccessfulFetchAt,
+      dataAgeMs: benchmarks.dataAgeMs,
+      maxUsableAgeMs: benchmarks.maxUsableAgeMs,
+      stale: benchmarks.stale,
       sourceMeta: benchmarks.meta,
       matchedCount: registry.filter((e) => e.externalBenchmark).length
     },
@@ -275,7 +357,8 @@ app.post("/api/model-catalog/refresh", async (_req, res) => {
       return;
     }
     cachedCatalog = result.catalog;
-    res.json({ ok: true, outcomes: result.outcomes, catalog: cachedCatalog });
+    const cleared = await reconcileConfigWithCatalog("manual catalog refresh");
+    res.json({ ok: true, outcomes: result.outcomes, clearedConfiguredModels: cleared, catalog: cachedCatalog });
   } catch (error) {
     res.status(500).json({ error: { message: error.message } });
   }
@@ -295,7 +378,8 @@ app.post("/api/model-catalog/providers/:provider/refresh", async (req, res) => {
       maxValidationProbesPerProvider: settings.maxValidationProbesPerProvider ?? 10
     });
     await saveCatalog(cachedCatalog);
-    res.json({ provider, ...result, catalog: cachedCatalog.providers[provider] });
+    const cleared = await reconcileConfigWithCatalog(`manual ${provider} catalog refresh`);
+    res.json({ provider, ...result, clearedConfiguredModels: cleared, catalog: cachedCatalog.providers[provider] });
   } catch (error) {
     res.status(500).json({ error: { message: error.message, provider } });
   }
@@ -312,11 +396,13 @@ app.post("/api/model-catalog/providers/:provider/models/:model/validate", async 
   }
   const result = await defaultProbe(provider, providerConfig, modelId, {});
   await catalogStore.recordResult(provider, modelId, result);
+  const cleared = await reconcileConfigWithCatalog(`validation of ${provider}/${modelId}`);
   res.json({
     provider,
     model: modelId,
     state: cachedCatalog.providers[provider]?.models[modelId]?.state,
-    classification: result.classification
+    classification: result.classification,
+    clearedConfiguredModels: cleared
   });
 });
 

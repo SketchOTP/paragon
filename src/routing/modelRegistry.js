@@ -9,6 +9,7 @@
  */
 
 import { listCatalogEntries } from "../modelCatalog.js";
+import { classifyChatCapability, isProviderDefaultId } from "../modelCapability.js";
 
 // Context windows are only filled in where there's a well-documented public
 // spec for the model family. Everything else stays null (unknown) rather
@@ -51,32 +52,35 @@ function inferLatencyClass(costClass) {
  * building the registry never triggers extra CLI spawns.
  *
  * `catalog` (PARAGON-D-004C) is the persisted model-catalog store from
- * src/modelCatalog.js. When supplied, a provider the catalog has actually
- * assessed at least once (it has a bucket in catalog.providers) only
- * contributes registry entries for models the catalog currently considers
- * `exposed` or `validated` (within TTL) — an unvalidated, rejected,
- * unavailable, blocked, or retired model is left out of the registry
- * entirely, not merely marked ineligible. The registry (and everything
- * built on it: the ranking algorithm, the dashboard Model Routing panel,
- * and the live per-request routing decision) is the single source of
- * truth for "what can PARAGON route to right now," so it must never list
- * a model routing can't actually use. A provider the catalog has *never*
- * assessed (no bucket at all — e.g. just configured, before the
- * scheduler's first pass has run) falls back to trusting
- * providerConfig.models so a freshly-added provider isn't dead on
- * arrival; the very next scheduled/manual refresh replaces that trust
- * with real evidence and the same exposed/validated-only filter applies
- * from then on. Callers that omit `catalog` entirely (existing unit
- * tests, or code paths not wired to the catalog store) keep the
- * pre-D-004C behavior of trusting providerConfig.models directly — every
- * real request/dashboard path in server.js and openaiApi.js always
- * passes the live catalog, which is recomputed fresh on every call (no
- * caching here), so a completed catalog refresh is reflected immediately
- * — there is no separate "refresh the registry" step to run.
+ * src/modelCatalog.js. A provider only contributes registry entries for
+ * models the catalog currently considers `exposed` or `validated` (within
+ * TTL) — an unvalidated, rejected, unavailable, blocked, or retired model
+ * is left out entirely, not merely marked ineligible. The registry (and
+ * everything built on it: the ranking algorithm, the dashboard Model
+ * Routing panel, and the live per-request routing decision) is the single
+ * source of truth for "what can PARAGON route to right now," so it must
+ * never list a model routing can't actually use. It is recomputed fresh on
+ * every call (no caching), so a completed catalog refresh is reflected
+ * immediately — there is no separate "refresh the registry" step.
+ *
+ * PARAGON-D-004C1 (P0-4) removed the previous unassessed-provider
+ * fallback. Before this change, a provider with no catalog bucket fell
+ * back to trusting `providerConfig.models`, which put six never-validated
+ * LM Studio models — including two embedding models — into the live
+ * routable registry with `automaticEligibility: true`. A provider with no
+ * completed assessment is now reported as `pending_assessment` with
+ * `automaticEligibility: false` and contributes zero routable entries; a
+ * *failed* refresh leaves it unavailable rather than trusted. `catalog`
+ * is therefore effectively required for any provider to be routable —
+ * callers that omit it get an empty registry rather than silent
+ * config-trust.
+ *
+ * PARAGON-D-004C1 (P0-5) additionally drops any model positively
+ * identified as non-chat (see src/modelCapability.js), since PARAGON's
+ * only public surface is chat completions.
  */
 export function buildModelRegistry(config, statuses = {}, catalog = null) {
   const entries = [];
-  const now = new Date().toISOString();
   const ttlHours = config.modelCatalog?.validationTtlHours ?? 24;
 
   for (const [provider, providerConfig] of Object.entries(config.providers ?? {})) {
@@ -85,55 +89,71 @@ export function buildModelRegistry(config, statuses = {}, catalog = null) {
     }
     const health = statuses[provider]?.ok === true ? "healthy" : statuses[provider] ? "unhealthy" : "unknown";
     const providerAssessed = Boolean(catalog?.providers && Object.prototype.hasOwnProperty.call(catalog.providers, provider));
-    const catalogEntries = providerAssessed
-      ? listCatalogEntries(catalog, provider, { ttlHours }).filter((entry) => entry.automaticEligibility)
-      : null;
-    const models = catalogEntries
-      ? catalogEntries
-      : providerConfig.models?.length
-        ? providerConfig.models
-        : [{ id: providerConfig.model || "", name: providerConfig.model || "(default)" }];
 
-    for (const model of models) {
-      const modelId = model.modelId ?? model.id;
+    if (!providerAssessed) {
+      // Reported so the dashboard can show *why* the provider is dark,
+      // but deliberately never eligible and never a routing candidate.
+      entries.push({
+        provider,
+        model: null,
+        displayName: providerConfig.label || provider,
+        health,
+        local: providerConfig.type === "http",
+        contextWindow: null,
+        capabilities: { chatCompletions: "unknown" },
+        costClass: "unknown",
+        latencyClass: "unknown",
+        automaticEligibility: false,
+        toolExecutionRisk: "isolated",
+        source: "pending_assessment",
+        modelState: "pending_assessment",
+        pendingAssessment: true,
+        catalogAgeHours: undefined,
+        lastDiscoveryAt: null
+      });
+      continue;
+    }
+
+    const catalogEntries = listCatalogEntries(catalog, provider, { ttlHours }).filter((entry) => entry.automaticEligibility);
+
+    for (const model of catalogEntries) {
+      const modelId = model.modelId;
       if (!modelId) {
         continue;
       }
-      const costClass = inferCostClass(modelId);
+      const chatCapability = classifyChatCapability({ modelId, metadata: model.metadata });
+      if (chatCapability === "unsupported") {
+        continue;
+      }
+      const providerDefault = isProviderDefaultId(modelId);
+      const costClass = providerDefault ? "unknown" : inferCostClass(modelId);
       entries.push({
         provider,
         model: modelId,
-        displayName: model.displayName || model.name || modelId,
+        displayName: model.displayName || modelId,
         health,
         local: providerConfig.type === "http",
-        contextWindow: inferContextWindow(modelId),
+        contextWindow: providerDefault ? null : inferContextWindow(modelId),
         capabilities: {
-          // All current providers are coding-agent CLIs/HTTP completion
-          // backends — these two are inherent to what they are, not
-          // inferred from a benchmark.
-          coding: true,
-          tools: true,
-          streaming: true,
-          // No verified per-model reasoning benchmark exists for these
-          // CLIs — left explicitly unknown rather than guessed.
-          reasoning: "unknown"
+          // P0-5: the only capability this hotfix asserts. Tool-call,
+          // JSON-schema, multimodal, and reasoning profiles are D-004D
+          // scope and deliberately not guessed at here.
+          chatCompletions: chatCapability === "supported" ? true : "unknown"
         },
         costClass,
-        latencyClass: inferLatencyClass(costClass),
-        // PARAGON-D-004B-R: PARAGON is a transparent model gateway, not an
-        // autonomous repo-editing agent — every builtin provider runs
+        latencyClass: providerDefault ? "unknown" : inferLatencyClass(costClass),
+        // PARAGON-D-004B-R: every builtin provider runs
         // read-only/tools-disabled in a throwaway isolated directory (see
-        // src/cli.js providerSpecs and src/executionSandbox.js). Tool-risk
-        // is never a reason to exclude a model. PARAGON-D-004C:
-        // automaticEligibility is the catalog's validated/exposed state
-        // when a catalog is supplied — see the doc comment above — not an
-        // unconditional true.
-        automaticEligibility: catalogEntries ? Boolean(model.automaticEligibility) : true,
+        // src/cli.js providerSpecs and src/executionSandbox.js), so
+        // tool-risk is never a reason to exclude a model. Eligibility here
+        // is purely the catalog's exposed/validated state.
+        automaticEligibility: true,
         toolExecutionRisk: "isolated",
-        source: catalogEntries ? model.discoverySource : providerConfig.models?.length ? "discovered" : "configured",
-        modelState: catalogEntries ? model.state : undefined,
-        catalogAgeHours: catalogEntries && model.validatedAt ? (Date.now() - Date.parse(model.validatedAt)) / 3_600_000 : undefined,
-        lastDiscoveryAt: catalogEntries ? model.discoveredAt : now
+        source: model.discoverySource,
+        modelState: model.state,
+        providerDefault,
+        catalogAgeHours: model.validatedAt ? (Date.now() - Date.parse(model.validatedAt)) / 3_600_000 : undefined,
+        lastDiscoveryAt: model.discoveredAt
       });
     }
   }

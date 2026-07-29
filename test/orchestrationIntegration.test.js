@@ -5,9 +5,11 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { seedCatalogFile } from "./helpers/seedCatalog.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "..");
+const echoJsonFixture = path.join(__dirname, "fixtures", "echo-json.js");
 
 const PORT = 4919;
 const BASE = `http://127.0.0.1:${PORT}`;
@@ -32,6 +34,11 @@ async function waitForServer(timeoutMs = 10000) {
 
 test.before(async () => {
   tmpCwd = fs.mkdtempSync(path.join(os.tmpdir(), "paragon-orch-integ-"));
+  // PARAGON-D-004C1 (P0-1/P0-4): routing now requires a catalog-eligible
+  // model, so these telemetry tests get a local fixture provider rather
+  // than depending on a real installed CLI. Seeded before the server starts
+  // because the catalog is loaded at startup.
+  seedCatalogFile(tmpCwd, { fixturep: ["fixture-model"] });
   server = spawn(process.execPath, [path.join(repoRoot, "src/server.js")], {
     cwd: tmpCwd,
     env: { ...process.env, PARAGON_HOST: "127.0.0.1", PARAGON_PORT: String(PORT), PARAGON_MODEL_CATALOG_ENABLED: "0" },
@@ -40,6 +47,24 @@ test.before(async () => {
   await waitForServer();
   const raw = fs.readFileSync(path.join(tmpCwd, "data", "config.json"), "utf8");
   apiKey = JSON.parse(raw).server.apiKey;
+
+  const configRes = await fetch(`${BASE}/api/config`, { headers: authHeaders() });
+  const config = await configRes.json();
+  config.providers.fixturep = {
+    type: "generic-cli",
+    label: "Orchestration fixture",
+    enabled: true,
+    command: process.execPath,
+    runArgs: [echoJsonFixture],
+    model: "fixture-model",
+    models: [{ id: "fixture-model", name: "fixture-model" }],
+    timeoutMs: 10000
+  };
+  for (const t of Object.keys(config.routing.taskRoutes)) {
+    config.routing.taskRoutes[t] = "fixturep";
+  }
+  config.routing.defaultProvider = "fixturep";
+  await fetch(`${BASE}/api/config`, { method: "PUT", headers: authHeaders(), body: JSON.stringify(config) });
 });
 
 test.after(() => {

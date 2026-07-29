@@ -4,7 +4,7 @@ import { mergeConfig } from "../src/configStore.js";
 import { defaultConfig } from "../src/defaultConfig.js";
 import { requestHasApiKey, isLoopback } from "../src/auth.js";
 import { expandArgs } from "../src/cli.js";
-import { buildProviderAttempts } from "../src/providerFallback.js";
+
 
 test("mergeConfig preserves custom providers", () => {
   const merged = mergeConfig(defaultConfig, {
@@ -52,22 +52,16 @@ test("expandArgs substitutes model placeholder", () => {
   assert.deepEqual(expandArgs(["-m", "{{model}}", "-"], "llama3"), ["-m", "llama3", "-"]);
 });
 
-test("buildProviderAttempts uses configurable fallback chain", () => {
-  const config = mergeConfig(defaultConfig, {
-    providers: {
-      ...defaultConfig.providers,
-      "ollama-local": { enabled: true, type: "http" }
-    },
-    routing: {
-      ...defaultConfig.routing,
-      fallbackChain: ["ollama-local", "codex"]
-    }
-  });
-  const attempts = buildProviderAttempts(config, "claude");
-  assert.deepEqual(
-    attempts.map((a) => a.name),
-    ["claude", "ollama-local", "codex"]
-  );
+// PARAGON-D-004C1 (P0-1): buildProviderAttempts() and its config-derived
+// fallback chain were removed — it was a dispatch path that bypassed
+// catalog eligibility, the cost ceiling, and the chat-capability gate.
+// Attempt-chain construction is now covered by router.test.js
+// (buildRankedAttempts / verifyAttemptsAgainstRegistry) and
+// routingIntegrity.test.js, which assert against the eligible registry
+// rather than config.
+test("providerFallback no longer exports a config-derived dispatch path", async () => {
+  const providerFallback = await import("../src/providerFallback.js");
+  assert.equal(providerFallback.buildProviderAttempts, undefined);
 });
 
 test("defaultConfig has no personal hostnames", () => {
