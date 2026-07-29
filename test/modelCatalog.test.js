@@ -50,6 +50,17 @@ test("classifyModelFailure recognizes each documented failure category", () => {
   assert.equal(classifyModelFailure(null), "TRANSIENT_FAILURE");
 });
 
+test("classifyModelFailure inspects error.stdout even when error.stderr is present-but-empty — confirmed against the real claude CLI's invalid-model output", () => {
+  // Real output captured against the installed claude CLI for an invalid
+  // --model: the diagnostic lands on stdout with stderr == "" (not
+  // undefined). `error.stderr ?? error.stdout` would silently ignore stdout
+  // here since `??` only falls through on null/undefined, not "".
+  const error = new Error("claude exited with code 1");
+  error.stderr = "";
+  error.stdout = "There's an issue with the selected model (claude-does-not-exist-999). It may not exist or you may not have access to it.";
+  assert.equal(classifyModelFailure(error), "MODEL_NOT_FOUND");
+});
+
 test("normalizeCatalog defends against a corrupt/hand-edited catalog file", () => {
   assert.deepEqual(normalizeCatalog(null), defaultCatalog());
   assert.deepEqual(normalizeCatalog("not an object"), defaultCatalog());
