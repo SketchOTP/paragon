@@ -51,21 +51,28 @@ function inferLatencyClass(costClass) {
  * building the registry never triggers extra CLI spawns.
  *
  * `catalog` (PARAGON-D-004C) is the persisted model-catalog store from
- * src/modelCatalog.js. When supplied, automaticEligibility for a provider
- * that the catalog has actually assessed at least once (it has a bucket in
- * catalog.providers) is gated on the catalog's real state machine
- * (exposed/validated within TTL only) instead of being assumed true for
- * anything sitting in providerConfig.models — that config list is only the
- * operator's last "Load models" snapshot, not evidence of current
- * availability. A provider the catalog has *never* assessed (no bucket at
- * all — e.g. just configured, before the scheduler's first pass has run)
- * falls back to trusting providerConfig.models so a freshly-added provider
- * isn't dead on arrival; the very next scheduled/manual refresh replaces
- * that trust with real evidence. Callers that omit `catalog` entirely
- * (existing unit tests, or code paths not wired to the catalog store) keep
- * the pre-D-004C behavior of trusting providerConfig.models directly —
- * every real request/dashboard path in server.js and openaiApi.js always
- * passes the live catalog.
+ * src/modelCatalog.js. When supplied, a provider the catalog has actually
+ * assessed at least once (it has a bucket in catalog.providers) only
+ * contributes registry entries for models the catalog currently considers
+ * `exposed` or `validated` (within TTL) — an unvalidated, rejected,
+ * unavailable, blocked, or retired model is left out of the registry
+ * entirely, not merely marked ineligible. The registry (and everything
+ * built on it: the ranking algorithm, the dashboard Model Routing panel,
+ * and the live per-request routing decision) is the single source of
+ * truth for "what can PARAGON route to right now," so it must never list
+ * a model routing can't actually use. A provider the catalog has *never*
+ * assessed (no bucket at all — e.g. just configured, before the
+ * scheduler's first pass has run) falls back to trusting
+ * providerConfig.models so a freshly-added provider isn't dead on
+ * arrival; the very next scheduled/manual refresh replaces that trust
+ * with real evidence and the same exposed/validated-only filter applies
+ * from then on. Callers that omit `catalog` entirely (existing unit
+ * tests, or code paths not wired to the catalog store) keep the
+ * pre-D-004C behavior of trusting providerConfig.models directly — every
+ * real request/dashboard path in server.js and openaiApi.js always
+ * passes the live catalog, which is recomputed fresh on every call (no
+ * caching here), so a completed catalog refresh is reflected immediately
+ * — there is no separate "refresh the registry" step to run.
  */
 export function buildModelRegistry(config, statuses = {}, catalog = null) {
   const entries = [];
@@ -78,7 +85,9 @@ export function buildModelRegistry(config, statuses = {}, catalog = null) {
     }
     const health = statuses[provider]?.ok === true ? "healthy" : statuses[provider] ? "unhealthy" : "unknown";
     const providerAssessed = Boolean(catalog?.providers && Object.prototype.hasOwnProperty.call(catalog.providers, provider));
-    const catalogEntries = providerAssessed ? listCatalogEntries(catalog, provider, { ttlHours }) : null;
+    const catalogEntries = providerAssessed
+      ? listCatalogEntries(catalog, provider, { ttlHours }).filter((entry) => entry.automaticEligibility)
+      : null;
     const models = catalogEntries
       ? catalogEntries
       : providerConfig.models?.length

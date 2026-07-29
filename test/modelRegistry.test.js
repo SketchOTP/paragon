@@ -91,7 +91,7 @@ test("buildModelRegistry: a provider the catalog has never assessed still trusts
   assert.equal(claude.automaticEligibility, true, "unassessed provider must not be dead on arrival");
 });
 
-test("buildModelRegistry: once the catalog has assessed a provider, only its exposed/validated entries are eligible — a rejected or unknown config-list entry is excluded from routing", () => {
+test("buildModelRegistry: once the catalog has assessed a provider, a rejected model is left out of the registry entirely — not merely marked ineligible", () => {
   const catalog = defaultCatalog();
   replaceProviderModels(catalog, "claude", [
     { modelId: "claude-opus-5", displayName: "Opus 5", state: "validated", discoverySource: "documented_candidate" },
@@ -101,11 +101,24 @@ test("buildModelRegistry: once the catalog has assessed a provider, only its exp
   const opus = registry.find((e) => e.provider === "claude" && e.model === "claude-opus-5");
   const haiku = registry.find((e) => e.provider === "claude" && e.model === "claude-haiku-4-5-20251001");
   assert.equal(opus.automaticEligibility, true);
-  assert.equal(haiku.automaticEligibility, false);
-  assert.equal(haiku.modelState, "rejected");
+  assert.equal(haiku, undefined, "the registry (and therefore routing/ranking) must never list a rejected model at all");
 });
 
-test("buildModelRegistry: a validated entry past the configured TTL reads as ineligible", () => {
+test("buildModelRegistry: an unknown (candidate-only, never validated) model never appears in the registry", () => {
+  const catalog = defaultCatalog();
+  replaceProviderModels(catalog, "claude", [
+    { modelId: "claude-opus-5", displayName: "Opus 5", state: "validated", discoverySource: "documented_candidate" },
+    { modelId: "claude-mythos-5", displayName: "Mythos 5", state: "unknown", discoverySource: "documented_candidate" }
+  ]);
+  const registry = buildModelRegistry(baseConfig(), {}, catalog);
+  assert.ok(registry.some((e) => e.provider === "claude" && e.model === "claude-opus-5"));
+  assert.ok(
+    !registry.some((e) => e.provider === "claude" && e.model === "claude-mythos-5"),
+    "an unvalidated model must not be usable by routing — it must not even be listed"
+  );
+});
+
+test("buildModelRegistry: a validated entry past the configured TTL is dropped from the registry, not just marked ineligible", () => {
   const catalog = defaultCatalog();
   replaceProviderModels(
     catalog,
@@ -116,6 +129,26 @@ test("buildModelRegistry: a validated entry past the configured TTL reads as ine
   const cfg = baseConfig();
   cfg.modelCatalog = { validationTtlHours: 24 };
   const registry = buildModelRegistry(cfg, {}, catalog);
-  const opus = registry.find((e) => e.provider === "claude" && e.model === "claude-opus-5");
-  assert.equal(opus.automaticEligibility, false);
+  assert.equal(
+    registry.find((e) => e.provider === "claude" && e.model === "claude-opus-5"),
+    undefined
+  );
+});
+
+test("buildModelRegistry reflects a completed catalog refresh immediately — no separate 'refresh the registry' step exists", () => {
+  const catalog = defaultCatalog();
+  replaceProviderModels(catalog, "claude", [
+    { modelId: "claude-opus-5", displayName: "Opus 5", state: "unknown", discoverySource: "documented_candidate" }
+  ]);
+  const before = buildModelRegistry(baseConfig(), {}, catalog);
+  assert.ok(!before.some((e) => e.provider === "claude" && e.model === "claude-opus-5"));
+
+  // Simulates what the 24h scheduler's validation probe does on success —
+  // buildModelRegistry is a pure function over the current catalog object,
+  // so the very next call already reflects it.
+  replaceProviderModels(catalog, "claude", [
+    { modelId: "claude-opus-5", displayName: "Opus 5", state: "validated", discoverySource: "documented_candidate" }
+  ]);
+  const after = buildModelRegistry(baseConfig(), {}, catalog);
+  assert.ok(after.some((e) => e.provider === "claude" && e.model === "claude-opus-5"));
 });

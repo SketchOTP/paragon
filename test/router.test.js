@@ -147,6 +147,27 @@ test("selectRoute excludes a model the catalog has rejected, routing to the next
   });
   assert.ok(route);
   assert.notEqual(route.model, "claude-opus-5", "a catalog-rejected model must never be the live routing decision");
+  assert.ok(
+    !route.ranking.some((r) => r.model === "claude-opus-5"),
+    "the ranking algorithm must not even list a catalog-rejected model, not merely exclude it with a reason"
+  );
+});
+
+test("rankRegistryByTask's ranking algorithm only ever considers models the catalog exposes/validates — an unvalidated or rejected model never appears, ranked or excluded", () => {
+  const cfg = config();
+  const catalog = defaultCatalog();
+  replaceProviderModels(catalog, "claude", [
+    { modelId: "claude-opus-5", displayName: "Opus 5", state: "validated", discoverySource: "documented_candidate" },
+    { modelId: "claude-haiku-4-5-20251001", displayName: "Haiku 4.5", state: "unknown", discoverySource: "documented_candidate" }
+  ]);
+  const registry = buildModelRegistry(cfg, {}, catalog);
+  const ranked = rankRegistryByTask(registry, cfg.routing.taskRoutes);
+  for (const taskType of Object.keys(ranked)) {
+    assert.ok(
+      !ranked[taskType].some((r) => r.model === "claude-haiku-4-5-20251001"),
+      `${taskType} ranking must not list the unvalidated model at all`
+    );
+  }
 });
 
 test("rankRegistryByTask produces a 1-10 scale (1=best) per task type; antigravity now ranks like any other provider, and an unhealthy provider is excluded with a reason instead of a rank", () => {
