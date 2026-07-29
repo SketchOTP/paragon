@@ -35,6 +35,12 @@ export async function runHttpProvider(provider, providerConfig, prompt, onChunk)
     messages: [{ role: "user", content: prompt }],
     stream: Boolean(onChunk)
   };
+  // Only set for bounded validation probes (see modelCatalogRefresh.js) —
+  // never for a real completion, where the caller must get the full
+  // response it asked for.
+  if (providerConfig.maxTokens != null) {
+    body.max_tokens = providerConfig.maxTokens;
+  }
 
   const response = await fetch(`${baseUrl}/chat/completions`, {
     method: "POST",

@@ -177,12 +177,19 @@ async function httpCandidates(providerConfig) {
   return models.map((m) => ({ ...m, isAlias: false, discoverySource: "http_models_endpoint" }));
 }
 
-/** Real bounded exact-model acceptance probe — minimal prompt, short timeout, classified on failure. */
-async function defaultProbe(provider, providerConfig, modelId, { timeoutMs = 45000 } = {}) {
+/**
+ * Real bounded exact-model acceptance probe — minimal prompt, short
+ * timeout, classified on failure. `maxTokens` is honored by HTTP providers
+ * (see httpProvider.js) to keep the probe genuinely cheap; the builtin CLI
+ * providers (claude/codex/cursor/antigravity) have no equivalent flag (none
+ * expose one — checked against each CLI's --help), so for those the minimal
+ * one-word prompt is the only lever available, not a hard token cap.
+ */
+export async function defaultProbe(provider, providerConfig, modelId, { timeoutMs = 45000, maxTokens = 1 } = {}) {
   try {
     await runProvider(
       provider,
-      { ...providerConfig, model: modelId, timeoutMs },
+      { ...providerConfig, model: modelId, timeoutMs, maxTokens },
       PROBE_PROMPT,
       undefined,
       { cwd: getNeutralExecutionDir() }
