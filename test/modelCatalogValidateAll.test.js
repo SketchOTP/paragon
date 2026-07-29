@@ -103,7 +103,7 @@ test("POST /api/model-catalog/validate-all probes every seeded model and does no
   const goodEntry = registry.find((e) => e.provider === "good" && e.model === "good-model");
   const badEntry = registry.find((e) => e.provider === "willfail" && e.model === "bad-model");
   assert.equal(goodEntry.automaticEligibility, true);
-  assert.equal(badEntry.automaticEligibility, false);
+  assert.equal(badEntry, undefined, "an unvalidated model must not appear in the routing registry at all");
 });
 
 test("POST /api/model-catalog/validate-all rejects a concurrent call with 409 while one is already running", async () => {
