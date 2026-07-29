@@ -264,10 +264,11 @@ export function rankRegistryByTask(registry, taskRoutes, taskTypes = TASK_TYPES)
  * @param {object} params.taskProfile - { taskType, estimatedInputTokens }
  * @param {object} [params.hints] - { forceProvider, forceModel, maxCostClass, disableEscalation }
  * @param {object[]} [params.benchmarkRows] - rows from getBenchmarkData(), or [] if not configured
+ * @param {object} [params.catalog] - PARAGON-D-004C model-catalog store (src/modelCatalog.js); gates automaticEligibility when supplied
  * @returns {{ provider: string, model: string, reasonCode: string, ranking: object[], confidence: string } | null}
  */
-export function selectRoute({ config, statuses, taskProfile, hints = {}, benchmarkRows = [] }) {
-  const rawRegistry = buildModelRegistry(config, statuses);
+export function selectRoute({ config, statuses, taskProfile, hints = {}, benchmarkRows = [], catalog = null }) {
+  const rawRegistry = buildModelRegistry(config, statuses, catalog);
   const registry = benchmarkRows.length ? annotateRegistryWithBenchmarks(rawRegistry, benchmarkRows) : rawRegistry;
 
   // Force is resolved directly against config, not the registry — a

@@ -8,16 +8,53 @@ import { dataDir, readConfig, writeConfig } from "./configStore.js";
 import { getEnv } from "./env.js";
 import { getLogs, subscribeLogs, addLog } from "./logStore.js";
 import { registerOpenAiRoutes } from "./openaiApi.js";
-import { getAuthSession, getAuthState, listModels, runStatus, startAuth, submitAuthCode } from "./cli.js";
+import { getAuthSession, getAuthState, listModels, runProvider, runStatus, startAuth, submitAuthCode } from "./cli.js";
 import { tailscaleUrls } from "./tailscaleUrls.js";
 import { createOrchestrationRuntime } from "./orchestration/telemetry.js";
 import { registerOrchestrationRoutes } from "./orchestration/api.js";
 import { buildModelRegistry } from "./routing/modelRegistry.js";
 import { rankRegistryByTask, scoringMethodology, TASK_TYPES } from "./routing/router.js";
 import { getBenchmarkData, annotateRegistryWithBenchmarks } from "./routing/benchmarks.js";
+import { applyExecutionResult, classifyModelFailure, loadCatalog, saveCatalog } from "./modelCatalog.js";
+import { runFullRefresh, refreshProviderCatalog } from "./modelCatalogRefresh.js";
+import { startModelCatalogScheduler } from "./modelCatalogScheduler.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 let cachedConfig = await readConfig();
+let cachedCatalog = await loadCatalog();
+
+// PARAGON-D-004C: single in-process view of the persisted model catalog.
+// recordResult() is the immediate-exclusion feedback path — a request that
+// fails with a model-specific classification updates the shared in-memory
+// catalog (and persists it) before the *next* request is routed, without
+// waiting for the next scheduled refresh.
+const catalogStore = {
+  get: () => cachedCatalog,
+  async recordResult(provider, modelId, resultInfo) {
+    applyExecutionResult(cachedCatalog, provider, modelId, resultInfo);
+    await saveCatalog(cachedCatalog);
+    return cachedCatalog;
+  }
+};
+
+const modelCatalogScheduler = startModelCatalogScheduler(async () => cachedConfig, {
+  onRefreshComplete: (result) => {
+    if (result?.catalog) {
+      cachedCatalog = result.catalog;
+    }
+  }
+});
+// Registering a SIGTERM/SIGINT listener replaces Node's default
+// terminate-immediately behavior, so each handler must explicitly exit —
+// otherwise `kill`/systemd stop would leave the process running forever.
+process.on("SIGTERM", () => {
+  modelCatalogScheduler.stop();
+  process.exit(0);
+});
+process.on("SIGINT", () => {
+  modelCatalogScheduler.stop();
+  process.exit(0);
+});
 
 const app = express();
 app.use(cors());
@@ -117,7 +154,7 @@ app.get("/api/status", async (req, res) => {
 
 app.get("/api/routing/registry", async (req, res) => {
   const config = await getConfig();
-  const rawRegistry = buildModelRegistry(config, getStatuses());
+  const rawRegistry = buildModelRegistry(config, getStatuses(), catalogStore.get());
   const benchmarks = await getBenchmarkData(config.integrations?.openrouterApiKey, { force: req.query.refreshBenchmarks === "1" });
   const registry = benchmarks.enabled ? annotateRegistryWithBenchmarks(rawRegistry, benchmarks.rows) : rawRegistry;
   res.json({
@@ -216,6 +253,74 @@ app.post("/api/providers/:provider/models", async (req, res) => {
   }
 });
 
+let catalogRefreshInFlight = null;
+
+app.get("/api/model-catalog", async (_req, res) => {
+  res.json(catalogStore.get());
+});
+
+app.post("/api/model-catalog/refresh", async (_req, res) => {
+  if (catalogRefreshInFlight) {
+    res.status(409).json({ error: { message: "A catalog refresh is already in progress" } });
+    return;
+  }
+  const config = await getConfig();
+  catalogRefreshInFlight = modelCatalogScheduler.triggerNow().finally(() => {
+    catalogRefreshInFlight = null;
+  });
+  try {
+    const result = await catalogRefreshInFlight;
+    if (result.skipped) {
+      res.status(409).json({ error: { message: result.reason } });
+      return;
+    }
+    cachedCatalog = result.catalog;
+    res.json({ ok: true, outcomes: result.outcomes, catalog: cachedCatalog });
+  } catch (error) {
+    res.status(500).json({ error: { message: error.message } });
+  }
+});
+
+app.post("/api/model-catalog/providers/:provider/refresh", async (req, res) => {
+  const config = await getConfig();
+  const provider = req.params.provider;
+  const providerConfig = config.providers[provider];
+  if (!providerConfig) {
+    res.status(404).json({ error: "Unknown provider" });
+    return;
+  }
+  try {
+    const settings = config.modelCatalog ?? {};
+    const result = await refreshProviderCatalog(provider, providerConfig, cachedCatalog, {
+      maxValidationProbesPerProvider: settings.maxValidationProbesPerProvider ?? 10
+    });
+    await saveCatalog(cachedCatalog);
+    res.json({ provider, ...result, catalog: cachedCatalog.providers[provider] });
+  } catch (error) {
+    res.status(500).json({ error: { message: error.message, provider } });
+  }
+});
+
+app.post("/api/model-catalog/providers/:provider/models/:model/validate", async (req, res) => {
+  const config = await getConfig();
+  const provider = req.params.provider;
+  const modelId = req.params.model;
+  const providerConfig = config.providers[provider];
+  if (!providerConfig) {
+    res.status(404).json({ error: "Unknown provider" });
+    return;
+  }
+  try {
+    await runProvider(provider, { ...providerConfig, model: modelId, timeoutMs: 45000 }, "Reply with exactly one word: ok", undefined, {});
+    await catalogStore.recordResult(provider, modelId, { success: true });
+    res.json({ provider, model: modelId, state: cachedCatalog.providers[provider]?.models[modelId]?.state });
+  } catch (error) {
+    const classification = classifyModelFailure(error);
+    await catalogStore.recordResult(provider, modelId, { success: false, classification });
+    res.json({ provider, model: modelId, state: cachedCatalog.providers[provider]?.models[modelId]?.state, classification });
+  }
+});
+
 app.get("/api/logs", (_req, res) => {
   res.json({ logs: getLogs() });
 });
@@ -233,7 +338,7 @@ app.get("/api/logs/stream", (req, res) => {
   req.on("close", unsubscribe);
 });
 
-registerOpenAiRoutes(app, getConfig, orchestration, getStatuses);
+registerOpenAiRoutes(app, getConfig, orchestration, getStatuses, catalogStore);
 // Mounted after `app.use("/api", adminAuth)` above, so these inherit admin auth.
 registerOrchestrationRoutes(app, orchestration, getConfig, async (next) => {
   cachedConfig = await writeConfig(next);

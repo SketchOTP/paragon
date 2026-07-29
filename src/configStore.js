@@ -52,6 +52,13 @@ function applyEnvOverrides(config) {
   if (port) {
     config.server.port = Number(port);
   }
+  // Escape hatch for test/dev process spawns that must not trigger real
+  // provider probes just by starting the server (see
+  // src/modelCatalogScheduler.js) — production deployments never set this.
+  const modelCatalogEnabled = getEnv("MODEL_CATALOG_ENABLED");
+  if (modelCatalogEnabled !== undefined) {
+    config.modelCatalog = { ...config.modelCatalog, enabled: modelCatalogEnabled !== "0" && modelCatalogEnabled !== "false" };
+  }
   return config;
 }
 

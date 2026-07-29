@@ -40,7 +40,7 @@ test.before(async () => {
   tmpCwd = fs.mkdtempSync(path.join(os.tmpdir(), "paragon-escalation-integ-"));
   server = spawn(process.execPath, [path.join(repoRoot, "src/server.js")], {
     cwd: tmpCwd,
-    env: { ...process.env, PARAGON_HOST: "127.0.0.1", PARAGON_PORT: String(PORT) },
+    env: { ...process.env, PARAGON_HOST: "127.0.0.1", PARAGON_PORT: String(PORT), PARAGON_MODEL_CATALOG_ENABLED: "0" },
     stdio: ["ignore", "pipe", "pipe"]
   });
   await waitForServer();
