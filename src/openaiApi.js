@@ -8,9 +8,10 @@ import { addLog } from "./logStore.js";
 import { createBoundedResponseAccumulator, estimateRequestContext } from "./orchestration/contextEstimator.js";
 import { classifyError, boundedDiagnostic } from "./orchestration/errorClassification.js";
 import { classifyModelFailure } from "./modelCatalog.js";
-import { selectRoute, buildRankedAttempts } from "./routing/router.js";
+import { selectRoute, buildRankedAttempts, verifyAttemptsAgainstRegistry } from "./routing/router.js";
+import { buildModelRegistry } from "./routing/modelRegistry.js";
 import { extractRoutingHints, requiresJsonValidation, isValidJson } from "./routing/hints.js";
-import { getBenchmarkData } from "./routing/benchmarks.js";
+import { getBenchmarkData, matchBenchmarkRow } from "./routing/benchmarks.js";
 import {
   activeExecutionCount,
   applyFallbackLimit,
@@ -23,7 +24,6 @@ import {
 } from "./orchestration/liveEnforcement.js";
 import {
   allProvidersFailedMessage,
-  buildProviderAttempts,
   CLIENT_ERROR_MESSAGE,
   formatProviderError,
   sanitizeAssistantContent
@@ -131,39 +131,103 @@ export function registerOpenAiRoutes(app, getConfig, orchestration, getStatuses 
     let primaryModel;
 
     try {
-      // Cached (6h TTL) — this almost never triggers a real network call on
-      // the hot request path. Empty rows when no OpenRouter key is
-      // configured, which selectRoute treats as "internal-only scoring".
-      const benchmarks = await safely(() => getBenchmarkData(config.integrations?.openrouterApiKey), { rows: [] });
-      let route = selectRoute({
+      // Attempt-cached — almost never a real network call on the hot request
+      // path. Empty rows when no OpenRouter key is configured, which
+      // selectRoute treats as "internal-only scoring". PARAGON-D-004C1
+      // (P0-7): stale data (past MAX_USABLE_AGE_MS since the last
+      // *successful* fetch) is withheld from scoring entirely rather than
+      // silently applied.
+      const benchmarks = await safely(() => getBenchmarkData(config.integrations?.openrouterApiKey), { rows: [], stale: true });
+      const benchmarkRows = benchmarks?.stale ? [] : (benchmarks?.rows ?? []);
+      if (benchmarks?.enabled && benchmarks?.stale) {
+        addLog({
+          type: "route",
+          provider: "paragon",
+          level: "warn",
+          message: `routing.benchmarkDataStale: benchmark data age ${benchmarks.dataAgeMs ?? "unknown"}ms exceeds max usable age — scoring internal-only for this request`
+        });
+      }
+
+      const catalog = catalogStore?.get() ?? null;
+      const statuses = getStatuses();
+      const route = selectRoute({
         config,
-        statuses: getStatuses(),
+        statuses,
         taskProfile: {
           taskType: task,
           estimatedInputTokens: contextEstimate.estimatedInputTokens
         },
         hints,
-        benchmarkRows: benchmarks?.rows ?? [],
-        catalog: catalogStore?.get() ?? null
+        benchmarkRows,
+        catalog
       });
-      let attempts = route ? buildRankedAttempts(route.ranking, config) : [];
-      if (!route || !attempts.length) {
-        // Safety net: no eligible candidate in the registry (e.g. nothing
-        // enabled/healthy, or a registry build hiccup) — fall back to the
-        // old static default rather than a hard denial of service. Recorded
-        // with its own reason code so this is never silently confused with
-        // an actual scored decision.
-        route = null;
-        const routedProvider = config.routing.taskRoutes[task] ?? config.routing.defaultProvider;
-        const staticPrimary = pickEnabledProvider(config, routedProvider);
-        attempts = buildProviderAttempts(config, staticPrimary);
+
+      // PARAGON-D-004C1 (P0-2): a forced route that failed an eligibility
+      // gate is a client error, never a silent downgrade to automatic
+      // routing and never a fallback to providerConfig.model.
+      if (route?.rejected) {
+        addLog({ type: "route", provider: hints.forceProvider ?? "paragon", level: "warn", message: `${route.reasonCode}: ${route.message}` });
+        res.set({ "X-Paragon-Route-Reason": route.reasonCode, "X-Paragon-Route-Model": "" });
+        res.status(400).json({
+          error: { message: route.message, type: "paragon_routing_error", code: route.reasonCode }
+        });
+        return;
       }
-      primary = route ? route.provider : attempts[0]?.name;
-    primaryModel = attempts[0]?.config?.model || config.providers[primary]?.model;
-    const routeReasonCode = route?.reasonCode ?? "fallback.staticDefault";
+
+      // Reassigned below by the live-enforcement circuit/fallback filters.
+      let attempts = route ? buildRankedAttempts(route.ranking, config) : [];
+
+      // PARAGON-D-004C1 (P0-1): the previous `fallback.staticDefault` path
+      // rebuilt attempts from routing.taskRoutes/defaultProvider/
+      // fallbackChain + providerConfig.model when scoring produced nothing.
+      // That bypassed catalog eligibility, the cost ceiling, and the
+      // capability gate, and could dispatch a configured model the catalog
+      // had already rejected. Availability is no longer preserved by
+      // weakening a constraint — an empty eligible set is a bounded 503.
+      if (!route || !attempts.length) {
+        const message =
+          "No eligible model is currently available. Every candidate was excluded by catalog eligibility, provider health, circuit state, context limits, cost ceiling, or chat-capability gates.";
+        addLog({ type: "route", provider: "paragon", level: "error", message: `routing.noEligibleModel: ${message}` });
+        res.set({ "X-Paragon-Route-Reason": "routing.noEligibleModel", "X-Paragon-Route-Model": "" });
+        res.status(503).json({
+          error: { message, type: "paragon_routing_error", code: "no_eligible_model" }
+        });
+        return;
+      }
+
+      // PARAGON-D-004C1 (P0-8): re-derive the chain against the registry
+      // immediately before dispatch. Nothing may execute that isn't a
+      // currently-eligible registry row.
+      const registryNow = buildModelRegistry(config, statuses, catalog);
+      const violations = verifyAttemptsAgainstRegistry(attempts, registryNow, config);
+      if (violations.length) {
+        const message = "Internal routing integrity check failed: a planned attempt is not a currently eligible model.";
+        addLog({
+          type: "route",
+          provider: "paragon",
+          level: "error",
+          message: `routing.attemptIntegrityViolation: ${violations.map((v) => `${v.attempt}/${v.model ?? "?"}: ${v.reason}`).join("; ")}`
+        });
+        res.status(503).json({
+          error: { message, type: "paragon_routing_error", code: "no_eligible_model" }
+        });
+        return;
+      }
+
+      primary = route.provider;
+    primaryModel = attempts[0]?.registryModel ?? route.model;
+    const routeReasonCode = route.reasonCode;
+    const primaryEntry = registryNow.find((e) => e.provider === primary && e.model === primaryModel);
+    const usesProviderDefault = Boolean(attempts[0]?.providerDefault);
+    // Matched for just the selected model rather than re-annotating the
+    // whole registry — one lookup instead of one per registry entry.
+    const primaryBenchmark = benchmarkRows.length ? matchBenchmarkRow(primaryModel, benchmarkRows) : null;
     res.set({
       "X-Paragon-Route-Reason": routeReasonCode,
-      "X-Paragon-Route-Model": primaryModel || ""
+      "X-Paragon-Route-Model": usesProviderDefault ? "provider-default" : primaryModel || "",
+      "X-Paragon-Model-State": usesProviderDefault ? "exposed-default" : primaryEntry?.modelState ?? "unknown",
+      "X-Paragon-Benchmark-Match": primaryBenchmark?.matchMethod ?? "none",
+      "X-Paragon-Catalog-Age": primaryEntry?.catalogAgeHours != null ? `${primaryEntry.catalogAgeHours.toFixed(2)}h` : ""
     });
     const started = Date.now();
 
@@ -381,17 +445,6 @@ export function registerOpenAiRoutes(app, getConfig, orchestration, getStatuses 
       releaseIsolatedRuntimeDir(runtimeDir);
     }
   });
-}
-
-function pickEnabledProvider(config, preferred) {
-  if (config.providers[preferred]?.enabled) {
-    return preferred;
-  }
-  const fallback = Object.entries(config.providers).find(([, value]) => value.enabled);
-  if (!fallback) {
-    throw new Error("No providers are enabled");
-  }
-  return fallback[0];
 }
 
 /**

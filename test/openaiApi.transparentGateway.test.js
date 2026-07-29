@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { seedCatalogFile } from "./helpers/seedCatalog.js";
 
 // PARAGON-D-004B-R: proves the corrective directive — Cursor (or any
 // OpenAI-compatible client) needs only base URL + API key + model name.
@@ -43,6 +44,7 @@ function authHeaders(extra = {}) {
 
 test.before(async () => {
   tmpCwd = fs.mkdtempSync(path.join(os.tmpdir(), "paragon-transparent-integ-"));
+  seedCatalogFile(tmpCwd, { echocwd: ["fixture-model"] });
   runtimeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paragon-transparent-runtime-"));
   server = spawn(process.execPath, [path.join(repoRoot, "src/server.js")], {
     cwd: tmpCwd,

@@ -226,6 +226,10 @@ export function replaceProviderModels(catalog, provider, nextEntries, { now = ne
       isAlias: Boolean(entry.isAlias),
       state: entry.state,
       discoverySource: entry.discoverySource,
+      // Provider-declared model kind, when the provider exposes one. Feeds
+      // the chat-capability gate (PARAGON-D-004C1 P0-5); preserved across
+      // refreshes that don't re-supply it.
+      metadata: entry.metadata ?? previous?.metadata ?? null,
       discoveredAt: now,
       validatedAt: entry.state === "validated" ? now : (previous?.validatedAt ?? null),
       lastSuccessAt: previous?.lastSuccessAt ?? null,
@@ -313,6 +317,55 @@ export function applyExecutionResult(catalog, provider, modelId, { success, clas
     retryAt: null
   };
   return catalog;
+}
+
+/**
+ * PARAGON-D-004C1 (P0-3): completes a PARAGON-D-004C CATALOG CLEANUP
+ * requirement that was specified but never implemented — "clear
+ * provider.model when it references a removed model". The catalog refresh
+ * only ever wrote the catalog, so `config.providers[p].model` could keep
+ * naming a model the catalog had rejected or retired, which the (now
+ * removed) static-fallback path would happily dispatch.
+ *
+ * Pure function: returns the cleanup plan plus a new config object, leaving
+ * the caller to persist. Only providers the catalog has actually assessed
+ * are considered — an unassessed provider's configured model is untrusted
+ * for routing (see buildModelRegistry) but must not be destroyed, since no
+ * authoritative refresh has contradicted it yet.
+ *
+ * An empty configured model is left alone: it means "use the provider
+ * default", which is gated separately by requiring a validated
+ * provider-default catalog entry.
+ */
+export function reconcileConfiguredModels(config, catalog, { ttlHours = 24, now = Date.now() } = {}) {
+  const cleared = [];
+  const providers = {};
+
+  for (const [provider, providerConfig] of Object.entries(config.providers ?? {})) {
+    providers[provider] = providerConfig;
+    const configured = providerConfig?.model;
+    if (!configured) {
+      continue;
+    }
+    const bucket = catalog?.providers?.[provider];
+    if (!bucket) {
+      continue;
+    }
+    const entry = bucket.models?.[configured];
+    if (isEligibleNow(entry, { ttlHours, now })) {
+      continue;
+    }
+    cleared.push({
+      provider,
+      model: configured,
+      previousState: entry?.state ?? "absent_from_catalog"
+    });
+    // Cleared, never substituted: picking a replacement model on the
+    // operator's behalf would be inventing a routing decision.
+    providers[provider] = { ...providerConfig, model: "" };
+  }
+
+  return { config: cleared.length ? { ...config, providers } : config, cleared };
 }
 
 /** Flattened, eligibility-annotated view used by routing/modelRegistry.js and the dashboard. */

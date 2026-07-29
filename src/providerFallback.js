@@ -1,23 +1,14 @@
-/** After the routed provider fails, try these in order (must be enabled). */
-export function buildProviderAttempts(config, primary) {
-  const chain = config.routing.fallbackChain ?? ["codex", "cursor"];
-  const order = [primary, ...chain.filter((name) => name !== primary)];
-  const seen = new Set();
-  const attempts = [];
-
-  for (const name of order) {
-    if (seen.has(name) || !config.providers[name]?.enabled) {
-      continue;
-    }
-    seen.add(name);
-    attempts.push({
-      name,
-      config: config.providers[name]
-    });
-  }
-
-  return attempts;
-}
+// PARAGON-D-004C1 (P0-1) removed buildProviderAttempts(). It constructed a
+// fallback chain from routing.fallbackChain + providerConfig.model, which
+// bypassed catalog eligibility, the cost ceiling, and the chat-capability
+// gate — it could dispatch a configured model the catalog had already
+// rejected. Every attempt chain now comes from buildRankedAttempts() over
+// the eligible registry (src/routing/router.js); an empty eligible set is a
+// bounded 503 rather than a silently weakened constraint.
+//
+// routing.fallbackChain / routing.defaultProvider remain in config as
+// operator preference inputs to scoring (routing.taskRoutes is scored in
+// scoreCandidate); they are no longer an independent dispatch path.
 
 export const CLIENT_ERROR_MESSAGE =
   "I couldn't complete that request right now. Please try again in a moment.";

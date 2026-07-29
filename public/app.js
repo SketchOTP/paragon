@@ -1665,7 +1665,11 @@ function benchmarkCell(entry, taskType) {
   const price = benchmarkPromptPrice(entry);
   const priceLabel = price != null ? `$${(price * 1e6).toFixed(2)}/M` : "";
   const valueBadge = entry.isValuePick ? ` <span class="registry-badge eligible" title="Good enough (within 15% of the best index for this task) at the lowest price among matched candidates">best value</span>` : "";
-  return `<span title="Matched to ${escapeAttr(b.matchedAs)} (${escapeAttr(b.source)})">${sourceShort} ${index ?? "—"} ${priceLabel}</span>${valueBadge}`;
+  // PARAGON-D-004C1 (P0-6): attribution is shown, not just the score — a
+  // number with no traceable match method is how the Opus 4 / Opus 4.7
+  // misattribution went unnoticed.
+  const method = b.matchMethod ? ` <span class="registry-badge health-unknown" title="Match method: ${escapeAttr(b.matchMethod)} (confidence ${escapeAttr(b.matchConfidence ?? "unknown")})">${escapeHtml(b.matchMethod)}</span>` : "";
+  return `<span title="Matched ${escapeAttr(b.matchedLocalModel ?? entry.model)} → ${escapeAttr(b.matchedBenchmarkModel ?? b.matchedAs)} (${escapeAttr(b.source)}), fetched ${escapeAttr(b.benchmarkFetchedAt ?? "unknown")}">${sourceShort} ${index ?? "—"} ${priceLabel}</span>${method}${valueBadge}`;
 }
 
 function renderRegistryTable() {
@@ -1679,10 +1683,16 @@ function renderRegistryTable() {
             rankInfo && !rankInfo.excluded
               ? `<span class="registry-rank-pill ${rankPillClass(rankInfo.tenScale)}" title="Rank ${rankInfo.rank} of ${rankInfo.of} eligible models for this task; score ${rankInfo.score}">${rankInfo.tenScale}/10</span>`
               : `<span class="registry-badge ineligible" title="${escapeAttr(rankInfo?.reasonCode ?? "not ranked")}">excluded</span>`;
+          // PARAGON-D-004C1 (P0-4): a provider with no completed catalog
+          // assessment has no model to show — say why it is dark rather
+          // than rendering an empty model cell.
+          const modelCell = entry.pendingAssessment
+            ? `<span class="registry-badge ineligible" title="No completed model-catalog assessment yet — this provider contributes no routable models. Run a catalog refresh.">pending assessment</span>`
+            : `<code>${escapeHtml(entry.providerDefault ? "(provider default)" : entry.model)}</code>`;
           return `
         <tr class="${rankInfo?.excluded ? "rank-excluded" : ""}">
           <td>${escapeHtml(providerLabel(entry.provider, config?.providers?.[entry.provider]))}</td>
-          <td><code>${escapeHtml(entry.model)}</code></td>
+          <td>${modelCell}</td>
           <td>${rankCell}</td>
           <td>${benchmarkCell(entry, taskType)}</td>
           <td><span class="registry-badge health-${escapeAttr(entry.health)}">${escapeHtml(entry.health)}</span></td>
@@ -1787,10 +1797,17 @@ async function refreshModelRegistry() {
       const bm = registryData.benchmarks;
       if (!bm?.enabled) {
         els.registryBenchmarkNote.textContent = "External benchmarks: not configured";
+      } else if (bm.stale) {
+        // PARAGON-D-004C1 (P0-7): data past the maximum usable age is kept
+        // visible for diagnostics but is not applied to scoring, so say so
+        // rather than implying it is still influencing rankings.
+        const ageHours = bm.dataAgeMs != null ? (bm.dataAgeMs / 3_600_000).toFixed(1) : "unknown";
+        const why = bm.error ? ` last error: ${bm.error.slice(0, 50)}` : "";
+        els.registryBenchmarkNote.textContent = `External benchmarks: DISABLED — data ${ageHours}h old exceeds max usable age; scoring is internal-only.${why}`;
       } else if (bm.error) {
-        els.registryBenchmarkNote.textContent = `External benchmarks: fetch failed (${bm.error.slice(0, 60)})`;
+        els.registryBenchmarkNote.textContent = `External benchmarks: last fetch failed (${bm.error.slice(0, 50)}), still using data from ${bm.lastSuccessfulFetchAt ?? "unknown"}`;
       } else {
-        els.registryBenchmarkNote.textContent = `External benchmarks: ${bm.matchedCount} models matched`;
+        els.registryBenchmarkNote.textContent = `External benchmarks: ${bm.matchedCount} models matched (exact/alias only)`;
       }
     }
   } catch {
