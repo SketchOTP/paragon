@@ -1,13 +1,11 @@
 # PARAGON-D-004C: Model-Catalog Cleanup, Validation & Automatic Refresh — Evidence Report
 
-Implementation worktree: `/home/sketch/Projects/paragon-d004c`, branch
-`paragon-d004c-model-catalog`, created from `origin/main` at `2327665`
-(merge of PARAGON-D-004B), merged to `main` as `aed6920` (PR #7) and
-`91e350c` (PR #8, a production-verification follow-up fix — see
-"Delivery" below). Production checkout
-(`/home/sketch/Projects/paragon-production`, service `paragon.service`)
-is deployed at `91e350c`, verified live — see "Production refresh
-results" below.
+Implementation worktree: `/home/sketch/Projects/paragon-d004c`, branched
+from `origin/main` at `2327665` (merge of PARAGON-D-004B). Shipped as five
+sequential PRs (#7–#11) — see "Delivery" below for the full table.
+Production checkout (`/home/sketch/Projects/paragon-production`, service
+`paragon.service`) is deployed at `03e99c5` and verified live — see
+"Production refresh results" and "Exposed-only routing proof" below.
 
 ## Previous inaccurate discovery paths
 
@@ -135,7 +133,7 @@ the actual response to the caller.
 ## Routing integration
 
 `buildModelRegistry(config, statuses, catalog)` (new third parameter) and
-`selectRoute({ ..., catalog })` gate `automaticEligibility` on the
+`selectRoute({ ..., catalog })` resolve routing candidates from the
 catalog's live state for any provider the catalog has assessed (see scope
 decision above). `src/openaiApi.js` always passes the live in-process
 catalog (`catalogStore.get()`) into `selectRoute`, and
@@ -144,6 +142,53 @@ dashboard "Model Routing" panel and the live per-request decision can
 never diverge on eligibility, matching the existing
 `scoreAndRankCandidates` invariant this codebase already enforces for
 scoring.
+
+**Exposed/validated-only registry.** `buildModelRegistry()` *omits* any
+catalog-assessed model whose state isn't `exposed` or `validated`-within-TTL,
+rather than including it with `automaticEligibility: false`. This matters
+because the registry is the sole input to the ranking algorithm, the
+dashboard panel, and the live route decision — so an unvalidated,
+rejected, unavailable, blocked, or retired model is not merely
+un-selectable, it never enters the scoring input at all and never appears
+as an "excluded" row. Verified in production: 0 ranking rows across all 7
+task types reference a model outside the exposed/validated set (see
+"Exposed-only routing" below).
+
+### Design: recompute-on-read, not a post-refresh hook
+
+Keeping routing rankings current after each catalog refresh is handled by
+**recomputing the registry from the current catalog on every read**, not
+by a hook that fires after a refresh completes:
+
+```
+catalog refresh
+    ↓
+persist authoritative catalog (atomic write)
+    ↓
+every registry/ranking request rebuilds from the current catalog
+```
+
+`buildModelRegistry()` is a pure function over
+`(config, statuses, catalog)` with no cache and no stored derived state, so
+there is nothing to invalidate and no window in which rankings can lag the
+catalog. A completed refresh — scheduled, manual, per-provider, or a
+single-model validation — is reflected on the very next request or
+dashboard load.
+
+This is the intentional implementation of immediate catalog consistency,
+not a shortcut around a missing hook. An explicit post-refresh recompute
+step would introduce a second source of truth for the same facts, plus a
+new failure mode where the catalog write succeeds but the recompute
+doesn't — leaving rankings silently stale, which is precisely the class of
+inaccuracy this directive exists to eliminate.
+
+A post-refresh hook becomes justified only when a real side effect needs
+one, e.g. precomputed ranking snapshots, notifications about added or
+removed models, historical catalog-diff reports, or external cache
+invalidation. None of those exist today, so none is implemented.
+Regression test: `buildModelRegistry reflects a completed catalog refresh
+immediately — no separate 'refresh the registry' step exists`
+(`test/modelRegistry.test.js`).
 
 ## API surface added
 
@@ -156,8 +201,14 @@ scoring.
 - `POST /api/model-catalog/providers/:provider/models/:model/validate` —
   one bounded probe against one exact model, updates catalog state either
   way.
+- `POST /api/model-catalog/validate-all` — walks every non-alias,
+  non-retired model in the catalog across every enabled provider and
+  probes each one individually. A model that fails is recorded and the run
+  continues to the next; a single failure never aborts the run, and the
+  failed model simply stays unvalidated. 409 if a run is already in
+  progress.
 
-All four inherit the existing dashboard admin auth
+All five inherit the existing dashboard admin auth
 (`app.use("/api", adminAuth)` in `server.js` — unchanged).
 
 ## Dashboard
@@ -165,10 +216,26 @@ All four inherit the existing dashboard admin auth
 New "Model Catalog" panel (`public/index.html` + `public/app.js`,
 collapsible like the existing Model Routing/Orchestration panels): table
 of provider/model/state/auto-eligible/discovery source/last
-validated/last failure, "Refresh all providers" button, and a per-row
-"Validate now" button. States render through a label map so `unknown`
-reads as "Candidate only" rather than a bare enum value — never shown as
-if it were an available model.
+validated/last failure, "Refresh all providers" and "Validate all"
+buttons, and a per-row "Validate now" button. States render through a
+label map so `unknown` reads as "Candidate only" rather than a bare enum
+value — never shown as if it were an available model.
+
+The panel polls every 24h rather than every 30s: the catalog only changes
+on a refresh or validate action, and each of those re-renders the table
+from its own response immediately, so a short poll added load without
+adding freshness. (The Model Routing panel still polls every 30s — its
+data is derived live from the catalog per the recompute-on-read design
+above, so a short poll there is meaningful.)
+
+### Probe cost
+
+Validation probes send a minimal one-word prompt, and additionally set
+`max_tokens: 1` for HTTP-compatible providers (`runHttpProvider`). The
+builtin CLI providers (claude/codex/cursor/antigravity) expose no
+equivalent token-cap flag — checked against each CLI's `--help` — so for
+those the minimal prompt is the only lever available. Documented here
+rather than claiming a hard cap that doesn't exist.
 
 ## Tests
 
@@ -220,6 +287,19 @@ if it were an available model.
    resolved. Fixed with an explicit `clearTimeout` in a `finally` block.
 
 ## Delivery
+
+Shipped as five sequential PRs, each CI-green, squash-merged, and
+fast-forwarded into `paragon-production` before the next was started:
+
+| PR | Merge | What |
+|---|---|---|
+| #7 | `aed6920` | Core implementation (catalog state machine, refresh, scheduler, routing gate, dashboard, API) |
+| #8 | `91e350c` | Fix: model-failure classification missed real claude CLI error text (found in production, see below) |
+| #9 | `a4ee6f3` | Evidence report with production deployment proof |
+| #10 | `7b937a3` | 24h catalog panel poll, "Validate all" button, `max_tokens: 1` HTTP probes |
+| #11 | `03e99c5` | Registry lists only exposed/validated models (not merely marks others ineligible) |
+
+Production deployed at `03e99c5`. Details of the initial deployment:
 
 - Branch pushed, PR #7 opened against `main`, CI green, squash-merged as
   `aed6920`.
@@ -310,6 +390,41 @@ after the restart — the scheduler resumed waiting for the persisted
 restart-safety with real production state, not just the mocked unit
 tests.
 
+### Exposed-only routing proof (final production state, at `03e99c5`)
+
+After PR #11 deployed and the service restarted (PID `3442560`,
+`16:12:04`), `/api/routing/registry` was cross-checked field-by-field
+against `/api/model-catalog`:
+
+| Provider | Catalog exposed/validated | Registry entries | |
+|---|---|---|---|
+| claude | 16 | 16 | match |
+| codex | 15 | 15 | match |
+| cursor | 193 | 193 | match |
+| antigravity | 8 | 8 | match |
+
+- Registry total: **257 → 238** entries; all **19** previously-listed
+  non-eligible rows are gone.
+- Registry rows with `automaticEligibility: false`: **0**.
+- Registry rows in any state other than `exposed`/`validated`: **0**.
+- Ranking algorithm: **1,666** ranked candidate rows across all 7 task
+  types, of which **0** reference a model outside the exposed/validated
+  registry — an unvalidated model appears neither ranked nor as an
+  "excluded" row.
+- Live end-to-end: a real `/v1/chat/completions` request routed to
+  `claude-sonnet-5` (`X-Paragon-Route-Reason: scored.deterministic`),
+  which the catalog independently confirms as `state: validated`,
+  `automaticEligibility: true`, with a real `lastSuccessAt`.
+- Scheduler after this restart: `generation: 3`,
+  `nextRefreshAt: 2026-07-30T17:34:41.868Z` — exactly +24h from
+  `lastSuccessfulRefreshAt`, persisted across the restart.
+
+Note the pre-PR-#11 process was verified as *still running the old code*
+before this restart (identical PID/start-timestamp predating the merge,
+plus 19 `automaticEligibility: false` rows still present in the API
+response) — the deployment was confirmed behaviorally, not assumed from
+the checkout's git state.
+
 ### Requirement-by-requirement confirmation (production, not just tests)
 
 | Requirement | Confirmed |
@@ -319,6 +434,9 @@ tests.
 | Bundled-only Codex candidate-only | Yes by design (live `codex debug models` succeeded this cycle, so all 15 came in `exposed`; unit tests cover the bundled-only-candidate path directly) |
 | Cursor/Antigravity/HTTP/live-Codex authoritative replacement | Yes — all `exposed` directly, replace-not-merge demonstrated live via the test-artifact retirement |
 | Auto-eligible = exposed or validated only | Yes — verified via `/api/routing/registry` cross-check against catalog state |
+| Unvalidated models unusable by routing | Yes — omitted from the registry entirely, so absent from the ranking input (0/1,666 rows) |
+| Routing lists/ranks only exposed models | Yes — registry set == catalog exposed/validated set for all 4 providers |
+| Rankings stay current after each 24h refresh | Yes — recompute-on-read (no cache to invalidate); regression-tested and verified live |
 | Models missing from a successful refresh removed | Yes — test artifact `retired`, not deleted or silently kept eligible |
 | Rejected model excluded from the immediately following request | Yes — proven above |
 | Model-specific failures don't disable the whole provider | Yes — Claude kept 8 `validated` models despite 2 rejections in the same cycle |
@@ -329,22 +447,34 @@ tests.
 | Refresh state survives restart | Yes — proven twice (restart 2 and restart 3) |
 | Overlapping refreshes prevented | `schedule.refreshing` lock (unit-tested); no overlap occurred in production (each refresh completed before the next restart) |
 | No prompt/response/API key/credential persisted in catalog state | Yes — `grep` of `data/model-catalog.json` for credential-like strings returned nothing |
-| Production active, stable NRestarts | Yes — `NRestarts=0` throughout all three restarts |
+| Production active, stable NRestarts | Yes — `NRestarts=0` throughout all five restarts |
 | Ports 10000/9420 unchanged | Yes |
 | `/v1/models` still exposes `paragon` | Yes |
 | Production checkout clean | Yes — `git status --short` empty at every checkpoint |
+
+## Test totals
+
+210 tests, all passing (`npm test`), plus `npm run check` (tests +
+release script) and `git diff --check` green. Growth across the five PRs:
+176 pre-directive → 203 (#7) → 204 (#8) → 207 (#10) → 210 (#11).
 
 ## Final verdict
 
 **PARAGON_D004C_MODEL_CATALOG_COMPLETE**
 
-Every automatic-eligibility path is now gated on real evidence (an
+Every automatic-eligibility path is gated on real evidence (an
 authoritative account-aware source or a bounded execution probe/prior
-success), stale/rejected/retired models are excluded immediately and
-never silently carried forward, the daily refresh runs without any
-cron/systemd timer and survives a restart with its schedule intact, and
-all of this was verified against the live `paragon-production` service —
-not only the implementation worktree's test suite — including one real
-defect (found via that production verification, not by inspection) fixed
-and redeployed through the same tested pipeline before this verdict was
+success). Unvalidated, rejected, and retired models are excluded from the
+routing registry entirely — so they cannot be ranked, selected, or
+displayed as routable — and a model rejected at execution is excluded
+from the immediately following request. The daily refresh runs with no
+cron or systemd timer and survives restart with its schedule intact, and
+rankings track the catalog with no staleness window by construction
+(recompute-on-read, documented above as the intended design).
+
+All of this was verified against the live `paragon-production` service,
+not only the implementation worktree's test suite — including confirming
+deployments behaviorally rather than trusting the checkout's git state,
+which is how the one real defect in this work (the stdout/stderr
+classification bug, PR #8) was caught and fixed before this verdict was
 issued.
