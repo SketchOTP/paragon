@@ -8,6 +8,8 @@
  * look more complete than it is.
  */
 
+import { listCatalogEntries } from "../modelCatalog.js";
+
 // Context windows are only filled in where there's a well-documented public
 // spec for the model family. Everything else stays null (unknown) rather
 // than guessed.
@@ -47,30 +49,55 @@ function inferLatencyClass(costClass) {
  * Builds one registry entry per (provider, model). `statuses` is the same
  * shape /api/status already returns — reused rather than re-probed, so
  * building the registry never triggers extra CLI spawns.
+ *
+ * `catalog` (PARAGON-D-004C) is the persisted model-catalog store from
+ * src/modelCatalog.js. When supplied, automaticEligibility for a provider
+ * that the catalog has actually assessed at least once (it has a bucket in
+ * catalog.providers) is gated on the catalog's real state machine
+ * (exposed/validated within TTL only) instead of being assumed true for
+ * anything sitting in providerConfig.models — that config list is only the
+ * operator's last "Load models" snapshot, not evidence of current
+ * availability. A provider the catalog has *never* assessed (no bucket at
+ * all — e.g. just configured, before the scheduler's first pass has run)
+ * falls back to trusting providerConfig.models so a freshly-added provider
+ * isn't dead on arrival; the very next scheduled/manual refresh replaces
+ * that trust with real evidence. Callers that omit `catalog` entirely
+ * (existing unit tests, or code paths not wired to the catalog store) keep
+ * the pre-D-004C behavior of trusting providerConfig.models directly —
+ * every real request/dashboard path in server.js and openaiApi.js always
+ * passes the live catalog.
  */
-export function buildModelRegistry(config, statuses = {}) {
+export function buildModelRegistry(config, statuses = {}, catalog = null) {
   const entries = [];
   const now = new Date().toISOString();
+  const ttlHours = config.modelCatalog?.validationTtlHours ?? 24;
 
   for (const [provider, providerConfig] of Object.entries(config.providers ?? {})) {
     if (!providerConfig.enabled) {
       continue;
     }
     const health = statuses[provider]?.ok === true ? "healthy" : statuses[provider] ? "unhealthy" : "unknown";
-    const models = providerConfig.models?.length ? providerConfig.models : [{ id: providerConfig.model || "", name: providerConfig.model || "(default)" }];
+    const providerAssessed = Boolean(catalog?.providers && Object.prototype.hasOwnProperty.call(catalog.providers, provider));
+    const catalogEntries = providerAssessed ? listCatalogEntries(catalog, provider, { ttlHours }) : null;
+    const models = catalogEntries
+      ? catalogEntries
+      : providerConfig.models?.length
+        ? providerConfig.models
+        : [{ id: providerConfig.model || "", name: providerConfig.model || "(default)" }];
 
     for (const model of models) {
-      if (!model.id) {
+      const modelId = model.modelId ?? model.id;
+      if (!modelId) {
         continue;
       }
-      const costClass = inferCostClass(model.id);
+      const costClass = inferCostClass(modelId);
       entries.push({
         provider,
-        model: model.id,
-        displayName: model.name || model.id,
+        model: modelId,
+        displayName: model.displayName || model.name || modelId,
         health,
         local: providerConfig.type === "http",
-        contextWindow: inferContextWindow(model.id),
+        contextWindow: inferContextWindow(modelId),
         capabilities: {
           // All current providers are coding-agent CLIs/HTTP completion
           // backends — these two are inherent to what they are, not
@@ -87,13 +114,17 @@ export function buildModelRegistry(config, statuses = {}) {
         // PARAGON-D-004B-R: PARAGON is a transparent model gateway, not an
         // autonomous repo-editing agent — every builtin provider runs
         // read-only/tools-disabled in a throwaway isolated directory (see
-        // src/cli.js providerSpecs and src/executionSandbox.js). No
-        // provider can write to a real project through this endpoint, so
-        // none are excluded from automatic routing on tool-risk grounds.
-        automaticEligibility: true,
+        // src/cli.js providerSpecs and src/executionSandbox.js). Tool-risk
+        // is never a reason to exclude a model. PARAGON-D-004C:
+        // automaticEligibility is the catalog's validated/exposed state
+        // when a catalog is supplied — see the doc comment above — not an
+        // unconditional true.
+        automaticEligibility: catalogEntries ? Boolean(model.automaticEligibility) : true,
         toolExecutionRisk: "isolated",
-        source: providerConfig.models?.length ? "discovered" : "configured",
-        lastDiscoveryAt: now
+        source: catalogEntries ? model.discoverySource : providerConfig.models?.length ? "discovered" : "configured",
+        modelState: catalogEntries ? model.state : undefined,
+        catalogAgeHours: catalogEntries && model.validatedAt ? (Date.now() - Date.parse(model.validatedAt)) / 3_600_000 : undefined,
+        lastDiscoveryAt: catalogEntries ? model.discoveredAt : now
       });
     }
   }

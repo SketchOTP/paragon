@@ -299,6 +299,44 @@
         </div>
       </dialog>
 
+      <section class="panel model-routing-panel" id="model-catalog-panel">
+        <div class="panel-head">
+          <button type="button" class="panel-collapse-toggle" id="toggle-model-catalog" aria-expanded="false" aria-controls="model-catalog-body">
+            <svg class="chevron" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M8.12 9.29 12 13.17l3.88-3.88a1 1 0 1 1 1.41 1.42l-4.59 4.58a1 1 0 0 1-1.41 0L6.7 10.71a1 1 0 1 1 1.42-1.42Z"/></svg>
+            <h2>Model Catalog</h2>
+          </button>
+          <button type="button" id="refresh-catalog" class="btn ghost">Refresh all providers</button>
+        </div>
+        <div id="model-catalog-body" class="model-routing-body" hidden>
+          <p class="mode-banner live" id="model-catalog-note">
+            Only <strong>exposed</strong> or <strong>validated</strong> entries below are automatically routed —
+            a model appearing in a static list, an installed binary, or a previous config is a candidate only,
+            never automatic evidence of current availability (PARAGON-D-004C). Refreshes automatically every 24h.
+          </p>
+          <div class="registry-filter-bar">
+            <span class="registry-updated-note" id="catalog-schedule-note"></span>
+            <span class="registry-updated-note" id="catalog-updated-note"></span>
+          </div>
+          <div class="registry-table-wrap">
+            <table class="registry-table" id="catalog-table">
+              <thead>
+                <tr>
+                  <th>Provider</th>
+                  <th>Model</th>
+                  <th>State</th>
+                  <th>Auto-eligible</th>
+                  <th>Discovery source</th>
+                  <th>Last validated</th>
+                  <th>Last failure</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody id="catalog-table-body"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
       <section class="panel orchestration-panel" id="orchestration-panel">
         <div class="panel-head">
           <button type="button" class="panel-collapse-toggle" id="toggle-orchestration" aria-expanded="false" aria-controls="orchestration-body">

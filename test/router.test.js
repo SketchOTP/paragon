@@ -4,6 +4,7 @@ import test from "node:test";
 import { selectRoute, buildRankedAttempts, rankRegistryByTask, scoringMethodology, TASK_TYPES } from "../src/routing/router.js";
 import { buildModelRegistry } from "../src/routing/modelRegistry.js";
 import { resetForTests } from "../src/orchestration/liveEnforcement.js";
+import { defaultCatalog, replaceProviderModels } from "../src/modelCatalog.js";
 
 test.beforeEach(() => {
   resetForTests();
@@ -126,6 +127,26 @@ test("selectRoute returns null when nothing is eligible", () => {
   }
   const route = selectRoute({ config: cfg, statuses: {}, taskProfile: { taskType: "code", estimatedInputTokens: 100 } });
   assert.equal(route, null);
+});
+
+// PARAGON-D-004C: selectRoute must never route to a model the catalog has
+// assessed and rejected/retired, even if it's still sitting in
+// providerConfig.models.
+test("selectRoute excludes a model the catalog has rejected, routing to the next eligible candidate instead", () => {
+  const cfg = config();
+  const catalog = defaultCatalog();
+  replaceProviderModels(catalog, "claude", [
+    { modelId: "claude-opus-5", displayName: "Opus 5", state: "rejected", discoverySource: "documented_candidate" },
+    { modelId: "claude-haiku-4-5-20251001", displayName: "Haiku 4.5", state: "validated", discoverySource: "documented_candidate" }
+  ]);
+  const route = selectRoute({
+    config: cfg,
+    statuses: {},
+    taskProfile: { taskType: "code", estimatedInputTokens: 100 },
+    catalog
+  });
+  assert.ok(route);
+  assert.notEqual(route.model, "claude-opus-5", "a catalog-rejected model must never be the live routing decision");
 });
 
 test("rankRegistryByTask produces a 1-10 scale (1=best) per task type; antigravity now ranks like any other provider, and an unhealthy provider is excluded with a reason instead of a rank", () => {

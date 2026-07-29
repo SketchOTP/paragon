@@ -137,6 +137,12 @@ const els = {
   orchestrationBody: document.querySelector("#orchestration-body"),
   toggleOrchSettings: document.querySelector("#toggle-orch-settings"),
   orchSettingsBody: document.querySelector("#orch-settings-body"),
+  refreshCatalog: document.querySelector("#refresh-catalog"),
+  catalogTableBody: document.querySelector("#catalog-table-body"),
+  toggleModelCatalog: document.querySelector("#toggle-model-catalog"),
+  modelCatalogBody: document.querySelector("#model-catalog-body"),
+  catalogScheduleNote: document.querySelector("#catalog-schedule-note"),
+  catalogUpdatedNote: document.querySelector("#catalog-updated-note"),
   registryTaskFilter: document.querySelector("#registry-task-filter"),
   registryProviderFilter: document.querySelector("#registry-provider-filter"),
   registryHealthFilter: document.querySelector("#registry-health-filter"),
@@ -280,17 +286,21 @@ refreshStatus();
 refreshOrchestration();
 loadOrchestrationPolicy();
 refreshModelRegistry();
+refreshModelCatalog();
 setInterval(refreshOrchestration, 30000);
 setInterval(refreshModelRegistry, 30000);
+setInterval(refreshModelCatalog, 30000);
 
 els.save.addEventListener("click", () => saveConfig({ notify: true }));
 els.refreshStatus.addEventListener("click", () => refreshStatus({ manual: true }));
 els.refreshOrchestration?.addEventListener("click", () => refreshOrchestration({ manual: true }));
 els.saveOrchSettings?.addEventListener("click", saveOrchestrationSettings);
 els.refreshRegistry?.addEventListener("click", refreshModelRegistry);
+els.refreshCatalog?.addEventListener("click", () => refreshAllCatalogProviders());
 wireCollapsePanel(els.toggleModelRouting, els.modelRoutingBody);
 wireCollapsePanel(els.toggleOrchestration, els.orchestrationBody);
 wireCollapsePanel(els.toggleOrchSettings, els.orchSettingsBody);
+wireCollapsePanel(els.toggleModelCatalog, els.modelCatalogBody);
 els.registryTaskFilter?.addEventListener("change", () => {
   renderRegistryTable();
 });
@@ -1784,6 +1794,132 @@ async function refreshModelRegistry() {
     if (els.refreshRegistry) {
       els.refreshRegistry.disabled = false;
     }
+  }
+}
+
+const STATE_LABEL = {
+  exposed: "Exposed",
+  validated: "Validated",
+  stale: "Stale",
+  rejected: "Rejected",
+  unavailable: "Unavailable",
+  authentication_blocked: "Auth blocked",
+  quota_blocked: "Quota blocked",
+  entitlement_blocked: "Entitlement required",
+  configuration_blocked: "Config error",
+  provider_offline: "Provider offline",
+  unknown: "Candidate only",
+  retired: "Retired"
+};
+
+function relativeTimeFrom(iso) {
+  if (!iso) {
+    return "never";
+  }
+  const ms = Date.now() - Date.parse(iso);
+  if (!Number.isFinite(ms)) {
+    return "never";
+  }
+  const hours = ms / 3_600_000;
+  if (hours < 1) {
+    return `${Math.max(1, Math.round(ms / 60000))}m ago`;
+  }
+  if (hours < 48) {
+    return `${Math.round(hours)}h ago`;
+  }
+  return `${Math.round(hours / 24)}d ago`;
+}
+
+function renderCatalogTable(catalog) {
+  if (!els.catalogTableBody) {
+    return;
+  }
+  const rows = [];
+  for (const [provider, bucket] of Object.entries(catalog?.providers ?? {})) {
+    for (const model of Object.values(bucket.models ?? {})) {
+      rows.push({ provider, ...model });
+    }
+  }
+  rows.sort((a, b) => a.provider.localeCompare(b.provider) || a.modelId.localeCompare(b.modelId));
+
+  els.catalogTableBody.innerHTML = rows.length
+    ? rows
+        .map(
+          (r) => `
+      <tr>
+        <td>${escapeHtml(providerLabel(r.provider, config?.providers?.[r.provider]))}</td>
+        <td>${escapeHtml(r.displayName || r.modelId)}${r.isAlias ? ' <span class="registry-badge health-unknown">alias</span>' : ""}</td>
+        <td>${escapeHtml(STATE_LABEL[r.state] || r.state)}</td>
+        <td>${r.automaticEligibility ? '<span class="registry-badge health-healthy">yes</span>' : '<span class="registry-badge health-unhealthy">no</span>'}</td>
+        <td>${escapeHtml(r.discoverySource || "")}</td>
+        <td>${escapeHtml(relativeTimeFrom(r.validatedAt))}</td>
+        <td>${r.lastFailureClassification ? escapeHtml(`${r.lastFailureClassification} (${relativeTimeFrom(r.lastFailureAt)})`) : "—"}</td>
+        <td><button type="button" class="btn ghost sm" data-validate-provider="${escapeAttr(r.provider)}" data-validate-model="${escapeAttr(r.modelId)}">Validate now</button></td>
+      </tr>`
+        )
+        .join("")
+    : `<tr><td colspan="8">No providers have been assessed by the model catalog yet — the first automatic refresh runs on startup.</td></tr>`;
+
+  els.catalogTableBody.querySelectorAll("[data-validate-provider]").forEach((btn) => {
+    btn.addEventListener("click", () => validateCatalogModel(btn.dataset.validateProvider, btn.dataset.validateModel));
+  });
+}
+
+async function refreshModelCatalog() {
+  if (!els.catalogTableBody) {
+    return;
+  }
+  try {
+    const res = await apiFetch("/api/model-catalog");
+    if (!res.ok) {
+      return;
+    }
+    const catalog = await res.json();
+    renderCatalogTable(catalog);
+    if (els.catalogScheduleNote) {
+      const s = catalog.schedule ?? {};
+      els.catalogScheduleNote.textContent = s.refreshing
+        ? "Refresh in progress…"
+        : `Next automatic refresh: ${s.nextRefreshAt ? new Date(s.nextRefreshAt).toLocaleString() : "not yet scheduled"}`;
+    }
+    if (els.catalogUpdatedNote) {
+      els.catalogUpdatedNote.textContent = `Updated ${new Date().toLocaleTimeString()} — refreshes automatically every 30s.`;
+    }
+  } catch {
+    // Best-effort panel; a failed fetch here must not disturb the rest of the dashboard.
+  }
+}
+
+async function refreshAllCatalogProviders() {
+  if (els.refreshCatalog) {
+    els.refreshCatalog.disabled = true;
+  }
+  try {
+    const res = await apiFetch("/api/model-catalog/refresh", { method: "POST" });
+    if (res.ok) {
+      const body = await res.json();
+      renderCatalogTable(body.catalog);
+    }
+  } catch {
+    // Best-effort; the periodic poll will pick up the eventual result either way.
+  } finally {
+    if (els.refreshCatalog) {
+      els.refreshCatalog.disabled = false;
+    }
+    refreshModelCatalog();
+  }
+}
+
+async function validateCatalogModel(provider, modelId) {
+  try {
+    const res = await apiFetch(`/api/model-catalog/providers/${encodeURIComponent(provider)}/models/${encodeURIComponent(modelId)}/validate`, {
+      method: "POST"
+    });
+    if (res.ok) {
+      refreshModelCatalog();
+    }
+  } catch {
+    // Best-effort — the table simply won't update this click.
   }
 }
 

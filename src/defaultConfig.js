@@ -81,6 +81,17 @@ export const defaultConfig = {
     }
   },
   orchestration: DEFAULT_ORCHESTRATION_CONFIG,
+  // PARAGON-D-004C: automatic provider model-catalog refresh/validation.
+  // See src/modelCatalogScheduler.js + src/modelCatalogRefresh.js.
+  modelCatalog: {
+    enabled: true,
+    refreshIntervalHours: 24,
+    refreshOnStartupIfStale: true,
+    validationTtlHours: 24,
+    maxConcurrentProviderRefreshes: 1,
+    maxValidationProbesPerProvider: 10,
+    retryBackoffMinutes: 60
+  },
   integrations: {
     // Optional — enables real external benchmark citations (Artificial
     // Analysis / Design Arena, via OpenRouter's benchmarks API) in the

@@ -7,6 +7,7 @@ import { runProvider } from "./cli.js";
 import { addLog } from "./logStore.js";
 import { createBoundedResponseAccumulator, estimateRequestContext } from "./orchestration/contextEstimator.js";
 import { classifyError, boundedDiagnostic } from "./orchestration/errorClassification.js";
+import { classifyModelFailure } from "./modelCatalog.js";
 import { selectRoute, buildRankedAttempts } from "./routing/router.js";
 import { extractRoutingHints, requiresJsonValidation, isValidJson } from "./routing/hints.js";
 import { getBenchmarkData } from "./routing/benchmarks.js";
@@ -78,7 +79,7 @@ async function safely(fn, fallback = null) {
   }
 }
 
-export function registerOpenAiRoutes(app, getConfig, orchestration, getStatuses = () => ({})) {
+export function registerOpenAiRoutes(app, getConfig, orchestration, getStatuses = () => ({}), catalogStore = null) {
   app.use("/v1", createAuthMiddleware(getConfig, { allowLocalhost: false }));
 
   app.get("/v1/models", async (req, res) => {
@@ -142,7 +143,8 @@ export function registerOpenAiRoutes(app, getConfig, orchestration, getStatuses 
           estimatedInputTokens: contextEstimate.estimatedInputTokens
         },
         hints,
-        benchmarkRows: benchmarks?.rows ?? []
+        benchmarkRows: benchmarks?.rows ?? [],
+        catalog: catalogStore?.get() ?? null
       });
       let attempts = route ? buildRankedAttempts(route.ranking, config) : [];
       if (!route || !attempts.length) {
@@ -261,7 +263,7 @@ export function registerOpenAiRoutes(app, getConfig, orchestration, getStatuses 
 
     try {
       if (req.body.stream) {
-        await streamCompletion({ res, config, policy, isLive, attempts, prompt, started, orchestration, telemetry, cwd: runtimeDir });
+        await streamCompletion({ res, config, policy, isLive, attempts, prompt, started, orchestration, telemetry, cwd: runtimeDir, catalogStore });
         return;
       }
 
@@ -270,7 +272,8 @@ export function registerOpenAiRoutes(app, getConfig, orchestration, getStatuses 
         runId: telemetry?.run.id,
         policy,
         isLive,
-        cwd: runtimeDir
+        cwd: runtimeDir,
+        catalogStore
       });
       let content = sanitizeAssistantContent(result.stdout);
 
@@ -297,7 +300,8 @@ export function registerOpenAiRoutes(app, getConfig, orchestration, getStatuses 
               runId: telemetry?.run.id,
               policy,
               isLive,
-              cwd: runtimeDir
+              cwd: runtimeDir,
+              catalogStore
             });
             provider = escalated.provider;
             result = escalated.result;
@@ -399,7 +403,7 @@ function pickEnabledProvider(config, preferred) {
  * (PARAGON-D-002A). Provider order, selection, and retry policy are
  * unchanged from before this instrumentation existed.
  */
-async function runWithFallback(attempts, prompt, { onChunk, orchestration, runId, policy, isLive, cwd } = {}) {
+async function runWithFallback(attempts, prompt, { onChunk, orchestration, runId, policy, isLive, cwd, catalogStore } = {}) {
   let lastError;
 
   for (let index = 0; index < attempts.length; index += 1) {
@@ -448,6 +452,12 @@ async function runWithFallback(attempts, prompt, { onChunk, orchestration, runId
       if (isLive) {
         recordProviderResult(policy, name, true);
       }
+      // PARAGON-D-004C: only an explicit model id can be attributed to a
+      // catalog entry — a request that ran on the provider's own default
+      // (empty providerConfig.model) has no specific model to validate.
+      if (catalogStore && providerConfig.model) {
+        await safely(() => catalogStore.recordResult(name, providerConfig.model, { success: true }));
+      }
       return { provider: name, result };
     } catch (error) {
       pendingChunks.length = 0;
@@ -460,6 +470,14 @@ async function runWithFallback(attempts, prompt, { onChunk, orchestration, runId
       });
       if (isLive) {
         recordProviderResult(policy, name, false);
+      }
+      if (catalogStore && providerConfig.model) {
+        await safely(() =>
+          catalogStore.recordResult(name, providerConfig.model, {
+            success: false,
+            classification: classifyModelFailure(error)
+          })
+        );
       }
       if (attemptRecord) {
         await safely(() =>
@@ -489,7 +507,7 @@ async function runWithFallback(attempts, prompt, { onChunk, orchestration, runId
   throw new Error(CLIENT_ERROR_MESSAGE);
 }
 
-async function streamCompletion({ res, config, policy, isLive, attempts, prompt, started, orchestration, telemetry, cwd }) {
+async function streamCompletion({ res, config, policy, isLive, attempts, prompt, started, orchestration, telemetry, cwd, catalogStore }) {
   const id = `chatcmpl-${Date.now()}`;
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache, no-transform");
@@ -527,7 +545,7 @@ async function streamCompletion({ res, config, policy, isLive, attempts, prompt,
   };
 
   try {
-    const { provider } = await runWithFallback(attempts, prompt, { onChunk, orchestration, runId: telemetry?.run.id, policy, isLive, cwd });
+    const { provider } = await runWithFallback(attempts, prompt, { onChunk, orchestration, runId: telemetry?.run.id, policy, isLive, cwd, catalogStore });
     const durationMs = Date.now() - started;
     logParagonRequest(`POST /v1/chat/completions (stream) → 200 (${durationMs}ms) via ${provider}`, {
       provider

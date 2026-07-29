@@ -50,7 +50,8 @@ test.before(async () => {
       ...process.env,
       PARAGON_HOST: "127.0.0.1",
       PARAGON_PORT: String(PORT),
-      PARAGON_RUNTIME_ROOT: runtimeRoot
+      PARAGON_RUNTIME_ROOT: runtimeRoot,
+      PARAGON_MODEL_CATALOG_ENABLED: "0"
     },
     stdio: ["ignore", "pipe", "pipe"]
   });
