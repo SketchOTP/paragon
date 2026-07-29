@@ -92,6 +92,33 @@ export const defaultConfig = {
     maxValidationProbesPerProvider: 10,
     retryBackoffMinutes: 60
   },
+  // PARAGON-D-004D: capability-aware, reasoning-cost-aware,
+  // outcome-calibrated routing. `mode: "shadow"` computes the new ranking
+  // alongside the live PARAGON-D-004C1 decision without ever changing
+  // provider/model selection, fallback order, or the response. Live
+  // activation is gated behind a separate directive — these defaults
+  // preserve current live behavior exactly.
+  routingIntelligence: {
+    enabled: true,
+    mode: "shadow",
+    unknownLargeContextThresholdTokens: 50000,
+    telemetryRetentionDays: 30,
+    minimumSamplesForMeasuredEstimate: 10,
+    maximumAttempts: 4,
+    // 0..1 — how scarce the subscription allowance currently is. Scales the
+    // quota-scarcity penalty; 0 means "not scarce", not "free".
+    quotaScarcity: 0,
+    /** Reviewed alias records (see benchmarkCanonical.js normalizeAliasRecord). */
+    canonicalAliasMappings: [],
+    /** Operator-reviewed execution-profile overrides, keyed "provider/providerModelId". */
+    reasoningProfileMappings: {},
+    /** Operator-reviewed capability overrides, keyed "provider/providerModelId". */
+    capabilityMappings: {},
+    /** Operator-reviewed context overrides, keyed "provider/providerModelId". */
+    contextOverrides: {},
+    /** Bounded ring buffer of shadow decisions retained for comparison. */
+    shadowRecordLimit: 200
+  },
   integrations: {
     // Optional — enables real external benchmark citations (Artificial
     // Analysis / Design Arena, via OpenRouter's benchmarks API) in the

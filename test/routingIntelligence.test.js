@@ -1,0 +1,637 @@
+/**
+ * PARAGON-D-004D unit coverage (directive tests 1-22, 26, 27, 29, 30).
+ *
+ * Each test names the design rule it pins. The central rule under test is:
+ *
+ *   model identity  ≠  reasoning profile  ≠  speed profile
+ */
+
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import { parseExecutionProfile, reasoningEffortRank, providerGrammarSummary, hasProviderGrammar } from "../src/routing/executionProfile.js";
+import { estimateReasoningTokens, estimateEffectiveCost, reasoningFit } from "../src/routing/costModel.js";
+import { buildCapabilityProfile, checkRequiredCapabilities } from "../src/routing/capabilityProfile.js";
+import { buildContextModel, checkContextFit } from "../src/routing/contextModel.js";
+import { buildTaskProfile } from "../src/routing/taskProfile.js";
+import { resolveBenchmark, buildAliasIndex, normalizeAliasRecord } from "../src/routing/benchmarkCanonical.js";
+import { defaultTelemetryStore, recordOutcome, readTelemetry, pruneTelemetry, telemetryKey } from "../src/routing/outcomeTelemetry.js";
+import { rankCandidates, compareCandidates, routingConfidence, UTILITY_WEIGHTS } from "../src/routing/expectedUtility.js";
+import { buildAttemptPlan, planNextAfterFailure, applyFailureToPlan } from "../src/routing/attemptPlan.js";
+import { computeShadowRoute, buildShadowRecord } from "../src/routing/shadowEngine.js";
+import { createShadowStore } from "../src/routing/shadowStore.js";
+import { defaultCatalog, replaceProviderModels } from "../src/modelCatalog.js";
+import { resetForTests } from "../src/orchestration/liveEnforcement.js";
+
+test.beforeEach(() => {
+  resetForTests();
+});
+
+// ---------------------------------------------------------------- Phase 1
+
+test("1. provider-specific reasoning suffix parsing separates identity from effort", () => {
+  const r = parseExecutionProfile("cursor", "gpt-5.6-terra-max");
+  assert.equal(r.providerModelId, "gpt-5.6-terra-max");
+  assert.equal(r.canonicalModelId, "gpt-5.6-terra");
+  assert.equal(r.reasoningEffort, "max");
+  assert.equal(r.speedMode, "standard");
+});
+
+test("2. combined low-fast profile parses both dimensions", () => {
+  const r = parseExecutionProfile("cursor", "gpt-5.6-terra-low-fast");
+  assert.equal(r.canonicalModelId, "gpt-5.6-terra");
+  assert.equal(r.reasoningEffort, "low");
+  assert.equal(r.speedMode, "fast");
+  assert.equal(r.executionProfile, "effort:low|speed:fast");
+});
+
+test("2b. cursor's `thinking` marker is a model variant, not an effort (both forms exist upstream)", () => {
+  const plain = parseExecutionProfile("cursor", "claude-opus-5-high");
+  const thinking = parseExecutionProfile("cursor", "claude-opus-5-thinking-high");
+  assert.equal(plain.canonicalModelId, "claude-opus-5");
+  assert.equal(thinking.canonicalModelId, "claude-opus-5");
+  assert.equal(thinking.modelVariant, "thinking");
+  assert.equal(plain.modelVariant, null);
+  assert.notEqual(plain.executionProfile, thinking.executionProfile);
+});
+
+test("3. an unknown suffix stays part of the canonical model id", () => {
+  const r = parseExecutionProfile("cursor", "composer-2.5");
+  assert.equal(r.canonicalModelId, "composer-2.5");
+  assert.equal(r.reasoningEffort, "unknown");
+});
+
+// The exact asymmetry the directive warns about, verified against real
+// production ids: `max` is an effort modifier for cursor and part of the
+// model identity for codex.
+test("4. no generic stripping of max/high/low/fast — a provider without a declared grammar keeps its whole id", () => {
+  const codexMax = parseExecutionProfile("codex", "gpt-5.1-codex-max");
+  assert.equal(codexMax.canonicalModelId, "gpt-5.1-codex-max", "codex `max` is model identity and must survive");
+  assert.equal(codexMax.reasoningEffort, "unknown");
+  assert.equal(codexMax.profileParseSource, "no_provider_grammar");
+
+  const cursorMax = parseExecutionProfile("cursor", "gpt-5.6-sol-max");
+  assert.equal(cursorMax.canonicalModelId, "gpt-5.6-sol", "cursor `max` is an effort modifier");
+  assert.equal(cursorMax.reasoningEffort, "max");
+
+  // antigravity: `flash`/`pro` are Google model identity, `high` is effort.
+  const agy = parseExecutionProfile("antigravity", "gemini-3.6-flash-high");
+  assert.equal(agy.canonicalModelId, "gemini-3.6-flash");
+  assert.equal(agy.reasoningEffort, "high");
+
+  // claude has no effort encoding at all.
+  assert.equal(parseExecutionProfile("claude", "claude-opus-4-8").canonicalModelId, "claude-opus-4-8");
+  assert.equal(hasProviderGrammar("claude"), false);
+  assert.equal(hasProviderGrammar("codex"), false);
+  assert.ok(providerGrammarSummary().cursor.effortTokens.includes("max"));
+});
+
+test("4b. an operator-reviewed explicit mapping overrides grammar inference", () => {
+  const r = parseExecutionProfile("codex", "gpt-5.1-codex-max", {
+    explicitMappings: { "codex/gpt-5.1-codex-max": { canonicalModelId: "gpt-5.1-codex", reasoningEffort: "max", speedMode: "standard" } }
+  });
+  assert.equal(r.canonicalModelId, "gpt-5.1-codex");
+  assert.equal(r.reasoningEffort, "max");
+  assert.equal(r.profileParseSource, "explicit_mapping");
+});
+
+// ---------------------------------------------------------------- Phase 7
+
+test("5. canonical benchmark match preserves the execution profile and is labeled as base-model evidence", () => {
+  const rows = [{ model_permaslug: "openai/gpt-5.6-terra", display_name: "GPT-5.6 Terra", coding_index: 70, pricing: { prompt: "0.000002" } }];
+  const resolved = resolveBenchmark({ providerModelId: "gpt-5.6-terra-max", canonicalModelId: "gpt-5.6-terra", benchmarkRows: rows });
+  assert.equal(resolved.matchMethod, "canonical_model");
+  assert.equal(resolved.appliesToCanonicalModel, "gpt-5.6-terra");
+  assert.match(resolved.note, /canonical base model/);
+  // Substring guessing stays gone: a decorated id must not match directly.
+  assert.equal(resolveBenchmark({ providerModelId: "gpt-5.6-terra-max", canonicalModelId: "gpt-5.6-terra-max", benchmarkRows: rows }).matchMethod, "none");
+});
+
+test("5b. an alias record without provenance is rejected rather than silently trusted", () => {
+  assert.equal(normalizeAliasRecord({ providerModelId: "a", canonicalModelId: "b" }).ok, false);
+  const good = normalizeAliasRecord({
+    providerModelId: "a",
+    canonicalModelId: "b",
+    benchmarkModelId: "vendor/b",
+    rationale: "same weights, different label",
+    reviewedAt: "2026-07-29",
+    source: "operator"
+  });
+  assert.equal(good.ok, true);
+  const { index, rejected } = buildAliasIndex([{ providerModelId: "x" }, good.record]);
+  assert.equal(rejected.length, 1);
+  assert.equal(index.size, 1);
+});
+
+// ---------------------------------------------------------------- Phase 2
+
+test("6. reasoning effort increases expected token consumption monotonically", () => {
+  const order = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+  let previous = -1;
+  for (const effort of order) {
+    const { expectedReasoningTokens } = estimateReasoningTokens({ reasoningEffort: effort, expectedVisibleOutputTokens: 1000 });
+    assert.ok(expectedReasoningTokens >= previous, `${effort} must not expect fewer reasoning tokens than the previous level`);
+    previous = expectedReasoningTokens;
+  }
+  assert.ok(reasoningEffortRank("max") > reasoningEffortRank("low"));
+  assert.equal(reasoningEffortRank("unknown"), null);
+});
+
+test("6b. reasoning effort increases quota burn monotonically for a subscription provider", () => {
+  const costFor = (reasoningEffort) =>
+    estimateEffectiveCost({
+      provider: "cursor",
+      executionProfile: { reasoningEffort, speedMode: "standard" },
+      taskProfile: { workType: "code", complexity: "normal", requestedMaxOutputTokens: 1000 },
+      estimatedInputTokens: 1000
+    });
+  const low = costFor("low");
+  const max = costFor("max");
+  assert.ok(max.estimatedQuotaBurn > low.estimatedQuotaBurn, "a max profile must burn more allowance than low");
+  assert.ok(max.effectiveExpectedTokens > low.effectiveExpectedTokens);
+  assert.equal(low.isSubscriptionProvider, true);
+});
+
+test("7. a max-reasoning candidate loses a trivial task on resource cost", () => {
+  const shared = {
+    provider: "cursor",
+    catalogEligible: true,
+    health: "healthy",
+    isHttpProvider: false,
+    costClass: "standard",
+    capabilities: { chatCompletions: true, streaming: true, capabilityConfidence: "high" },
+    contextModel: { effectiveUsableContextWindow: 200000, contextConfidence: "high", outputTokenReserve: 4096 },
+    benchmark: null,
+    telemetry: null
+  };
+  const taskProfile = buildTaskProfile({ prompt: "fix this typo", estimatedInputTokens: 500 });
+  assert.equal(taskProfile.complexity, "trivial");
+  assert.equal(taskProfile.reasoningDemand, "minimal");
+
+  const { winner, ranked } = rankCandidates(
+    [
+      { ...shared, providerModelId: "m-max", executionProfile: parseExecutionProfile("cursor", "m-max") },
+      { ...shared, providerModelId: "m-low", executionProfile: parseExecutionProfile("cursor", "m-low") }
+    ],
+    { taskProfile, unknownLargeContextThresholdTokens: 50000 }
+  );
+  assert.equal(winner.reasoningEffort, "low", "over-reasoning a trivial task must lose");
+  const maxCandidate = ranked.find((c) => c.reasoningEffort === "max");
+  assert.ok(maxCandidate.components.expectedTotalResourceCost > winner.components.expectedTotalResourceCost);
+  assert.ok(maxCandidate.components.reasoningFitAlignment < 0);
+});
+
+test("8. a max-reasoning candidate can win a high-risk complex task when quality justifies the cost", () => {
+  const shared = {
+    provider: "cursor",
+    catalogEligible: true,
+    health: "healthy",
+    isHttpProvider: false,
+    costClass: "standard",
+    capabilities: { chatCompletions: true, streaming: true, capabilityConfidence: "high" },
+    contextModel: { effectiveUsableContextWindow: 400000, contextConfidence: "high", outputTokenReserve: 4096 },
+    telemetry: null
+  };
+  const taskProfile = buildTaskProfile({
+    prompt: "audit this authentication bypass vulnerability across the whole system and prove every edge case",
+    estimatedInputTokens: 2000
+  });
+  assert.equal(taskProfile.risk, "security_critical");
+  assert.equal(taskProfile.reasoningDemand, "maximum");
+
+  const { winner } = rankCandidates(
+    [
+      { ...shared, providerModelId: "m-max", executionProfile: parseExecutionProfile("cursor", "m-max") },
+      { ...shared, providerModelId: "m-low", executionProfile: parseExecutionProfile("cursor", "m-low") }
+    ],
+    { taskProfile, unknownLargeContextThresholdTokens: 50000 }
+  );
+  assert.equal(winner.reasoningEffort, "max", "a maximum-reasoning-demand task must be able to justify max effort");
+});
+
+test("9. provider-returned/measured reasoning tokens override the ordinal prior", () => {
+  const telemetry = { observedReasoningTokens: 42, sampleCount: 50 };
+  const measured = estimateReasoningTokens({ reasoningEffort: "max", expectedVisibleOutputTokens: 1000, telemetry });
+  assert.equal(measured.reasoningEstimateSource, "measured_history");
+  assert.equal(measured.expectedReasoningTokens, 42, "measurement must beat the prior even when the prior is much larger");
+  const prior = estimateReasoningTokens({ reasoningEffort: "max", expectedVisibleOutputTokens: 1000 });
+  assert.equal(prior.reasoningEstimateSource, "ordinal_prior");
+  assert.ok(prior.expectedReasoningTokens > 42);
+});
+
+test("10. unknown reasoning burn receives an uncertainty penalty and is not assumed to be zero", () => {
+  const unknown = estimateReasoningTokens({ reasoningEffort: "unknown", expectedVisibleOutputTokens: 1000 });
+  assert.equal(unknown.expectedReasoningTokens, null, "unknown must not silently become 0");
+  assert.equal(unknown.reasoningBurnClass, "unknown");
+
+  const cost = estimateEffectiveCost({
+    provider: "codex",
+    executionProfile: { reasoningEffort: "unknown", speedMode: "unknown" },
+    taskProfile: { workType: "code", complexity: "normal" },
+    estimatedInputTokens: 1000
+  });
+  assert.ok(cost.costUncertainty >= 0.5);
+});
+
+test("11. subscription-backed calls receive a quota-burn cost and are never reported free", () => {
+  const subscription = estimateEffectiveCost({
+    provider: "claude",
+    isHttpProvider: false,
+    executionProfile: { reasoningEffort: "medium", speedMode: "standard" },
+    taskProfile: { workType: "code", complexity: "normal" },
+    estimatedInputTokens: 5000
+  });
+  assert.equal(subscription.isSubscriptionProvider, true);
+  assert.ok(subscription.estimatedQuotaBurn > 0);
+  assert.ok(subscription.estimatedTotalResourceCost > 0, "a subscription call must never cost zero resources");
+
+  const http = estimateEffectiveCost({
+    provider: "lmstudio",
+    isHttpProvider: true,
+    executionProfile: { reasoningEffort: "medium", speedMode: "standard" },
+    taskProfile: { workType: "code", complexity: "normal" },
+    estimatedInputTokens: 5000
+  });
+  assert.equal(http.isSubscriptionProvider, false);
+  assert.equal(http.quotaBurnSource, "not_applicable");
+});
+
+test("11b. reasoningFit is two-sided — under-reasoning is penalized as well as over-reasoning", () => {
+  assert.ok(reasoningFit({ reasoningEffort: "max", reasoningDemand: "minimal" }).alignment < 0);
+  assert.ok(reasoningFit({ reasoningEffort: "none", reasoningDemand: "maximum" }).alignment < 0);
+  assert.equal(reasoningFit({ reasoningEffort: "unknown", reasoningDemand: "high" }).alignment, 0);
+});
+
+// ---------------------------------------------------------------- Phase 3
+
+test("12. request capability hard gates exclude candidates that cannot satisfy the contract", () => {
+  const caps = { chatCompletions: true, streaming: true, toolCalls: false, structuredOutput: "unknown" };
+  assert.equal(checkRequiredCapabilities(caps, ["chatCompletions", "streaming"]).ok, true);
+  const toolGate = checkRequiredCapabilities(caps, ["toolCalls"]);
+  assert.equal(toolGate.ok, false);
+  assert.equal(toolGate.reasonCode, "routing.capabilityUnsupported.toolCalls");
+});
+
+test("13. unknown tool capability cannot satisfy a tool request", () => {
+  const caps = { chatCompletions: true, toolCalls: "unknown" };
+  const gate = checkRequiredCapabilities(caps, ["toolCalls"]);
+  assert.equal(gate.ok, false);
+  assert.equal(gate.observed, "unknown", "unknown must never be treated as supported");
+});
+
+test("13b. builtin CLI providers report toolCalls false structurally, since PARAGON invokes them tools-disabled", () => {
+  const profile = buildCapabilityProfile({ provider: "claude", providerModelId: "claude-opus-5", catalogEntry: { state: "validated", lastSuccessAt: "now" } });
+  assert.equal(profile.toolCalls, false);
+  assert.equal(profile.chatCompletions, true);
+  assert.equal(profile.streaming, true);
+});
+
+test("13c. a parsed reasoning effort is itself evidence that the provider exposes reasoning controls", () => {
+  const executionProfile = parseExecutionProfile("cursor", "gpt-5.6-sol-high");
+  const profile = buildCapabilityProfile({ provider: "cursor", providerModelId: "gpt-5.6-sol-high", executionProfile });
+  assert.equal(profile.reasoningControls, true);
+});
+
+// ---------------------------------------------------------------- Phase 4
+
+test("14. a practical provider-wrapper context limit overrides the model-advertised limit", () => {
+  const model = buildContextModel({
+    provider: "claude",
+    canonicalModelId: "claude-opus-5",
+    catalogEntry: { metadata: { context_length: 200000 } },
+    operatorConfig: { wrapperContextWindow: 32000 },
+    outputTokenReserve: 4096,
+    safetyMarginRatio: 0
+  });
+  assert.equal(model.modelAdvertisedContextWindow, 200000);
+  assert.equal(model.providerWrapperContextWindow, 32000);
+  assert.equal(model.effectiveUsableContextWindow, 32000 - 4096, "the lower practical limit must govern");
+});
+
+test("15. unknown context capacity is ineligible for a large request but fine for a small one", () => {
+  const unknown = buildContextModel({ provider: "x", canonicalModelId: "mystery-model" });
+  assert.equal(unknown.effectiveUsableContextWindow, null);
+
+  const large = checkContextFit({ contextModel: unknown, estimatedInputTokens: 80000, unknownLargeContextThresholdTokens: 50000 });
+  assert.equal(large.ok, false);
+  assert.equal(large.reasonCode, "routing.unknownContextForLargeRequest");
+
+  const small = checkContextFit({ contextModel: unknown, estimatedInputTokens: 1000, unknownLargeContextThresholdTokens: 50000 });
+  assert.equal(small.ok, true);
+  assert.equal(small.unknownContext, true);
+});
+
+test("16. the output-token reserve counts against context eligibility", () => {
+  const model = buildContextModel({
+    provider: "x",
+    canonicalModelId: "m",
+    operatorConfig: { contextWindow: 10000, outputTokenReserve: 2000 },
+    safetyMarginRatio: 0
+  });
+  assert.equal(model.effectiveUsableContextWindow, 8000);
+  assert.equal(checkContextFit({ contextModel: model, estimatedInputTokens: 7000, requiredOutputTokens: 2000 }).ok, false);
+  assert.equal(checkContextFit({ contextModel: model, estimatedInputTokens: 5000, requiredOutputTokens: 2000 }).ok, true);
+});
+
+// ---------------------------------------------------------------- Phase 5
+
+test("17. the task profile is multidimensional — a short bug fix differs from a production regression", () => {
+  const trivial = buildTaskProfile({ prompt: "fix a simple typo in the readme", estimatedInputTokens: 200 });
+  const severe = buildTaskProfile({
+    prompt: "diagnose the root cause of this intermittent production outage causing data loss across services",
+    estimatedInputTokens: 120000
+  });
+
+  assert.equal(trivial.complexity, "trivial");
+  assert.equal(trivial.reasoningDemand, "minimal");
+  assert.equal(trivial.qualityPreference, "economy");
+
+  assert.equal(severe.risk, "production");
+  assert.equal(severe.complexity, "complex");
+  assert.equal(severe.reasoningDemand, "high");
+  assert.equal(severe.contextBand, "large");
+  assert.equal(severe.qualityPreference, "balanced");
+  assert.notEqual(trivial.reasoningDemand, severe.reasoningDemand);
+});
+
+test("17b. work type is scored, not first-regex-match", () => {
+  // "review" signals outweigh "explain" signals rather than depending on
+  // declaration order.
+  const profile = buildTaskProfile({ prompt: "review this pull request diff and explain the regression risk" });
+  assert.equal(profile.workType, "review");
+  assert.ok(profile.workTypeScores.review > 0);
+  assert.ok(profile.workTypeScores.explain > 0);
+});
+
+test("17c. required capabilities are derived from the actual request shape", () => {
+  const profile = buildTaskProfile({
+    prompt: "return structured data",
+    body: { stream: true, tools: [{ type: "function" }], response_format: { type: "json_schema" } }
+  });
+  assert.ok(profile.requiredCapabilities.includes("streaming"));
+  assert.ok(profile.requiredCapabilities.includes("toolCalls"));
+  assert.ok(profile.requiredCapabilities.includes("jsonSchema"));
+  assert.equal(profile.outputContract, "json_schema");
+});
+
+// ---------------------------------------------------------------- Phase 9
+
+test("18. same-provider alternate models enter the attempt plan", () => {
+  const config = { providers: { cursor: { enabled: true }, codex: { enabled: true } } };
+  const ranked = [
+    { provider: "cursor", providerModelId: "a-high", canonicalModelId: "a", excluded: false, expectedUtility: 10 },
+    { provider: "cursor", providerModelId: "a-low", canonicalModelId: "a", excluded: false, expectedUtility: 9 },
+    { provider: "codex", providerModelId: "b", canonicalModelId: "b", excluded: false, expectedUtility: 8 }
+  ];
+  const plan = buildAttemptPlan(ranked, config, { maximumAttempts: 4, maxPerProvider: 2 });
+  assert.deepEqual(plan.map((a) => a.registryModel), ["a-high", "a-low", "b"]);
+  assert.equal(plan[1].alternateIndexForProvider, 1);
+});
+
+test("19. a provider-wide failure skips every remaining attempt for that provider", () => {
+  const plan = [
+    { name: "cursor", registryModel: "a-high", executionProfile: "effort:high" },
+    { name: "cursor", registryModel: "a-low", executionProfile: "effort:low" },
+    { name: "codex", registryModel: "b", executionProfile: "default" }
+  ];
+  const decision = planNextAfterFailure({ classification: "QUOTA_EXHAUSTED", attempt: plan[0], remainingPlan: plan.slice(1) });
+  assert.equal(decision.action, "skip_provider");
+  const filtered = applyFailureToPlan(plan, { attempt: plan[0], classification: "QUOTA_EXHAUSTED" });
+  assert.deepEqual(filtered.map((a) => a.registryModel), ["b"]);
+});
+
+test("20. a model-specific failure preserves other models from the same provider", () => {
+  const plan = [
+    { name: "cursor", registryModel: "a-high", executionProfile: "effort:high" },
+    { name: "cursor", registryModel: "a-low", executionProfile: "effort:low" },
+    { name: "codex", registryModel: "b", executionProfile: "default" }
+  ];
+  const decision = planNextAfterFailure({ classification: "MODEL_NOT_FOUND", attempt: plan[0], remainingPlan: plan.slice(1) });
+  assert.equal(decision.action, "next_same_provider");
+  const filtered = applyFailureToPlan(plan, { attempt: plan[0], classification: "MODEL_NOT_FOUND" });
+  assert.deepEqual(filtered.map((a) => a.registryModel), ["a-low", "b"], "the sibling model must survive");
+});
+
+test("20b. a transient failure retries within budget then advances", () => {
+  const attempt = { name: "cursor", registryModel: "a", executionProfile: "default" };
+  assert.equal(planNextAfterFailure({ classification: "RATE_LIMITED", attempt, remainingPlan: [], retriesUsed: 0 }).action, "retry");
+  assert.equal(planNextAfterFailure({ classification: "RATE_LIMITED", attempt, remainingPlan: [], retriesUsed: 1 }).action, "next_provider");
+});
+
+// ---------------------------------------------------------------- Phase 10
+
+test("21. tie-breaking is explicit and never falls back to insertion order", () => {
+  const base = (overrides) => ({
+    provider: "p",
+    providerModelId: "m",
+    expectedUtility: 10,
+    excluded: false,
+    components: {
+      successSource: "prior",
+      probabilityOfSuccessfulCompletion: 0.85,
+      expectedTotalResourceCost: 5,
+      expectedQuotaScarcityPenalty: 0,
+      measuredLatencyP95Ms: null
+    },
+    telemetry: { measurementConfidence: "none", lastSuccessAt: null },
+    ...overrides
+  });
+
+  // Equal utility, differing cost -> cheaper wins.
+  const cheap = base({ providerModelId: "cheap", components: { ...base({}).components, expectedTotalResourceCost: 2 } });
+  const pricey = base({ providerModelId: "pricey" });
+  assert.ok(compareCandidates(cheap, pricey) < 0);
+
+  // Equal utility and cost, differing evidence -> measured wins.
+  const measured = base({ providerModelId: "measured", components: { ...base({}).components, successSource: "measured" } });
+  assert.ok(compareCandidates(measured, pricey) < 0);
+
+  // Fully equal -> deterministic lexical anchor, not array position.
+  const a = base({ provider: "aaa", providerModelId: "x" });
+  const b = base({ provider: "zzz", providerModelId: "x" });
+  assert.ok(compareCandidates(a, b) < 0);
+  assert.ok(compareCandidates(b, a) > 0);
+});
+
+test("22. confidence reflects score margin and evidence, not merely candidate count", () => {
+  const candidate = (utility, evidenceShare) => ({
+    excluded: false,
+    expectedUtility: utility,
+    measuredEvidenceShare: evidenceShare,
+    telemetry: { measurementConfidence: evidenceShare > 0.5 ? "high" : "none" },
+    capabilities: { capabilityConfidence: "high" },
+    contextModel: { contextConfidence: "high" },
+    benchmark: { matchMethod: "exact", matchConfidence: "high" },
+    components: { uncertaintyPenalty: 0.1 }
+  });
+
+  const wide = routingConfidence([candidate(100, 0.8), candidate(40, 0.8)]);
+  const narrow = routingConfidence([candidate(100, 0.1), candidate(99.9, 0.1)]);
+  assert.equal(wide.level, "high");
+  assert.equal(narrow.level, "low", "a near-tie built on priors must not report high confidence");
+  assert.ok(wide.margin > narrow.margin);
+
+  assert.equal(routingConfidence([candidate(10, 0.5)]).level, "only_eligible");
+  assert.equal(routingConfidence([candidate(10, 0.5), candidate(1, 0.5)], { explicitlyForced: true }).level, "explicit_validated");
+});
+
+// ---------------------------------------------------------------- Phase 6
+
+test("26. telemetry stores no prompts or responses", () => {
+  const store = defaultTelemetryStore();
+  recordOutcome(store, {
+    provider: "cursor",
+    providerModelId: "m-high",
+    executionProfile: "effort:high",
+    taskProfile: { workType: "code", complexity: "normal", contextBand: "small", outputContract: "code" },
+    success: true,
+    completionLatencyMs: 1200,
+    usage: { inputTokens: 100, visibleOutputTokens: 200, reasoningTokens: 300 }
+  });
+  const serialized = JSON.stringify(store);
+  assert.ok(!/prompt|response|content|message/i.test(serialized), "no content-bearing field may appear in the store");
+  const entry = store.entries[telemetryKey({ provider: "cursor", providerModelId: "m-high", executionProfile: "effort:high", workType: "code", complexity: "normal", contextBand: "small", outputContract: "code" })];
+  assert.equal(entry.successCount, 1);
+  assert.equal(entry.observedReasoningTokens, 300);
+});
+
+test("27. rolling aggregates stay bounded regardless of request volume", () => {
+  const store = defaultTelemetryStore();
+  for (let i = 0; i < 500; i += 1) {
+    recordOutcome(store, {
+      provider: "cursor",
+      providerModelId: "m-high",
+      executionProfile: "effort:high",
+      taskProfile: { workType: "code", complexity: "normal", contextBand: "small", outputContract: "code" },
+      success: i % 7 !== 0,
+      completionLatencyMs: 500 + i,
+      usage: { inputTokens: 100, visibleOutputTokens: 200, reasoningTokens: 50 }
+    });
+  }
+  // Two keys only (task-specific + model-wide); no per-request growth.
+  assert.equal(Object.keys(store.entries).length, 2);
+  const serializedSize = JSON.stringify(store).length;
+  assert.ok(serializedSize < 4000, `store must stay small, got ${serializedSize} bytes`);
+
+  const read = readTelemetry(store, { provider: "cursor", providerModelId: "m-high", executionProfile: "effort:high", workType: "code", complexity: "normal", contextBand: "small", outputContract: "code" });
+  assert.equal(read.sampleCount, 500);
+  assert.ok(read.completionLatencyP50 != null);
+});
+
+test("27b. success probability is shrunk toward a prior so one lucky request cannot outrank dense evidence", () => {
+  const lucky = defaultTelemetryStore();
+  recordOutcome(lucky, { provider: "p", providerModelId: "new", success: true, taskProfile: {} });
+  const luckyRead = readTelemetry(lucky, { provider: "p", providerModelId: "new" });
+  assert.ok(luckyRead.smoothedSuccessProbability < 0.8, `1/1 must not read as ~1.0, got ${luckyRead.smoothedSuccessProbability}`);
+
+  const proven = defaultTelemetryStore();
+  for (let i = 0; i < 200; i += 1) {
+    recordOutcome(proven, { provider: "p", providerModelId: "proven", success: true, taskProfile: {} });
+  }
+  const provenRead = readTelemetry(proven, { provider: "p", providerModelId: "proven" });
+  assert.ok(provenRead.smoothedSuccessProbability > luckyRead.smoothedSuccessProbability);
+});
+
+test("27c. pruning drops entries outside the retention window", () => {
+  const store = defaultTelemetryStore();
+  recordOutcome(store, { provider: "p", providerModelId: "old", success: true, taskProfile: {}, now: new Date(Date.now() - 100 * 24 * 3_600_000).toISOString() });
+  recordOutcome(store, { provider: "p", providerModelId: "fresh", success: true, taskProfile: {} });
+  const { removed } = pruneTelemetry(store, { retentionDays: 30 });
+  assert.ok(removed > 0);
+  assert.ok(Object.keys(store.entries).some((k) => k.includes("fresh")));
+  assert.ok(!Object.keys(store.entries).some((k) => k.includes("old")));
+});
+
+// ---------------------------------------------------------------- Phase 12
+
+test("24/25. the shadow engine is pure — it produces a ranking without executing any provider", () => {
+  const config = {
+    routing: { taskRoutes: {} },
+    providers: { cursor: { enabled: true, type: "builtin", model: "", models: [] } },
+    modelCatalog: { validationTtlHours: 24 }
+  };
+  const catalog = defaultCatalog();
+  replaceProviderModels(catalog, "cursor", [
+    { modelId: "gpt-5.6-sol-max", displayName: "sol max", state: "validated", discoverySource: "cli_command" },
+    { modelId: "gpt-5.6-sol-low", displayName: "sol low", state: "validated", discoverySource: "cli_command" }
+  ]);
+  const taskProfile = buildTaskProfile({ prompt: "implement a function", estimatedInputTokens: 1000 });
+
+  const shadow = computeShadowRoute({ config, statuses: {}, catalog, telemetryStore: defaultTelemetryStore(), benchmarkRows: [], taskProfile, settings: {} });
+  assert.ok(shadow.winner, "shadow must produce a winner");
+  assert.equal(shadow.eligibleCount, 2);
+  // Both execution profiles are represented separately.
+  const efforts = shadow.ranked.filter((c) => !c.excluded).map((c) => c.reasoningEffort).sort();
+  assert.deepEqual(efforts, ["low", "max"]);
+  assert.ok(shadow.attemptPlan.length >= 1);
+});
+
+test("24b. a shadow record contains no prompt or response and reports agreement explicitly", () => {
+  const taskProfile = buildTaskProfile({ prompt: "some secret internal prompt text", estimatedInputTokens: 100 });
+  const record = buildShadowRecord({
+    taskProfile,
+    shadow: {
+      winner: { provider: "cursor", providerModelId: "m-low", canonicalModelId: "m", reasoningEffort: "low", speedMode: "standard", expectedUtility: 5, components: {}, cost: {}, benchmark: {}, measuredEvidenceShare: 0 },
+      confidence: { level: "medium" },
+      eligibleCount: 2,
+      attemptPlan: []
+    },
+    liveProvider: "codex",
+    liveModel: "gpt-5.4"
+  });
+  assert.ok(!JSON.stringify(record).includes("secret internal prompt"));
+  assert.equal(record.disagrees, true);
+  assert.equal(record.live.provider, "codex");
+  assert.equal(record.shadow.provider, "cursor");
+});
+
+test("25b. the shadow store is a bounded ring buffer and summarizes disagreement", () => {
+  const store = createShadowStore({ limit: 10 });
+  for (let i = 0; i < 50; i += 1) {
+    store.record({ shadow: { provider: "cursor", providerModelId: "m" }, live: { provider: i % 2 ? "cursor" : "codex", model: "m" }, agrees: i % 2 === 1 });
+  }
+  const summary = store.summary();
+  assert.equal(summary.retained, 10, "the buffer must not grow with traffic");
+  assert.equal(summary.total, 50);
+  assert.ok(summary.agreementRate > 0 && summary.agreementRate < 1);
+});
+
+// ---------------------------------------------------------------- invariants
+
+test("28/29. D-004C1 integrity invariants hold in the new engine", () => {
+  const config = {
+    routing: { taskRoutes: {} },
+    providers: {
+      cursor: { enabled: true, type: "builtin", model: "stale-configured-model", models: [{ id: "stale-configured-model" }] },
+      unassessed: { enabled: true, type: "builtin", model: "config-only", models: [{ id: "config-only" }] }
+    },
+    modelCatalog: { validationTtlHours: 24 }
+  };
+  const catalog = defaultCatalog();
+  replaceProviderModels(catalog, "cursor", [
+    { modelId: "good-model", displayName: "good", state: "validated", discoverySource: "cli_command" },
+    { modelId: "stale-configured-model", displayName: "stale", state: "rejected", discoverySource: "cli_command" },
+    { modelId: "text-embedding-thing", displayName: "emb", state: "exposed", discoverySource: "http_models_endpoint" }
+  ]);
+  const taskProfile = buildTaskProfile({ prompt: "implement a function", estimatedInputTokens: 100 });
+  const shadow = computeShadowRoute({ config, statuses: {}, catalog, telemetryStore: defaultTelemetryStore(), benchmarkRows: [], taskProfile, settings: {} });
+
+  const eligibleIds = shadow.ranked.filter((c) => !c.excluded).map((c) => c.providerModelId);
+  assert.ok(eligibleIds.includes("good-model"));
+  assert.ok(!eligibleIds.includes("stale-configured-model"), "a catalog-rejected model must stay excluded");
+  assert.ok(!eligibleIds.includes("text-embedding-thing"), "a non-chat model must stay excluded");
+  assert.ok(!eligibleIds.includes("config-only"), "an unassessed provider must not gain config trust");
+  const pending = shadow.ranked.find((c) => c.provider === "unassessed");
+  assert.equal(pending.reasonCode, "routing.providerPendingAssessment");
+
+  // Every attempt is traceable to an eligible ranked row.
+  for (const attempt of shadow.attemptPlan) {
+    assert.ok(eligibleIds.includes(attempt.providerModelId));
+  }
+});
+
+test("29b. utility weights are exported for inspection rather than hidden in the formula", () => {
+  assert.ok(UTILITY_WEIGHTS.qualityScale > 0);
+  assert.ok("resourceCostScale" in UTILITY_WEIGHTS);
+  assert.ok("uncertaintyScale" in UTILITY_WEIGHTS);
+});

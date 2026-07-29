@@ -144,6 +144,23 @@ const els = {
   modelCatalogBody: document.querySelector("#model-catalog-body"),
   catalogScheduleNote: document.querySelector("#catalog-schedule-note"),
   catalogUpdatedNote: document.querySelector("#catalog-updated-note"),
+  toggleRoutingIntelligence: document.querySelector("#toggle-routing-intelligence"),
+  routingIntelligenceBody: document.querySelector("#routing-intelligence-body"),
+  runScenario: document.querySelector("#run-scenario"),
+  scenarioContext: document.querySelector("#scenario-context"),
+  scenarioCustomWrap: document.querySelector("#scenario-custom-wrap"),
+  scenarioCustomTokens: document.querySelector("#scenario-custom-tokens"),
+  scenarioReasoning: document.querySelector("#scenario-reasoning"),
+  scenarioLatency: document.querySelector("#scenario-latency"),
+  scenarioCost: document.querySelector("#scenario-cost"),
+  scenarioPrompt: document.querySelector("#scenario-prompt"),
+  scenarioStreaming: document.querySelector("#scenario-streaming"),
+  scenarioTools: document.querySelector("#scenario-tools"),
+  scenarioStructured: document.querySelector("#scenario-structured"),
+  scenarioProfileNote: document.querySelector("#scenario-profile-note"),
+  scenarioShadowSummary: document.querySelector("#scenario-shadow-summary"),
+  scenarioTableBody: document.querySelector("#scenario-table-body"),
+  scenarioPlanNote: document.querySelector("#scenario-plan-note"),
   registryTaskFilter: document.querySelector("#registry-task-filter"),
   registryProviderFilter: document.querySelector("#registry-provider-filter"),
   registryHealthFilter: document.querySelector("#registry-health-filter"),
@@ -306,6 +323,11 @@ wireCollapsePanel(els.toggleModelRouting, els.modelRoutingBody);
 wireCollapsePanel(els.toggleOrchestration, els.orchestrationBody);
 wireCollapsePanel(els.toggleOrchSettings, els.orchSettingsBody);
 wireCollapsePanel(els.toggleModelCatalog, els.modelCatalogBody);
+wireCollapsePanel(els.toggleRoutingIntelligence, els.routingIntelligenceBody);
+els.runScenario?.addEventListener("click", () => runRoutingScenario());
+els.scenarioContext?.addEventListener("change", () => {
+  if (els.scenarioCustomWrap) els.scenarioCustomWrap.hidden = els.scenarioContext.value !== "custom";
+});
 els.registryTaskFilter?.addEventListener("change", () => {
   renderRegistryTable();
 });
@@ -1981,6 +2003,124 @@ async function validateCatalogModel(provider, modelId) {
   } catch {
     // Best-effort — the table simply won't update this click.
   }
+}
+
+/**
+ * PARAGON-D-004D (Phase 11): scenario evaluation. Calls the same
+ * computeShadowRoute() the live shadow pass uses, so for an identical task
+ * profile this table IS the shadow ranking — not a separate approximation.
+ */
+async function runRoutingScenario() {
+  if (!els.scenarioTableBody) return;
+  if (els.runScenario) els.runScenario.disabled = true;
+  try {
+    const contextChoice = els.scenarioContext?.value ?? "1000";
+    const estimatedInputTokens =
+      contextChoice === "custom" ? Number(els.scenarioCustomTokens?.value) || 0 : Number(contextChoice) || 0;
+
+    const scenario = {
+      prompt: els.scenarioPrompt?.value ?? "",
+      estimatedInputTokens,
+      streaming: Boolean(els.scenarioStreaming?.checked),
+      toolCalls: Boolean(els.scenarioTools?.checked),
+      structuredOutput: Boolean(els.scenarioStructured?.checked)
+    };
+    if (els.scenarioReasoning?.value) scenario.reasoningDemand = els.scenarioReasoning.value;
+    if (els.scenarioLatency?.value) scenario.latencyPreference = els.scenarioLatency.value;
+    if (els.scenarioCost?.value) scenario.costSensitivity = els.scenarioCost.value;
+
+    const res = await apiFetch("/api/routing-intelligence/scenario", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(scenario)
+    });
+    if (!res.ok) {
+      els.scenarioProfileNote.textContent = "Scenario evaluation failed.";
+      return;
+    }
+    const body = await res.json();
+    renderScenario(body);
+
+    const meta = await apiFetch("/api/routing-intelligence");
+    if (meta.ok) {
+      const info = await meta.json();
+      const s = info.shadowSummary ?? {};
+      els.scenarioShadowSummary.textContent =
+        `Live selector: ${info.liveRouteSelector} (unchanged). Shadow mode: ${info.settings.mode}. ` +
+        `Recorded shadow decisions: ${s.total ?? 0} (agree ${s.agrees ?? 0}, disagree ${s.disagrees ?? 0}` +
+        `${s.agreementRate != null ? `, agreement ${(s.agreementRate * 100).toFixed(0)}%` : ""}). ` +
+        `Telemetry buckets: ${info.telemetryEntryCount ?? 0}.`;
+    }
+  } catch {
+    // Best-effort panel — a failure here must never disturb the dashboard.
+  } finally {
+    if (els.runScenario) els.runScenario.disabled = false;
+  }
+}
+
+function fmtNum(value, digits = 2) {
+  return value == null || Number.isNaN(Number(value)) ? "—" : Number(value).toFixed(digits);
+}
+
+function fmtTokens(value) {
+  if (value == null) return "—";
+  return Number(value) >= 1000 ? `${(Number(value) / 1000).toFixed(1)}k` : String(Math.round(Number(value)));
+}
+
+function renderScenario(body) {
+  const p = body.taskProfile ?? {};
+  els.scenarioProfileNote.textContent =
+    `Task profile — work: ${p.workType}, complexity: ${p.complexity}, risk: ${p.risk}, ` +
+    `reasoning demand: ${p.reasoningDemand}, context band: ${p.contextBand}, output: ${p.outputContract}, ` +
+    `latency: ${p.latencyPreference}, quality: ${p.qualityPreference}, cost sensitivity: ${p.costSensitivity}. ` +
+    `Requires: ${(p.requiredCapabilities ?? []).join(", ")}. ` +
+    `Confidence: ${body.confidence?.level ?? "—"}` +
+    `${body.confidence?.margin != null ? ` (margin ${fmtNum(body.confidence.margin)})` : ""}.`;
+
+  const rows = body.ranked ?? [];
+  els.scenarioTableBody.innerHTML = rows.length
+    ? rows
+        .map((c) => {
+          if (c.excluded) {
+            return `<tr class="rank-excluded">
+              <td>${escapeHtml(c.provider)}</td>
+              <td><code>${escapeHtml(c.providerModelId ?? "—")}</code></td>
+              <td colspan="14"><span class="registry-badge ineligible" title="${escapeAttr(c.detail ?? "")}">${escapeHtml(c.reasonCode ?? "excluded")}</span></td>
+              <td><span class="registry-badge ineligible">excluded</span></td>
+            </tr>`;
+          }
+          const cost = c.cost ?? {};
+          const comp = c.components ?? {};
+          const range = cost.expectedReasoningTokenRange;
+          return `<tr>
+            <td>${escapeHtml(c.provider)}</td>
+            <td><code>${escapeHtml(c.providerModelId)}</code></td>
+            <td><code>${escapeHtml(c.canonicalModelId)}</code></td>
+            <td><span class="registry-badge cost-standard">${escapeHtml(c.reasoningEffort)}</span></td>
+            <td>${escapeHtml(c.speedMode)}</td>
+            <td title="${escapeAttr(`source: ${c.contextModel?.contextEvidenceSource ?? "unknown"}, confidence: ${c.contextModel?.contextConfidence ?? "none"}`)}">${fmtTokens(c.contextModel?.effectiveUsableContextWindow)}</td>
+            <td title="${escapeAttr(range ? `reasoning range ${range.min}-${range.max} (${cost.reasoningEstimateSource})` : String(cost.reasoningEstimateSource ?? ""))}">${fmtTokens(cost.expectedInputTokens)} / ${fmtTokens(cost.expectedVisibleOutputTokens)} / ${fmtTokens(cost.expectedReasoningTokens)}</td>
+            <td>${cost.estimatedMonetaryCost != null ? `$${Number(cost.estimatedMonetaryCost).toFixed(5)}` : "—"}</td>
+            <td title="${escapeAttr(`source: ${cost.quotaBurnSource ?? "n/a"}`)}">${cost.isSubscriptionProvider ? fmtNum(cost.estimatedQuotaBurn) : "—"}</td>
+            <td title="${escapeAttr(`source: ${comp.latencySource ?? ""}`)}">${comp.measuredLatencyP95Ms != null ? `${Math.round(comp.measuredLatencyP95Ms)}ms` : fmtNum(comp.expectedLatencyPenalty)}</td>
+            <td title="${escapeAttr(`source: ${comp.successSource ?? ""}`)}">${fmtNum(comp.probabilityOfSuccessfulCompletion)}</td>
+            <td title="${escapeAttr(`source: ${comp.qualitySource ?? ""}`)}">${fmtNum(comp.expectedTaskQuality)}</td>
+            <td title="${escapeAttr((comp.uncertaintyReasons ?? []).join("; "))}">${fmtNum(comp.uncertaintyPenalty)}</td>
+            <td><strong>${fmtNum(c.expectedUtility)}</strong></td>
+            <td title="${escapeAttr(c.benchmark?.matchedBenchmarkModel ?? "no benchmark")}">${escapeHtml(c.benchmark?.matchMethod ?? "none")}</td>
+            <td>${c.telemetry?.sampleCount ?? 0}</td>
+            <td><span class="registry-badge eligible">rank ${c.rank ?? "—"}/${c.of ?? "—"}</span></td>
+          </tr>`;
+        })
+        .join("")
+    : `<tr><td colspan="17" class="orch-empty">No candidates — every provider is pending assessment or excluded.</td></tr>`;
+
+  const plan = body.attemptPlan ?? [];
+  els.scenarioPlanNote.textContent = plan.length
+    ? `Shadow attempt plan (not executed): ${plan
+        .map((a) => `${a.order}. ${a.provider}/${a.providerModelId}${a.alternateForProvider ? " (same-provider alternate)" : ""}`)
+        .join("  →  ")}`
+    : "Shadow attempt plan: empty.";
 }
 
 async function saveOrchestrationSettings() {
