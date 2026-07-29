@@ -76,13 +76,23 @@ export function classifyModelFailure(error) {
     return "TRANSIENT_FAILURE";
   }
   const message = String(error.message ?? "").toLowerCase();
-  const detail = String(error.stderr ?? error.stdout ?? "").toLowerCase();
+  // `error.stderr ?? error.stdout` was wrong here: `??` only falls through on
+  // null/undefined, not on an empty string — and cli.js's runProcess always
+  // sets `error.stderr = stderr` (often `""`) even when the real diagnostic
+  // text came back on stdout (confirmed against the real claude CLI: an
+  // invalid --model prints "There's an issue with the selected model ..."
+  // to stdout with empty stderr). Concatenate both unconditionally instead.
+  const detail = `${error.stderr || ""} ${error.stdout || ""}`.toLowerCase();
   const text = `${message} ${detail}`;
 
-  if (/model not found|unknown model|no such model|invalid model|does not exist/.test(text)) {
+  if (
+    /model not found|unknown model|no such model|invalid model|does not exist|may not exist|issue with the selected model/.test(
+      text
+    )
+  ) {
     return "MODEL_NOT_FOUND";
   }
-  if (/unsupported model|model not supported|model.*rejected|rejected.*model/.test(text)) {
+  if (/unsupported model|model not supported|model.*rejected|rejected.*model|you may not have access to it/.test(text)) {
     return "MODEL_REJECTED";
   }
   if (/model.*unavailable|temporarily unavailable|model is currently/.test(text)) {
