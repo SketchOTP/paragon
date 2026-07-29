@@ -18,6 +18,11 @@ import { getBenchmarkData, annotateRegistryWithBenchmarks } from "./routing/benc
 import { applyExecutionResult, loadCatalog, reconcileConfiguredModels, saveCatalog } from "./modelCatalog.js";
 import { defaultProbe, runFullRefresh, refreshProviderCatalog } from "./modelCatalogRefresh.js";
 import { startModelCatalogScheduler } from "./modelCatalogScheduler.js";
+import { loadTelemetry, saveTelemetry, recordOutcome as recordTelemetryOutcome, pruneTelemetry } from "./routing/outcomeTelemetry.js";
+import { createShadowStore } from "./routing/shadowStore.js";
+import { computeShadowRoute } from "./routing/shadowEngine.js";
+import { buildTaskProfile } from "./routing/taskProfile.js";
+import { providerGrammarSummary } from "./routing/executionProfile.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 let cachedConfig = await readConfig();
@@ -63,6 +68,51 @@ async function reconcileConfigWithCatalog(reason) {
   return cleared;
 }
 
+/**
+ * PARAGON-D-004D runtime (Phase 12). Shadow-only: it computes the new
+ * ranking and accumulates outcome telemetry, but nothing here participates
+ * in live provider or model selection while `mode` is "shadow".
+ */
+let cachedTelemetry = await loadTelemetry();
+{
+  const settings = cachedConfig.routingIntelligence ?? {};
+  const { removed } = pruneTelemetry(cachedTelemetry, { retentionDays: settings.telemetryRetentionDays ?? 30 });
+  if (removed) {
+    await saveTelemetry(cachedTelemetry).catch(() => {});
+  }
+}
+
+// Telemetry writes are debounced: observations land in memory immediately and
+// are flushed on a timer, so the request path never waits on disk I/O.
+let telemetryDirty = false;
+const telemetryFlushTimer = setInterval(() => {
+  if (!telemetryDirty) return;
+  telemetryDirty = false;
+  saveTelemetry(cachedTelemetry).catch((error) => {
+    console.warn(`routing telemetry: flush failed (non-fatal): ${error.message}`);
+  });
+}, 30_000);
+telemetryFlushTimer.unref?.();
+
+const routingIntelligence = {
+  get settings() {
+    return cachedConfig.routingIntelligence ?? {};
+  },
+  shadowStore: createShadowStore({ limit: cachedConfig.routingIntelligence?.shadowRecordLimit ?? 200 }),
+  getTelemetry: () => cachedTelemetry,
+  recordOutcome(observation) {
+    if (this.settings.enabled === false) {
+      return;
+    }
+    try {
+      recordTelemetryOutcome(cachedTelemetry, observation);
+      telemetryDirty = true;
+    } catch (error) {
+      console.warn(`routing telemetry: record failed (non-fatal): ${error.message}`);
+    }
+  }
+};
+
 const modelCatalogScheduler = startModelCatalogScheduler(async () => cachedConfig, {
   onRefreshComplete: async (result) => {
     if (result?.catalog) {
@@ -84,10 +134,12 @@ await reconcileConfigWithCatalog("startup reconciliation").catch((error) => {
 // otherwise `kill`/systemd stop would leave the process running forever.
 process.on("SIGTERM", () => {
   modelCatalogScheduler.stop();
+  clearInterval(telemetryFlushTimer);
   process.exit(0);
 });
 process.on("SIGINT", () => {
   modelCatalogScheduler.stop();
+  clearInterval(telemetryFlushTimer);
   process.exit(0);
 });
 
@@ -472,6 +524,89 @@ app.post("/api/model-catalog/validate-all", async (req, res) => {
   }
 });
 
+/**
+ * PARAGON-D-004D routing-intelligence API (Phases 11 and 12).
+ *
+ * `/scenario` is the dashboard's ranking source and calls the *same*
+ * computeShadowRoute() the live shadow pass uses, with the same settings —
+ * so for an identical task profile the dashboard and shadow rankings are
+ * identical by construction, not by convention (directive test 23).
+ */
+app.get("/api/routing-intelligence", async (_req, res) => {
+  const config = await getConfig();
+  const settings = config.routingIntelligence ?? {};
+  res.json({
+    settings: {
+      enabled: settings.enabled !== false,
+      mode: settings.mode ?? "shadow",
+      unknownLargeContextThresholdTokens: settings.unknownLargeContextThresholdTokens ?? 50000,
+      minimumSamplesForMeasuredEstimate: settings.minimumSamplesForMeasuredEstimate ?? 10,
+      maximumAttempts: settings.maximumAttempts ?? 4,
+      telemetryRetentionDays: settings.telemetryRetentionDays ?? 30
+    },
+    // The live selector remains D-004C1 for the whole of this directive.
+    liveRouteSelector: "paragon-d-004c1",
+    shadowSummary: routingIntelligence.shadowStore.summary(),
+    telemetryEntryCount: Object.keys(routingIntelligence.getTelemetry().entries ?? {}).length,
+    providerGrammars: providerGrammarSummary()
+  });
+});
+
+app.get("/api/routing-intelligence/shadow-records", async (req, res) => {
+  const limit = Math.min(200, Math.max(1, Number(req.query.limit) || 50));
+  res.json({ records: routingIntelligence.shadowStore.list({ limit }), summary: routingIntelligence.shadowStore.summary() });
+});
+
+app.post("/api/routing-intelligence/scenario", async (req, res) => {
+  const config = await getConfig();
+  const settings = config.routingIntelligence ?? {};
+  try {
+    const scenario = req.body ?? {};
+    // A scenario may either supply an explicit profile or a prompt to derive
+    // one from, so the dashboard can reproduce a real recorded request.
+    const taskProfile = scenario.taskProfile
+      ? scenario.taskProfile
+      : buildTaskProfile({
+          prompt: String(scenario.prompt ?? ""),
+          body: {
+            stream: Boolean(scenario.streaming),
+            tools: scenario.toolCalls ? [{ type: "function", function: { name: "scenario" } }] : undefined,
+            response_format: scenario.structuredOutput ? { type: scenario.jsonSchema ? "json_schema" : "json_object" } : undefined,
+            max_tokens: Number.isFinite(scenario.maxOutputTokens) ? scenario.maxOutputTokens : undefined
+          },
+          estimatedInputTokens: Number.isFinite(scenario.estimatedInputTokens) ? scenario.estimatedInputTokens : 0,
+          hints: { maxCostClass: scenario.maxCostClass ?? null },
+          options: { largeThreshold: settings.unknownLargeContextThresholdTokens ?? 50000 }
+        });
+
+    // Explicit scenario overrides on top of the derived profile.
+    for (const field of ["reasoningDemand", "latencyPreference", "costSensitivity", "qualityPreference", "complexity", "risk", "workType"]) {
+      if (scenario[field]) taskProfile[field] = scenario[field];
+    }
+
+    const shadow = computeShadowRoute({
+      config,
+      statuses: getStatuses(),
+      catalog: catalogStore.get(),
+      telemetryStore: routingIntelligence.getTelemetry(),
+      benchmarkRows: await benchmarkRowsForScoring(config),
+      taskProfile,
+      hints: { maxCostClass: scenario.maxCostClass ?? null },
+      settings
+    });
+
+    res.json({ taskProfile, ...shadow, liveRouteSelector: "paragon-d-004c1", computedAt: new Date().toISOString() });
+  } catch (error) {
+    res.status(400).json({ error: { message: error.message, type: "paragon_routing_intelligence_error" } });
+  }
+});
+
+/** Shared helper so scenario scoring uses the same stale-withholding rule as live scoring (D-004C1 P0-7). */
+async function benchmarkRowsForScoring(config) {
+  const benchmarks = await getBenchmarkData(config.integrations?.openrouterApiKey);
+  return benchmarks.enabled && !benchmarks.stale ? benchmarks.rows : [];
+}
+
 app.get("/api/logs", (_req, res) => {
   res.json({ logs: getLogs() });
 });
@@ -489,7 +624,7 @@ app.get("/api/logs/stream", (req, res) => {
   req.on("close", unsubscribe);
 });
 
-registerOpenAiRoutes(app, getConfig, orchestration, getStatuses, catalogStore);
+registerOpenAiRoutes(app, getConfig, orchestration, getStatuses, catalogStore, routingIntelligence);
 // Mounted after `app.use("/api", adminAuth)` above, so these inherit admin auth.
 registerOrchestrationRoutes(app, orchestration, getConfig, async (next) => {
   cachedConfig = await writeConfig(next);

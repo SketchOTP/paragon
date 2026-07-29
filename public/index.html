@@ -338,6 +338,112 @@
         </div>
       </section>
 
+      <section class="panel model-routing-panel" id="routing-intelligence-panel">
+        <div class="panel-head">
+          <button type="button" class="panel-collapse-toggle" id="toggle-routing-intelligence" aria-expanded="false" aria-controls="routing-intelligence-body">
+            <svg class="chevron" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M8.12 9.29 12 13.17l3.88-3.88a1 1 0 1 1 1.41 1.42l-4.59 4.58a1 1 0 0 1-1.41 0L6.7 10.71a1 1 0 1 1 1.42-1.42Z"/></svg>
+            <h2>Routing Intelligence (shadow)</h2>
+          </button>
+          <button type="button" id="run-scenario" class="btn ghost">Evaluate scenario</button>
+        </div>
+        <div id="routing-intelligence-body" class="model-routing-body" hidden>
+          <p class="mode-banner" id="routing-intelligence-note">
+            PARAGON-D-004D runs in <strong>shadow mode</strong>: the live route is still chosen by the
+            verified PARAGON-D-004C1 selector above. Nothing here changes provider selection, model
+            selection, fallback order, or any response. The ranking below is produced by the same
+            engine and settings the live shadow pass uses, so for an identical task profile the two
+            are identical by construction.
+          </p>
+
+          <div class="registry-filter-bar">
+            <label class="field compact">
+              <span class="field-label">Context scenario</span>
+              <select id="scenario-context">
+                <option value="1000">Small (~1k tokens)</option>
+                <option value="20000">Medium (~20k tokens)</option>
+                <option value="120000">Large (~120k tokens)</option>
+                <option value="custom">Custom…</option>
+              </select>
+            </label>
+            <label class="field compact" id="scenario-custom-wrap" hidden>
+              <span class="field-label">Custom input tokens</span>
+              <input type="number" id="scenario-custom-tokens" min="1" step="1000" value="50000" />
+            </label>
+            <label class="field compact">
+              <span class="field-label">Reasoning demand</span>
+              <select id="scenario-reasoning">
+                <option value="">(derive from prompt)</option>
+                <option value="minimal">minimal</option>
+                <option value="low">low</option>
+                <option value="medium">medium</option>
+                <option value="high">high</option>
+                <option value="maximum">maximum</option>
+              </select>
+            </label>
+            <label class="field compact">
+              <span class="field-label">Latency</span>
+              <select id="scenario-latency">
+                <option value="">(derive)</option>
+                <option value="interactive">interactive</option>
+                <option value="normal">normal</option>
+                <option value="batch">batch</option>
+              </select>
+            </label>
+            <label class="field compact">
+              <span class="field-label">Cost sensitivity</span>
+              <select id="scenario-cost">
+                <option value="">(derive)</option>
+                <option value="low">low</option>
+                <option value="normal">normal</option>
+                <option value="high">high</option>
+              </select>
+            </label>
+          </div>
+
+          <div class="registry-filter-bar">
+            <label class="field compact" style="flex:1 1 320px">
+              <span class="field-label">Prompt (used only to derive the task profile — never stored)</span>
+              <input type="text" id="scenario-prompt" value="implement a function" />
+            </label>
+            <label class="field compact"><span class="field-label">Streaming</span><input type="checkbox" id="scenario-streaming" /></label>
+            <label class="field compact"><span class="field-label">Tool calls</span><input type="checkbox" id="scenario-tools" /></label>
+            <label class="field compact"><span class="field-label">Structured output</span><input type="checkbox" id="scenario-structured" /></label>
+          </div>
+
+          <p class="methodology-note" id="scenario-profile-note"></p>
+          <p class="methodology-note" id="scenario-shadow-summary"></p>
+
+          <div class="registry-table-wrap">
+            <table class="registry-table" id="scenario-table">
+              <thead>
+                <tr>
+                  <th>Provider</th>
+                  <th>Provider model</th>
+                  <th>Canonical model</th>
+                  <th>Effort</th>
+                  <th>Speed</th>
+                  <th>Usable context</th>
+                  <th>Exp. in/out/reasoning</th>
+                  <th>Monetary</th>
+                  <th>Quota burn</th>
+                  <th>Latency</th>
+                  <th>P(success)</th>
+                  <th>Quality</th>
+                  <th>Uncertainty</th>
+                  <th>Expected utility</th>
+                  <th>Benchmark</th>
+                  <th>Samples</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody id="scenario-table-body"></tbody>
+            </table>
+          </div>
+
+          <p class="methodology-note" id="scenario-plan-note"></p>
+        </div>
+      </section>
+
       <section class="panel orchestration-panel" id="orchestration-panel">
         <div class="panel-head">
           <button type="button" class="panel-collapse-toggle" id="toggle-orchestration" aria-expanded="false" aria-controls="orchestration-body">

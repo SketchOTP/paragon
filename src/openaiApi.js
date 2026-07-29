@@ -12,6 +12,9 @@ import { selectRoute, buildRankedAttempts, verifyAttemptsAgainstRegistry } from 
 import { buildModelRegistry } from "./routing/modelRegistry.js";
 import { extractRoutingHints, requiresJsonValidation, isValidJson } from "./routing/hints.js";
 import { getBenchmarkData, matchBenchmarkRow } from "./routing/benchmarks.js";
+import { buildTaskProfile } from "./routing/taskProfile.js";
+import { computeShadowRoute, buildShadowRecord } from "./routing/shadowEngine.js";
+import { parseExecutionProfile } from "./routing/executionProfile.js";
 import {
   activeExecutionCount,
   applyFallbackLimit,
@@ -79,7 +82,46 @@ async function safely(fn, fallback = null) {
   }
 }
 
-export function registerOpenAiRoutes(app, getConfig, orchestration, getStatuses = () => ({}), catalogStore = null) {
+/**
+ * PARAGON-D-004D (Phase 12): computes the shadow ranking alongside the live
+ * decision. Pure computation over already-loaded state — it never executes a
+ * provider, never mutates the attempt chain, and never sees the response.
+ * Wrapped so that any failure inside the shadow engine is recorded and
+ * discarded rather than affecting the real request.
+ */
+async function computeShadowSafely({ routingIntelligence, config, statuses, catalogStore, telemetryStore, benchmarkRows, prompt, body, contextEstimate, hints, liveProvider, liveModel }) {
+  if (!routingIntelligence?.shadowStore || routingIntelligence.settings?.enabled === false) {
+    return null;
+  }
+  try {
+    const taskProfile = buildTaskProfile({
+      prompt,
+      body,
+      estimatedInputTokens: contextEstimate?.estimatedInputTokens ?? null,
+      hints,
+      options: { largeThreshold: routingIntelligence.settings?.unknownLargeContextThresholdTokens ?? 50000 }
+    });
+    const shadow = computeShadowRoute({
+      config,
+      statuses,
+      catalog: catalogStore?.get() ?? null,
+      telemetryStore,
+      benchmarkRows,
+      taskProfile,
+      hints,
+      settings: routingIntelligence.settings ?? {}
+    });
+    const record = buildShadowRecord({ taskProfile, shadow, liveProvider, liveModel });
+    routingIntelligence.shadowStore.record(record);
+    return { taskProfile, shadow, record };
+  } catch (error) {
+    routingIntelligence.shadowStore.recordError();
+    console.warn(`routing intelligence: shadow computation failed (non-fatal, live route unaffected): ${error.message}`);
+    return null;
+  }
+}
+
+export function registerOpenAiRoutes(app, getConfig, orchestration, getStatuses = () => ({}), catalogStore = null, routingIntelligence = null) {
   app.use("/v1", createAuthMiddleware(getConfig, { allowLocalhost: false }));
 
   app.get("/v1/models", async (req, res) => {
@@ -231,6 +273,50 @@ export function registerOpenAiRoutes(app, getConfig, orchestration, getStatuses 
     });
     const started = Date.now();
 
+    // PARAGON-D-004D shadow pass. Computed *after* the live route is already
+    // fixed and its headers sent, so it structurally cannot influence the
+    // decision. Awaited only because the engine is async-shaped; it performs
+    // no I/O and no provider call.
+    const shadowOutcome = await computeShadowSafely({
+      routingIntelligence,
+      config,
+      statuses,
+      catalogStore,
+      telemetryStore: routingIntelligence?.getTelemetry?.() ?? { entries: {} },
+      benchmarkRows,
+      prompt,
+      body: req.body,
+      contextEstimate,
+      hints,
+      liveProvider: primary,
+      liveModel: primaryModel
+    });
+    // Bound to this request's task profile so telemetry accumulates per
+    // (provider, model, execution profile, task shape) — see Phase 6.
+    const recordAttemptOutcome = routingIntelligence?.recordOutcome
+      ? (observation) => {
+          const profile = parseExecutionProfile(observation.provider, observation.providerModelId);
+          routingIntelligence.recordOutcome({
+            ...observation,
+            executionProfile: profile.executionProfile,
+            taskProfile: shadowOutcome?.taskProfile ?? null,
+            structuredOutputRequired: requiresJsonValidation(req.body)
+          });
+        }
+      : undefined;
+
+    if (shadowOutcome?.shadow?.winner) {
+      const w = shadowOutcome.shadow.winner;
+      res.set({
+        // Advisory only — clients must not route on these, and PARAGON does
+        // not either while mode is "shadow".
+        "X-Paragon-Shadow-Provider": w.provider,
+        "X-Paragon-Shadow-Model": w.providerModelId,
+        "X-Paragon-Shadow-Reasoning-Effort": w.reasoningEffort,
+        "X-Paragon-Shadow-Agrees": String(Boolean(shadowOutcome.record?.agrees))
+      });
+    }
+
     // Master switch: orchestration.enabled === false means no telemetry at
     // all, not even correlation headers — distinct from mode:"off", which
     // still records correlation/run/session state but suppresses governor
@@ -327,7 +413,7 @@ export function registerOpenAiRoutes(app, getConfig, orchestration, getStatuses 
 
     try {
       if (req.body.stream) {
-        await streamCompletion({ res, config, policy, isLive, attempts, prompt, started, orchestration, telemetry, cwd: runtimeDir, catalogStore });
+        await streamCompletion({ res, config, policy, isLive, attempts, prompt, started, orchestration, telemetry, cwd: runtimeDir, catalogStore, recordOutcome: recordAttemptOutcome });
         return;
       }
 
@@ -337,7 +423,8 @@ export function registerOpenAiRoutes(app, getConfig, orchestration, getStatuses 
         policy,
         isLive,
         cwd: runtimeDir,
-        catalogStore
+        catalogStore,
+        recordOutcome: recordAttemptOutcome
       });
       let content = sanitizeAssistantContent(result.stdout);
 
@@ -365,7 +452,8 @@ export function registerOpenAiRoutes(app, getConfig, orchestration, getStatuses 
               policy,
               isLive,
               cwd: runtimeDir,
-              catalogStore
+              catalogStore,
+              recordOutcome: recordAttemptOutcome
             });
             provider = escalated.provider;
             result = escalated.result;
@@ -456,7 +544,7 @@ export function registerOpenAiRoutes(app, getConfig, orchestration, getStatuses 
  * (PARAGON-D-002A). Provider order, selection, and retry policy are
  * unchanged from before this instrumentation existed.
  */
-async function runWithFallback(attempts, prompt, { onChunk, orchestration, runId, policy, isLive, cwd, catalogStore } = {}) {
+async function runWithFallback(attempts, prompt, { onChunk, orchestration, runId, policy, isLive, cwd, catalogStore, recordOutcome } = {}) {
   let lastError;
 
   for (let index = 0; index < attempts.length; index += 1) {
@@ -476,6 +564,8 @@ async function runWithFallback(attempts, prompt, { onChunk, orchestration, runId
         }
       : undefined;
 
+    const attemptStartedAt = Date.now();
+    let firstChunkAt = null;
     try {
       const result = await runProvider(
         name,
@@ -511,6 +601,16 @@ async function runWithFallback(attempts, prompt, { onChunk, orchestration, runId
       if (catalogStore && providerConfig.model) {
         await safely(() => catalogStore.recordResult(name, providerConfig.model, { success: true }));
       }
+      // PARAGON-D-004D (Phase 6): bounded outcome observation. Counts,
+      // latencies and token estimates only — never prompt or response text.
+      recordOutcome?.({
+        provider: name,
+        providerModelId: providerConfig.model || attempts[index].registryModel || "",
+        success: true,
+        completionLatencyMs: Date.now() - attemptStartedAt,
+        firstTokenLatencyMs: firstChunkAt ? firstChunkAt - attemptStartedAt : null,
+        responseChars: typeof result?.stdout === "string" ? result.stdout.length : null
+      });
       return { provider: name, result };
     } catch (error) {
       pendingChunks.length = 0;
@@ -532,6 +632,13 @@ async function runWithFallback(attempts, prompt, { onChunk, orchestration, runId
           })
         );
       }
+      recordOutcome?.({
+        provider: name,
+        providerModelId: providerConfig.model || attempts[index].registryModel || "",
+        success: false,
+        failureClassification: classifyModelFailure(error),
+        completionLatencyMs: Date.now() - attemptStartedAt
+      });
       if (attemptRecord) {
         await safely(() =>
           orchestration.finishAttempt(attemptRecord.id, {
@@ -560,7 +667,7 @@ async function runWithFallback(attempts, prompt, { onChunk, orchestration, runId
   throw new Error(CLIENT_ERROR_MESSAGE);
 }
 
-async function streamCompletion({ res, config, policy, isLive, attempts, prompt, started, orchestration, telemetry, cwd, catalogStore }) {
+async function streamCompletion({ res, config, policy, isLive, attempts, prompt, started, orchestration, telemetry, cwd, catalogStore, recordOutcome }) {
   const id = `chatcmpl-${Date.now()}`;
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache, no-transform");
@@ -598,7 +705,7 @@ async function streamCompletion({ res, config, policy, isLive, attempts, prompt,
   };
 
   try {
-    const { provider } = await runWithFallback(attempts, prompt, { onChunk, orchestration, runId: telemetry?.run.id, policy, isLive, cwd, catalogStore });
+    const { provider } = await runWithFallback(attempts, prompt, { onChunk, orchestration, runId: telemetry?.run.id, policy, isLive, cwd, catalogStore, recordOutcome });
     const durationMs = Date.now() - started;
     logParagonRequest(`POST /v1/chat/completions (stream) → 200 (${durationMs}ms) via ${provider}`, {
       provider
