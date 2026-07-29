@@ -45,18 +45,18 @@ test("buildModelRegistry produces one entry per discovered model, not one per pr
   assert.ok(claudeEntries.some((e) => e.model === "claude-haiku-4-5-20251001"));
 });
 
-test("buildModelRegistry marks every provider automaticEligibility true, unrestricted risk (auto-approve tool execution is a uniform policy, not antigravity-specific)", () => {
+test("buildModelRegistry marks every provider automaticEligibility true, isolated risk (all providers run tools-disabled in a throwaway sandbox dir)", () => {
   const registry = buildModelRegistry(baseConfig(), {});
   const antigravity = registry.find((e) => e.provider === "antigravity");
   assert.equal(antigravity.automaticEligibility, true);
-  assert.equal(antigravity.toolExecutionRisk, "unrestricted");
+  assert.equal(antigravity.toolExecutionRisk, "isolated");
 });
 
 test("buildModelRegistry applies the same eligibility/risk labeling to non-antigravity providers", () => {
   const registry = buildModelRegistry(baseConfig(), {});
   const claude = registry.find((e) => e.provider === "claude" && e.model === "claude-opus-5");
   assert.equal(claude.automaticEligibility, true);
-  assert.equal(claude.toolExecutionRisk, "unrestricted");
+  assert.equal(claude.toolExecutionRisk, "isolated");
 });
 
 test("buildModelRegistry infers a well-documented context window for claude, leaves unknowns null", () => {

@@ -6,25 +6,21 @@ import { discoverCodexModels } from "./codexModels.js";
 import { alignProviderModel } from "./modelList.js";
 import { checkHttpStatus, listHttpModels, runHttpProvider } from "./httpProvider.js";
 import { addLog } from "./logStore.js";
+import { getNeutralExecutionDir } from "./executionSandbox.js";
 
 export { getAuthSession };
 
-// Auto-approved tool/command execution is enabled across every builtin
-// provider (operator directive: "allowed for any model ... normal with
-// the coding work we are doing"). Verified against each CLI's real
-// --help output before changing flags, not assumed:
-//  - claude: --tools "" was fully disabling every tool (not just
-//    auto-approving them) — changed to --tools default. --permission-mode
-//    dontAsk already auto-approves.
-//  - codex: --ask-for-approval never was already auto-approving, but
-//    --sandbox read-only blocked every write regardless of approval —
-//    changed to workspace-write (scoped to the working directory, not
-//    --dangerously-bypass-approvals-and-sandbox's unsandboxed full access).
-//  - cursor: --mode ask is documented as "read-only" Q&A — cursor could
-//    never write or edit a file through PARAGON as previously configured,
-//    independent of any permission setting. Removed --mode ask, added
-//    --force (alias --yolo) to auto-approve tool calls in the CLI's
-//    normal execution mode.
+// PARAGON-D-004B-R: PARAGON is a transparent OpenAI-compatible model
+// gateway, not an autonomous repo-editing agent. Every builtin provider
+// runs in a throwaway isolated directory (see executionSandbox.js) with
+// no ability to write to a real project — Cursor (or any other client)
+// supplies only messages and owns applying any edits itself. Flags
+// verified against each CLI's real --help output, not assumed:
+//  - claude: --tools "" fully disables every tool.
+//  - codex: --ask-for-approval never is always non-interactive;
+//    --sandbox read-only keeps it from writing anywhere, including its
+//    own isolated cwd.
+//  - cursor: --mode ask is documented read-only Q&A, no --force.
 const providerSpecs = {
   claude: {
     authArgs: ["auth", "login"],
@@ -37,7 +33,7 @@ const providerSpecs = {
       "--permission-mode",
       "dontAsk",
       "--tools",
-      "default",
+      "",
       ...modelArg("--model", model)
     ]
   },
@@ -51,7 +47,7 @@ const providerSpecs = {
       "exec",
       "--skip-git-repo-check",
       "--sandbox",
-      "workspace-write",
+      "read-only",
       ...modelArg("--model", model),
       "-"
     ]
@@ -60,12 +56,7 @@ const providerSpecs = {
     authArgs: ["login"],
     statusArgs: ["status"],
     modelsArgs: ["models"],
-    runArgs: ({ model }) => [
-      "--print",
-      "--trust",
-      "--force",
-      ...modelArg("--model", model)
-    ]
+    runArgs: ({ model }) => ["--print", "--trust", "--mode", "ask", ...modelArg("--model", model)]
   },
   // Real CLI contract verified by hand against the installed `agy` binary
   // (--help, and live --print tests) — not inferred from docs. Two things
@@ -327,7 +318,7 @@ function startCliAuth(provider, providerConfig) {
   clearAuthSession(provider);
 
   const child = spawn(providerConfig.command, spec.authArgs, {
-    cwd: process.cwd(),
+    cwd: getNeutralExecutionDir(),
     env: authEnvForProvider(provider),
     // stdin must be writable, not "ignore" — some CLIs (claude's current
     // login flow, confirmed by hand: "Paste code here if prompted >") need
@@ -455,7 +446,7 @@ function sortCursorModels(models) {
   });
 }
 
-export async function runProvider(provider, providerConfig, prompt, onChunk, { onSpawn } = {}) {
+export async function runProvider(provider, providerConfig, prompt, onChunk, { onSpawn, cwd } = {}) {
   const type = providerType(provider, providerConfig);
 
   if (type === "http") {
@@ -476,14 +467,17 @@ export async function runProvider(provider, providerConfig, prompt, onChunk, { o
     timeoutMs: providerConfig.timeoutMs,
     logType: "completion",
     onChunk,
-    onSpawn
+    onSpawn,
+    // Always an isolated per-request directory (executionSandbox.js) —
+    // never process.cwd(), never a client-supplied path (PARAGON-D-004B-R).
+    cwd
   });
 }
 
-function runProcess({ provider, command, args, stdinText, timeoutMs, logType, onChunk, onSpawn, quiet = false }) {
+function runProcess({ provider, command, args, stdinText, timeoutMs, logType, onChunk, onSpawn, quiet = false, cwd }) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
-      cwd: process.cwd(),
+      cwd: cwd ?? getNeutralExecutionDir(),
       env: envForProvider(provider),
       stdio: ["pipe", "pipe", "pipe"]
     });
