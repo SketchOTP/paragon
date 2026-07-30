@@ -407,6 +407,67 @@ test("saving one settings category preserves every unrelated configuration value
   });
 });
 
+test("the combined Model Ranking lists every known model, ranks the routable ones, and explains the rest", async () => {
+  await onlyProvider("counterp");
+  const body = await (await fetch(`${BASE}/api/models/ranking`, { headers: authHeaders() })).json();
+
+  // Every model PARAGON knows about is present — not just the routable ones.
+  assert.ok(body.totals.models >= body.totals.routable);
+  assert.equal(body.totals.models, body.rows.length);
+  assert.ok(body.rows.some((r) => r.provider === "counterp" && r.routable), "the enabled provider's model must be routable");
+  assert.ok(body.rows.some((r) => r.provider === "quotap" && !r.routable), "a disabled provider's models must still be listed");
+
+  // A rank is only meaningful relative to a kind of work, and the response says
+  // which — plus the priority the ranking was computed under.
+  assert.ok(body.rankedFor.workType);
+  assert.ok(body.rankedFor.complexity);
+  assert.equal(body.priority.priority, "balanced");
+
+  const ranked = body.rows.filter((r) => r.routable);
+  assert.ok(ranked.length >= 1);
+  // Routable rows come first, in rank order.
+  assert.deepEqual(
+    ranked.map((r) => r.rank),
+    [...ranked.map((r) => r.rank)].sort((a, b) => a - b)
+  );
+
+  const top = ranked[0];
+  // The catalog facts and the ranking factors live on the same row — this is
+  // the whole point of merging the two retired panels.
+  assert.equal(top.state, "validated");
+  assert.equal(top.validated, true);
+  assert.ok(top.expectedUtility != null);
+  assert.ok(top.quality && top.quality.source, "quality must carry its evidence source");
+  assert.ok(top.cost && top.cost.reasoningEstimateSource, "cost must carry its reasoning evidence source");
+  assert.ok(top.reasoningEffort, "the level of thinking must be reported");
+  assert.ok(top.telemetry, "observed evidence must be reported");
+  assert.ok("measuredEvidenceShare" in top);
+  // The head of the plan is identifiable, so the table agrees with what would
+  // actually be attempted.
+  assert.equal(top.attemptOrder, 1);
+
+  // Every non-routable row states *why*, specifically.
+  for (const row of body.rows.filter((r) => !r.routable)) {
+    assert.ok(row.excludedBecause, `${row.provider}/${row.model} must say why it cannot route`);
+    assert.notEqual(row.excludedBecause, "eligibility.notACandidate", "the reason must be specific, not a placeholder");
+  }
+});
+
+test("the Model Ranking reflects the kind of work it was asked about", async () => {
+  await onlyProvider("counterp");
+  const trivial = await (await fetch(`${BASE}/api/models/ranking?workType=quick&complexity=trivial`, { headers: authHeaders() })).json();
+  const extreme = await (await fetch(`${BASE}/api/models/ranking?workType=architecture&complexity=extreme`, { headers: authHeaders() })).json();
+
+  assert.equal(trivial.rankedFor.complexity, "trivial");
+  assert.equal(extreme.rankedFor.complexity, "extreme");
+  // The same model is scored differently for different work, which is why the
+  // table states what it ranked for rather than implying one absolute order.
+  const t = trivial.rows.find((r) => r.routable);
+  const e = extreme.rows.find((r) => r.routable);
+  assert.ok(t && e);
+  assert.notEqual(t.expectedUtility, e.expectedUtility);
+});
+
 test("21. /v1/models remains stable and OpenAI-compatible", async () => {
   const res = await fetch(`${BASE}/v1/models`, { headers: authHeaders() });
   assert.equal(res.status, 200);

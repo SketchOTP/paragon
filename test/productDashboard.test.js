@@ -64,14 +64,39 @@ function visibleText(markup) {
 
 // ---------------------------------------------------- 23 / 26. primary page
 
-test("23. the primary dashboard contains exactly the four product areas", () => {
+test("23. the primary dashboard contains the four product areas plus the collapsed Model Ranking", () => {
   const page = primaryPage();
   for (const label of ["Connection", "Providers", "Automatic Routing", "Recent Activity"]) {
     assert.match(page, new RegExp(`aria-label="${label}"`), `the primary page must present a ${label} area`);
   }
-  // Exactly four labelled regions — no fifth area smuggled onto the page.
+  // Nothing else may be smuggled onto the page. Model Ranking is the one
+  // deliberate addition beyond the four everyday areas, and it is collapsed by
+  // default so it costs an ordinary user nothing.
   const regions = [...page.matchAll(/aria-label="([^"]+)"/g)].map((m) => m[1]);
-  assert.deepEqual(regions.sort(), ["Automatic Routing", "Connection", "Providers", "Recent Activity"]);
+  assert.deepEqual(regions.sort(), ["Automatic Routing", "Connection", "Model Ranking", "Providers", "Recent Activity"]);
+});
+
+test("23c. Model Ranking is one combined table, collapsed by default, and loaded only when opened", () => {
+  const page = primaryPage();
+
+  // Collapsed by default.
+  assert.match(page, /id="toggle-ranking"[^>]*aria-expanded="false"/, "the panel must start collapsed");
+  assert.match(page, /<div id="ranking-body" hidden>/, "its body must start hidden");
+
+  // Exactly one table, not a reinstated catalog panel plus a routing panel.
+  const rankingSection = page.slice(page.indexOf('aria-label="Model Ranking"'));
+  assert.equal((rankingSection.match(/<table/g) ?? []).length, 1, "Model Ranking must be a single combined table");
+  for (const retired of ["model-catalog-panel", "model-routing-panel", "registry-table-body", "catalog-table-body"]) {
+    assert.ok(!page.includes(retired), `${retired} must not come back`);
+  }
+
+  // It carries the catalog facts and the ranking factors in one place.
+  for (const column of ["Status", "Thinking", "Context", "Quality", "Cost", "Reasoning", "Speed", "Evidence", "Score"]) {
+    assert.match(rankingSection, new RegExp(`<th[^>]*>${column}</th>`), `the table must show ${column}`);
+  }
+
+  // Ranking every catalog model is real work, so it must not run on page load.
+  assert.match(appJs, /if \(!expanded && !rankingLoaded\) \{\s*loadRanking\(\);/, "the ranking must load lazily on first expand");
 });
 
 test("26. every engineering panel is absent from the primary page, not merely collapsed", () => {

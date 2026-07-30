@@ -94,6 +94,17 @@ const els = {
   addProvider: document.querySelector("#add-provider"),
   openSettings: document.querySelector("#open-settings"),
 
+  toggleRanking: document.querySelector("#toggle-ranking"),
+  rankingBody: document.querySelector("#ranking-body"),
+  rankingRows: document.querySelector("#ranking-body-rows"),
+  rankingSummary: document.querySelector("#ranking-summary"),
+  rankingNote: document.querySelector("#ranking-note"),
+  rankingWorktype: document.querySelector("#ranking-worktype"),
+  rankingComplexity: document.querySelector("#ranking-complexity"),
+  rankingTokens: document.querySelector("#ranking-tokens"),
+  rankingFilter: document.querySelector("#ranking-filter"),
+  refreshRanking: document.querySelector("#refresh-ranking"),
+
   settingsDialog: document.querySelector("#settings-dialog"),
   settingExposedModel: document.querySelector("#setting-exposed-model"),
   settingApiKey: document.querySelector("#setting-api-key"),
@@ -677,6 +688,200 @@ async function refreshActivity() {
   }
   const body = await response.json();
   renderActivity(body.activity ?? []);
+}
+
+// ---------------------------------------------------------------- Model Ranking
+
+/**
+ * Every model PARAGON can reach, its validation status, and the live ranking
+ * with the factors behind it — one table rather than the separate catalog and
+ * routing panels it replaces.
+ *
+ * The ranking is real: the server computes it with the same call the request
+ * path uses. A rank is only meaningful relative to a kind of work, which is why
+ * the controls state what it was ranked for rather than implying a single
+ * absolute ordering.
+ */
+let rankingLoaded = false;
+
+const STATE_LABELS = {
+  validated: "Validated",
+  exposed: "Offered",
+  stale: "Needs re-check",
+  rejected: "Rejected",
+  unavailable: "Unavailable",
+  retired: "Retired",
+  unknown: "Unvalidated",
+  quota_blocked: "Usage limit",
+  authentication_blocked: "Sign-in needed",
+  entitlement_blocked: "Plan upgrade needed",
+  configuration_blocked: "Misconfigured",
+  provider_offline: "Provider offline",
+  pending_assessment: "Not discovered yet"
+};
+
+const THINKING_LABELS = {
+  none: "None",
+  minimal: "Minimal",
+  low: "Low",
+  medium: "Medium",
+  high: "High",
+  xhigh: "Very high",
+  max: "Maximum",
+  unknown: "Not stated"
+};
+
+/** Compact evidence label — measured beats assumed, and the difference matters. */
+function evidenceLabel(row) {
+  const share = row.measuredEvidenceShare;
+  if (share == null) return '<span class="muted">—</span>';
+  const pct = Math.round(share * 100);
+  const cls = pct >= 60 ? "ok" : pct >= 30 ? "warn" : "muted";
+  const samples = row.telemetry?.sampleCount ?? 0;
+  return `<span class="${cls}">${pct}% measured</span><span class="cell-sub">${samples} sample${samples === 1 ? "" : "s"}</span>`;
+}
+
+function costCell(row) {
+  const cost = row.cost;
+  if (!cost) return '<span class="muted">—</span>';
+  const parts = [];
+  if (cost.monetary != null) {
+    parts.push(`$${cost.monetary < 0.01 ? cost.monetary.toFixed(5) : cost.monetary.toFixed(3)}`);
+  } else if (cost.subscription) {
+    parts.push("subscription");
+  } else if (cost.unpricedMetered) {
+    parts.push("price unknown");
+  }
+  const sub = cost.subscription
+    ? `${cost.quotaBurn.toFixed(1)} allowance units`
+    : cost.pricingAvailable
+      ? `${cost.monetaryConfidence} confidence`
+      : "charged conservatively";
+  return `<strong>${escapeHtml(parts[0] ?? "—")}</strong><span class="cell-sub">${escapeHtml(sub)}</span>`;
+}
+
+function reasoningCell(row) {
+  const cost = row.cost;
+  if (!cost || cost.expectedReasoningTokens == null) {
+    return '<span class="muted">not reported</span>';
+  }
+  const range = cost.reasoningTokenRange;
+  const source =
+    cost.reasoningEstimateSource === "provider_reported_usage"
+      ? "measured"
+      : cost.reasoningEstimateSource === "measured_history"
+        ? "from history"
+        : cost.reasoningAssumedConservative
+          ? "unknown — charged high"
+          : "estimated";
+  return `${cost.expectedReasoningTokens.toLocaleString()} tok<span class="cell-sub">${escapeHtml(source)}${
+    range ? ` · ${range.min.toLocaleString()}–${range.max.toLocaleString()}` : ""
+  }</span>`;
+}
+
+function qualityCell(row) {
+  if (!row.quality) return '<span class="muted">—</span>';
+  const pct = Math.round(row.quality.value * 100);
+  const sourceLabels = {
+    measured_outcomes: "from real outcomes",
+    benchmark_exact: "benchmarked",
+    benchmark_canonical_base: "benchmarked (base model)",
+    task_profile_prior: "estimated"
+  };
+  return `<strong>${pct}</strong><span class="cell-sub">${escapeHtml(sourceLabels[row.quality.source] ?? row.quality.source)}</span>`;
+}
+
+function speedCell(row) {
+  if (!row.latency) return '<span class="muted">—</span>';
+  if (row.latency.measuredP95Ms != null) {
+    return `${(row.latency.measuredP95Ms / 1000).toFixed(1)}s<span class="cell-sub">measured p95</span>`;
+  }
+  const mode = row.speedMode && row.speedMode !== "standard" && row.speedMode !== "unknown" ? row.speedMode : "estimated";
+  return `<span class="muted">—</span><span class="cell-sub">${escapeHtml(mode)}</span>`;
+}
+
+function renderRanking(data) {
+  const filter = els.rankingFilter.value;
+  const rows = data.rows.filter((r) => (filter === "all" ? true : filter === "excluded" ? !r.routable : r.routable));
+
+  els.rankingSummary.textContent = `${data.totals.routable} available · ${data.totals.models} known`;
+  els.rankingNote.textContent =
+    `Ranked for ${data.rankedFor.workType} work of ${data.rankedFor.complexity} complexity at ` +
+    `${data.rankedFor.estimatedInputTokens.toLocaleString()} tokens, with priority ${data.priority.label}. ` +
+    `Order and scores change with the kind of work — this is the same calculation the router runs for a real request.`;
+
+  if (!rows.length) {
+    els.rankingRows.innerHTML = '<tr><td colspan="12" class="ranking-empty">Nothing to show for this filter.</td></tr>';
+    return;
+  }
+
+  els.rankingRows.innerHTML = rows
+    .map((row) => {
+      const stateClass = row.validated ? "ok" : row.routable ? "warn" : "muted";
+      const stateLabel = STATE_LABELS[row.state] ?? row.state;
+
+      if (!row.routable) {
+        return `<tr class="excluded">
+          <td class="muted">—</td>
+          <td>${escapeHtml(row.providerLabel)}</td>
+          <td><code>${escapeHtml(row.model ?? "—")}</code></td>
+          <td><span class="${stateClass}">${escapeHtml(stateLabel)}</span></td>
+          <td colspan="7" class="ranking-reason">${escapeHtml(row.excludedDetail ?? row.excludedBecause ?? "not available")}</td>
+          <td class="muted">—</td>
+        </tr>`;
+      }
+
+      const planned = row.attemptOrder ? `<span class="ranking-planned" title="In the current attempt plan">plan ${row.attemptOrder}</span>` : "";
+      return `<tr>
+        <td class="ranking-rank">${row.rank}${planned}</td>
+        <td>${escapeHtml(row.providerLabel)}</td>
+        <td><code>${escapeHtml(row.model)}</code>${
+          row.canonicalModel && row.canonicalModel !== row.model
+            ? `<span class="cell-sub">base: ${escapeHtml(row.canonicalModel)}</span>`
+            : ""
+        }</td>
+        <td><span class="${stateClass}">${escapeHtml(stateLabel)}</span></td>
+        <td>${escapeHtml(THINKING_LABELS[row.reasoningEffort] ?? row.reasoningEffort ?? "—")}</td>
+        <td>${row.contextWindow ? `${Math.round(row.contextWindow / 1000)}k` : '<span class="muted">unknown</span>'}</td>
+        <td>${qualityCell(row)}</td>
+        <td>${costCell(row)}</td>
+        <td>${reasoningCell(row)}</td>
+        <td>${speedCell(row)}</td>
+        <td>${evidenceLabel(row)}</td>
+        <td class="ranking-score"><strong>${row.expectedUtility.toFixed(1)}</strong></td>
+      </tr>`;
+    })
+    .join("");
+}
+
+async function loadRanking() {
+  els.rankingNote.textContent = "Calculating…";
+  const params = new URLSearchParams({
+    workType: els.rankingWorktype.value,
+    complexity: els.rankingComplexity.value,
+    tokens: els.rankingTokens.value
+  });
+  try {
+    const response = await apiFetch(`/api/models/ranking?${params}`);
+    if (!response.ok) {
+      throw new Error("Could not load the model ranking");
+    }
+    renderRanking(await response.json());
+    rankingLoaded = true;
+  } catch (error) {
+    els.rankingNote.textContent = error.message;
+  }
+}
+
+function toggleRanking() {
+  const expanded = els.toggleRanking.getAttribute("aria-expanded") === "true";
+  els.toggleRanking.setAttribute("aria-expanded", String(!expanded));
+  els.rankingBody.hidden = expanded;
+  // Loaded on first expand: ranking every catalog model is real work, and the
+  // everyday page should not pay for it when the panel is closed.
+  if (!expanded && !rankingLoaded) {
+    loadRanking();
+  }
 }
 
 // ---------------------------------------------------------------- Settings
@@ -1645,6 +1850,14 @@ function wire() {
 
   els.refreshStatus.addEventListener("click", () => refreshStatus({ manual: true }));
   els.refreshActivity.addEventListener("click", () => refreshActivity());
+
+  els.toggleRanking.addEventListener("click", toggleRanking);
+  els.refreshRanking.addEventListener("click", loadRanking);
+  for (const control of [els.rankingWorktype, els.rankingComplexity, els.rankingTokens]) {
+    control.addEventListener("change", loadRanking);
+  }
+  // Filtering is client-side; no need to recompute the ranking for it.
+  els.rankingFilter.addEventListener("change", () => rankingLoaded && loadRanking());
   els.addProvider.addEventListener("click", openAddProviderDialog);
   els.openSettings.addEventListener("click", openSettings);
   els.editPriority.addEventListener("click", openSettings);
