@@ -7,6 +7,7 @@ import { alignProviderModel } from "./modelList.js";
 import { checkHttpStatus, listHttpModels, runHttpProvider } from "./httpProvider.js";
 import { addLog } from "./logStore.js";
 import { getNeutralExecutionDir } from "./executionSandbox.js";
+import { extractStructuredCliContent, extractStructuredCliUsage } from "./routing/usageEvidence.js";
 
 export { getAuthSession };
 
@@ -26,10 +27,18 @@ const providerSpecs = {
     authArgs: ["auth", "login"],
     statusArgs: ["auth", "status"],
     modelsArgs: null,
+    // PARAGON-D-004E (Phase 1): `json` rather than `text` because this CLI's
+    // JSON envelope carries real usage accounting — input/output/cache tokens
+    // and `total_cost_usd` — which is the highest-quality cost evidence
+    // available for any provider PARAGON supports. Contract verified against
+    // the installed CLI, not assumed. `structuredOutput` below tells
+    // runProvider to unwrap `result` back to prose, so callers (including
+    // streaming ones) never see the envelope.
+    structuredOutput: true,
     runArgs: ({ model }) => [
       "-p",
       "--output-format",
-      "text",
+      "json",
       "--permission-mode",
       "dontAsk",
       "--tools",
@@ -103,6 +112,9 @@ function buildGenericSpec(providerConfig) {
     authArgs: providerConfig.authArgs ?? [],
     statusArgs: providerConfig.statusArgs ?? null,
     modelsArgs: providerConfig.modelsArgs ?? null,
+    // Operator-declared: set when the configured command emits a JSON/JSONL
+    // envelope rather than prose, so PARAGON unwraps content and reads usage.
+    structuredOutput: Boolean(providerConfig.structuredOutput),
     runArgs: ({ model }) => expandArgs(providerConfig.runArgs ?? ["-"], model)
   };
 }
@@ -455,7 +467,32 @@ export async function runProvider(provider, providerConfig, prompt, onChunk, { o
 
   const spec = getProviderSpec(provider, providerConfig);
   const stdinMode = providerConfig.stdinMode ?? "prompt";
-  return runProcess({
+
+  // A structured-output provider streams its JSON envelope, not prose, so
+  // per-chunk passthrough would hand raw JSON to the caller. Run it without
+  // onChunk and emit the unwrapped content as a single chunk instead — the
+  // fallback path already buffers chunks until an attempt succeeds, so this
+  // does not change streaming semantics for the client.
+  if (spec.structuredOutput) {
+    const result = await runProcess({
+      provider,
+      command: providerConfig.command,
+      args: spec.runArgs({ model: providerConfig.model, prompt }),
+      stdinText: stdinMode === "none" ? undefined : prompt,
+      timeoutMs: providerConfig.timeoutMs,
+      logType: "completion",
+      onSpawn,
+      cwd
+    });
+    const usage = extractStructuredCliUsage(result.stdout);
+    // Falling back to the raw stdout means enabling structured output can
+    // never blank out a response, even if the CLI changes its envelope.
+    const content = extractStructuredCliContent(result.stdout) ?? result.stdout;
+    onChunk?.(content);
+    return { ...result, stdout: content, usage };
+  }
+
+  const result = await runProcess({
     provider,
     command: providerConfig.command,
     // `prompt` is passed through for providers whose runArgs embeds it as a
@@ -472,6 +509,10 @@ export async function runProvider(provider, providerConfig, prompt, onChunk, { o
     // never process.cwd(), never a client-supplied path (PARAGON-D-004B-R).
     cwd
   });
+
+  // Opportunistic: a plain-text CLI yields `unknown` here, which is the honest
+  // answer. Only a CLI that actually emitted a usage block gets credited.
+  return { ...result, usage: extractStructuredCliUsage(result.stdout) };
 }
 
 function runProcess({ provider, command, args, stdinText, timeoutMs, logType, onChunk, onSpawn, quiet = false, cwd }) {

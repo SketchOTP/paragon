@@ -26,10 +26,10 @@ test("mergeConfig preserves custom providers", () => {
 test("mergeConfig merges server and routing", () => {
   const merged = mergeConfig(defaultConfig, {
     server: { tailscaleHost: "test.tail.ts.net" },
-    routing: { fallbackChain: ["claude"] }
+    routing: { priority: "cost" }
   });
   assert.equal(merged.server.tailscaleHost, "test.tail.ts.net");
-  assert.deepEqual(merged.routing.fallbackChain, ["claude"]);
+  assert.equal(merged.routing.priority, "cost");
 });
 
 test("requestHasApiKey accepts bearer, header, and query", () => {

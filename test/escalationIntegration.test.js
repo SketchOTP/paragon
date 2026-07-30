@@ -75,10 +75,8 @@ test.before(async () => {
   };
   // Bias the scorer toward badjson for every task so the test is
   // deterministic about which fixture is tried first.
-  for (const t of Object.keys(config.routing.taskRoutes)) {
-    config.routing.taskRoutes[t] = "badjson";
-  }
-  config.routing.defaultProvider = "badjson";
+  // The seeded catalog contains only the fixture providers, so automatic
+  // routing has exactly one eligible candidate per scenario.
   await fetch(`${BASE}/api/config`, { method: "PUT", headers: authHeaders(), body: JSON.stringify(config) });
 });
 
@@ -110,6 +108,13 @@ test("a response_format:json_object request escalates past a provider that retur
 });
 
 test("a plain request (no response_format) does not trigger escalation even against the same non-JSON-producing provider", async () => {
+  // The invariant is about escalation, not about which fixture wins the
+  // ranking: with automatic routing there is no provider preference to pin, so
+  // asserting a provider identity here would be asserting the tie-break order
+  // rather than the behavior under test.
+  const before = await fetch(`${BASE}/api/logs`, { headers: authHeaders() });
+  const escalationsBefore = (await before.json()).logs.filter((l) => l.type === "escalation").length;
+
   const res = await fetch(`${BASE}/v1/chat/completions`, {
     method: "POST",
     headers: authHeaders(),
@@ -117,5 +122,13 @@ test("a plain request (no response_format) does not trigger escalation even agai
   });
   assert.equal(res.status, 200);
   const body = await res.json();
-  assert.equal(body.paragon.provider, "badjson", "without a json response_format, plain text output is valid and must not escalate");
+  assert.equal(body.paragon.fallback, false, "a successful first attempt must not be reported as a fallback");
+
+  const after = await fetch(`${BASE}/api/logs`, { headers: authHeaders() });
+  const escalationsAfter = (await after.json()).logs.filter((l) => l.type === "escalation").length;
+  assert.equal(
+    escalationsAfter,
+    escalationsBefore,
+    "without a json response_format, plain text output is valid and must not escalate"
+  );
 });

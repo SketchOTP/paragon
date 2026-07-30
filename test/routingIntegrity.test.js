@@ -1,20 +1,26 @@
 /**
- * PARAGON-D-004C1 routing-integrity regressions.
+ * PARAGON routing-integrity regressions.
  *
- * Unit-level coverage for the P0 corrections. Each test names the defect it
- * pins so a future change that reintroduces a bypass fails here with an
- * explanation rather than a bare assertion diff. HTTP-level coverage of the
- * same contract lives in routingIntegrity.api.test.js.
+ * These are the invariants that must survive every routing change, originally
+ * pinned for PARAGON-D-004C1 and re-pinned here against the single production
+ * engine (PARAGON-D-004E). Each test names the defect it guards so a future
+ * change that reintroduces a bypass fails here with an explanation rather than
+ * a bare assertion diff. HTTP-level coverage of the same contract lives in
+ * routingIntegrity.api.test.js.
+ *
+ * Directive requirement 15: the new router preserves all of these gates.
  */
 
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { selectRoute, buildRankedAttempts, verifyAttemptsAgainstRegistry } from "../src/routing/router.js";
+import { selectAutomaticRoute, verifyPlanAgainstCandidates } from "../src/routing/automaticRouting.js";
+import { buildAttemptPlan } from "../src/routing/attemptPlan.js";
 import { buildModelRegistry } from "../src/routing/modelRegistry.js";
-import { defaultCatalog, replaceProviderModels, reconcileConfiguredModels } from "../src/modelCatalog.js";
+import { defaultCatalog, replaceProviderModels } from "../src/modelCatalog.js";
 import { classifyChatCapability, PROVIDER_DEFAULT_MODEL_ID } from "../src/modelCapability.js";
 import { resetForTests } from "../src/orchestration/liveEnforcement.js";
+import { createQuotaStateStore } from "../src/routing/quotaState.js";
 
 test.beforeEach(() => {
   resetForTests();
@@ -22,10 +28,10 @@ test.beforeEach(() => {
 
 function config(overrides = {}) {
   return {
-    routing: { taskRoutes: {}, defaultProvider: "claude", fallbackChain: ["claude", "codex"] },
+    routing: { priority: "balanced" },
     providers: {
-      claude: { enabled: true, model: "claude-opus-5", models: [{ id: "claude-opus-5", name: "Opus 5" }] },
-      codex: { enabled: true, model: "gpt-5.4", models: [{ id: "gpt-5.4", name: "GPT-5.4" }] },
+      claude: { enabled: true, models: [{ id: "claude-opus-5", name: "Opus 5" }] },
+      codex: { enabled: true, models: [{ id: "gpt-5.4", name: "GPT-5.4" }] },
       ...overrides
     }
   };
@@ -47,212 +53,179 @@ const validated = (modelId, extra = {}) => ({
   ...extra
 });
 
-// ---------------------------------------------------------------- P0-1
+/** Minimal but complete request profile — the engine reads every dimension. */
+function profile(overrides = {}) {
+  return {
+    workType: "code",
+    complexity: "normal",
+    risk: "normal",
+    reasoningDemand: "medium",
+    contextBand: "small",
+    outputContract: "code",
+    requiredCapabilities: ["chatCompletions"],
+    latencyPreference: "normal",
+    qualityPreference: "balanced",
+    costSensitivity: "normal",
+    estimatedInputTokens: 100,
+    ...overrides
+  };
+}
 
-test("1. no static fallback exists when the eligible registry is empty — selectRoute returns null rather than a config-derived route", () => {
+function route(cfg, catalog, { hints = {}, taskProfile = {}, statuses = {}, quotaState = null, priority } = {}) {
+  return selectAutomaticRoute({
+    config: cfg,
+    statuses,
+    catalog,
+    telemetryStore: { entries: {} },
+    benchmarkRows: [],
+    taskProfile: profile(taskProfile),
+    hints,
+    settings: {},
+    quotaState,
+    priority
+  });
+}
+
+// ------------------------------------------------- no static fallback exists
+
+test("1. no static fallback exists when the eligible set is empty — no winner rather than a config-derived route", () => {
   const cfg = config();
   // Providers configured and enabled, but the catalog rejected everything.
   const catalog = catalogWith({
     claude: [{ ...validated("claude-opus-5"), state: "rejected" }],
     codex: [{ ...validated("gpt-5.4"), state: "rejected" }]
   });
-  const route = selectRoute({
-    config: cfg,
-    statuses: {},
-    taskProfile: { taskType: "code", estimatedInputTokens: 100 },
-    catalog
-  });
-  assert.equal(route, null, "an empty eligible set must not be papered over with routing.fallbackChain");
+  const result = route(cfg, catalog);
+  assert.equal(result.winner, null, "an empty eligible set must not be papered over with a configured fallback");
+  assert.deepEqual(result.attemptPlan, []);
 });
 
-test("1b. routing.fallbackChain / defaultProvider are no longer an independent dispatch path", async () => {
+test("1b. no independent config-derived dispatch path is exported", async () => {
   const providerFallback = await import("../src/providerFallback.js");
   assert.equal(providerFallback.buildProviderAttempts, undefined);
 });
 
-// ---------------------------------------------------------------- P0-2
+test("1c. the removed legacy routing fields cannot influence a decision because the schema has no place for them", async () => {
+  const { defaultConfig } = await import("../src/defaultConfig.js");
+  assert.equal(defaultConfig.routing.defaultProvider, undefined);
+  assert.equal(defaultConfig.routing.fallbackChain, undefined);
+  assert.equal(defaultConfig.routing.taskRoutes, undefined);
+  for (const [name, providerConfig] of Object.entries(defaultConfig.providers)) {
+    assert.equal(providerConfig.model, undefined, `providers.${name}.model must not exist`);
+  }
+});
 
-test("2. a rejected configured model cannot be selected even though it is still in providerConfig.model", () => {
+// ------------------------------------------------- forced routes only narrow
+
+test("2. a rejected model cannot be selected", () => {
   const cfg = config();
   const catalog = catalogWith({
     claude: [{ ...validated("claude-opus-5"), state: "rejected" }],
     codex: [validated("gpt-5.4")]
   });
-  const route = selectRoute({ config: cfg, statuses: {}, taskProfile: { taskType: "code", estimatedInputTokens: 100 }, catalog });
-  assert.equal(route.provider, "codex");
-  assert.equal(route.model, "gpt-5.4");
+  const result = route(cfg, catalog);
+  assert.equal(result.winner.provider, "codex");
+  assert.equal(result.winner.providerModelId, "gpt-5.4");
 });
 
 test("5. a forced rejected model is denied, never dispatched", () => {
   const cfg = config();
   const catalog = catalogWith({ claude: [{ ...validated("claude-opus-5"), state: "rejected" }], codex: [validated("gpt-5.4")] });
-  const route = selectRoute({
-    config: cfg,
-    statuses: {},
-    taskProfile: { taskType: "code", estimatedInputTokens: 100 },
-    hints: { forceProvider: "claude", forceModel: "claude-opus-5" },
-    catalog
-  });
-  assert.equal(route.rejected, true);
-  assert.equal(route.reasonCode, "routing.forcedModelNotEligible");
+  const result = route(cfg, catalog, { hints: { forceProvider: "claude", forceModel: "claude-opus-5" } });
+  assert.equal(result.rejected, true);
+  assert.equal(result.reasonCode, "routing.forcedModelNotEligible");
 });
 
-test("5b. a forced model that exists nowhere in the catalog is denied, never falls back to providerConfig.model", () => {
+test("5b. a forced model that exists nowhere in the catalog is denied", () => {
   const cfg = config();
   const catalog = catalogWith({ claude: [validated("claude-opus-5")] });
-  const route = selectRoute({
-    config: cfg,
-    statuses: {},
-    taskProfile: { taskType: "code", estimatedInputTokens: 100 },
-    hints: { forceProvider: "claude", forceModel: "totally-made-up" },
-    catalog
-  });
-  assert.equal(route.rejected, true);
-  assert.equal(route.reasonCode, "routing.forcedModelNotEligible");
+  const result = route(cfg, catalog, { hints: { forceProvider: "claude", forceModel: "totally-made-up" } });
+  assert.equal(result.rejected, true);
+  assert.equal(result.reasonCode, "routing.forcedModelNotEligible");
 });
 
 test("6. a forced provider with no eligible model is denied", () => {
   const cfg = config();
   const catalog = catalogWith({ claude: [{ ...validated("claude-opus-5"), state: "unknown" }], codex: [validated("gpt-5.4")] });
-  const route = selectRoute({
-    config: cfg,
-    statuses: {},
-    taskProfile: { taskType: "code", estimatedInputTokens: 100 },
-    hints: { forceProvider: "claude" },
-    catalog
-  });
-  assert.equal(route.rejected, true);
-  assert.equal(route.reasonCode, "routing.forcedProviderNotEligible");
+  const result = route(cfg, catalog, { hints: { forceProvider: "claude" } });
+  assert.equal(result.rejected, true);
+  assert.equal(result.reasonCode, "routing.forcedProviderNotEligible");
 });
 
 test("6b. a forced provider that is disabled is denied", () => {
   const cfg = config();
   cfg.providers.claude.enabled = false;
   const catalog = catalogWith({ claude: [validated("claude-opus-5")], codex: [validated("gpt-5.4")] });
-  const route = selectRoute({
-    config: cfg,
-    statuses: {},
-    taskProfile: { taskType: "code", estimatedInputTokens: 100 },
-    hints: { forceProvider: "claude" },
-    catalog
-  });
-  assert.equal(route.rejected, true);
-  assert.equal(route.reasonCode, "routing.forcedProviderNotEligible");
+  const result = route(cfg, catalog, { hints: { forceProvider: "claude" } });
+  assert.equal(result.rejected, true);
+  assert.equal(result.reasonCode, "routing.forcedProviderNotEligible");
 });
 
 test("7. forced routing still obeys the caller's max cost class", () => {
   const cfg = config();
   const catalog = catalogWith({ claude: [validated("claude-opus-5")] }); // opus -> premium
-  const route = selectRoute({
-    config: cfg,
-    statuses: {},
-    taskProfile: { taskType: "quick", estimatedInputTokens: 100 },
-    hints: { forceProvider: "claude", forceModel: "claude-opus-5", maxCostClass: "economy" },
-    catalog
+  const result = route(cfg, catalog, {
+    taskProfile: { workType: "quick" },
+    hints: { forceProvider: "claude", forceModel: "claude-opus-5", maxCostClass: "economy" }
   });
-  assert.equal(route.rejected, true, "the cost ceiling was previously bypassed entirely by forcing");
-  assert.equal(route.reasonCode, "routing.forcedModelNotEligible");
+  assert.equal(result.rejected, true, "the cost ceiling was previously bypassed entirely by forcing");
 });
 
 test("8. forced routing still obeys context limits", () => {
   const cfg = config();
-  const catalog = catalogWith({ claude: [validated("claude-opus-5")] }); // 200k context
-  const route = selectRoute({
-    config: cfg,
-    statuses: {},
-    taskProfile: { taskType: "code", estimatedInputTokens: 500000 },
-    hints: { forceProvider: "claude", forceModel: "claude-opus-5" },
-    catalog
+  const catalog = catalogWith({ claude: [validated("claude-opus-5")] });
+  const result = route(cfg, catalog, {
+    taskProfile: { estimatedInputTokens: 5_000_000, contextBand: "huge" },
+    hints: { forceProvider: "claude", forceModel: "claude-opus-5" }
   });
-  assert.equal(route.rejected, true);
-  assert.match(route.message, /eligibility gate/);
+  assert.equal(result.rejected, true);
+  assert.match(result.message, /eligibility gate/);
 });
 
 test("8b. forced routing still obeys provider health", () => {
   const cfg = config();
   const catalog = catalogWith({ claude: [validated("claude-opus-5")] });
-  const route = selectRoute({
-    config: cfg,
-    statuses: { claude: { ok: false } },
-    taskProfile: { taskType: "code", estimatedInputTokens: 100 },
-    hints: { forceProvider: "claude" },
-    catalog
-  });
-  assert.equal(route.rejected, true);
+  const result = route(cfg, catalog, { statuses: { claude: { ok: false } }, hints: { forceProvider: "claude" } });
+  assert.equal(result.rejected, true);
+});
+
+test("8c. forced routing cannot bypass an observed usage limit", () => {
+  const cfg = config();
+  const catalog = catalogWith({ claude: [validated("claude-opus-5")], codex: [validated("gpt-5.4")] });
+  const quotaState = createQuotaStateStore();
+  quotaState.recordQuotaFailure("claude", { classification: "QUOTA_EXHAUSTED", detail: "usage limit reached" });
+  const result = route(cfg, catalog, { hints: { forceProvider: "claude" }, quotaState });
+  assert.equal(result.rejected, true, "an exhausted allowance is a hard gate, not a scoring penalty");
 });
 
 test("a forced route that passes every gate is honored and reports hint.forceProvider", () => {
   const cfg = config();
   const catalog = catalogWith({ claude: [validated("claude-opus-5")], codex: [validated("gpt-5.4")] });
-  const route = selectRoute({
-    config: cfg,
-    statuses: {},
-    taskProfile: { taskType: "code", estimatedInputTokens: 100 },
-    hints: { forceProvider: "claude", forceModel: "claude-opus-5" },
-    catalog
-  });
-  assert.equal(route.rejected, undefined);
-  assert.equal(route.provider, "claude");
-  assert.equal(route.model, "claude-opus-5");
-  assert.equal(route.reasonCode, "hint.forceProvider");
-  assert.equal(route.confidence, "explicit");
+  const result = route(cfg, catalog, { hints: { forceProvider: "claude", forceModel: "claude-opus-5" } });
+  assert.equal(result.rejected, undefined);
+  assert.equal(result.winner.provider, "claude");
+  assert.equal(result.winner.providerModelId, "claude-opus-5");
+  assert.equal(result.reasonCode, "hint.forceProvider");
+  assert.equal(result.confidence.level, "explicit_validated");
 });
 
-// ---------------------------------------------------------------- P0-3
-
-test("3. a configured model is cleared after the catalog authoritatively removes it", () => {
-  const cfg = config();
-  const catalog = catalogWith({ claude: [{ ...validated("claude-opus-5"), state: "retired" }], codex: [validated("gpt-5.4")] });
-  const { config: next, cleared } = reconcileConfiguredModels(cfg, catalog);
-  assert.deepEqual(cleared, [{ provider: "claude", model: "claude-opus-5", previousState: "retired" }]);
-  assert.equal(next.providers.claude.model, "", "cleared, never replaced with an arbitrary catalog model");
-  assert.equal(next.providers.codex.model, "gpt-5.4", "an eligible configured model is left alone");
-});
-
-test("4. startup reconciliation clears a model that is absent from the catalog entirely", () => {
-  const cfg = config();
-  const catalog = catalogWith({ claude: [validated("some-other-model")] });
-  const { config: next, cleared } = reconcileConfiguredModels(cfg, catalog);
-  assert.equal(cleared.length, 1);
-  assert.equal(cleared[0].previousState, "absent_from_catalog");
-  assert.equal(next.providers.claude.model, "");
-});
-
-test("3b. reconciliation preserves unrelated provider configuration and credentials", () => {
-  const cfg = config({
-    lmstudio: { enabled: true, type: "http", baseUrl: "http://x/v1", apiKey: "secret-token", model: "gone", models: [] }
-  });
-  const catalog = catalogWith({ lmstudio: [validated("something-else")] });
-  const { config: next } = reconcileConfiguredModels(cfg, catalog);
-  assert.equal(next.providers.lmstudio.model, "");
-  assert.equal(next.providers.lmstudio.apiKey, "secret-token");
-  assert.equal(next.providers.lmstudio.baseUrl, "http://x/v1");
-  assert.equal(next.providers.lmstudio.enabled, true);
-});
-
-test("3c. reconciliation does not touch a provider the catalog has never assessed", () => {
-  const cfg = config();
-  const catalog = catalogWith({ codex: [validated("gpt-5.4")] }); // no claude bucket
-  const { config: next, cleared } = reconcileConfiguredModels(cfg, catalog);
-  assert.equal(cleared.length, 0);
-  assert.equal(next.providers.claude.model, "claude-opus-5", "no authoritative refresh has contradicted this yet");
-});
-
-test("3d. reconciliation leaves an intentionally empty configured model alone", () => {
-  const cfg = config();
-  cfg.providers.claude.model = "";
-  const catalog = catalogWith({ claude: [validated("claude-opus-5")] });
-  const { cleared } = reconcileConfiguredModels(cfg, catalog);
-  assert.equal(cleared.length, 0);
-});
-
-// ---------------------------------------------------------------- P0-4
+// ------------------------------------------------- unassessed providers
 
 test("9. an unassessed provider contributes zero eligible models", () => {
   const cfg = config();
   const registry = buildModelRegistry(cfg, {}, defaultCatalog());
   assert.equal(registry.filter((e) => e.automaticEligibility).length, 0);
   assert.ok(registry.every((e) => e.pendingAssessment));
+});
+
+test("9b. an unassessed provider is not routable by the live engine either", () => {
+  const cfg = config();
+  const result = route(cfg, defaultCatalog());
+  assert.equal(result.winner, null);
+  assert.ok(
+    result.ranked.every((c) => c.excluded),
+    "every candidate from an unassessed provider must be excluded, not merely deprioritized"
+  );
 });
 
 test("10. a failed refresh for an unassessed provider does not restore config trust", () => {
@@ -263,7 +236,6 @@ test("10. a failed refresh for an unassessed provider does not restore config tr
       enabled: true,
       type: "http",
       baseUrl: "http://127.0.0.1:1234/v1",
-      model: "google/gemma-4-26b-a4b-qat",
       models: [{ id: "google/gemma-4-26b-a4b-qat", name: "gemma" }]
     }
   });
@@ -274,7 +246,7 @@ test("10. a failed refresh for an unassessed provider does not restore config tr
 });
 
 test("11. provider-default routing requires an explicitly validated provider-default entry", () => {
-  const cfg = { routing: { taskRoutes: {} }, providers: { codex: { enabled: true, model: "", models: [] } } };
+  const cfg = { routing: { priority: "balanced" }, providers: { codex: { enabled: true, models: [] } } };
 
   // No provider-default entry -> nothing routable, no implicit empty-model route.
   const withoutDefault = buildModelRegistry(cfg, {}, catalogWith({ codex: [validated("gpt-5.4")] }));
@@ -290,13 +262,13 @@ test("11. provider-default routing requires an explicitly validated provider-def
   assert.equal(entry.automaticEligibility, true);
 
   // And it dispatches with an empty model so the provider picks its own.
-  const attempts = buildRankedAttempts([{ provider: "codex", model: PROVIDER_DEFAULT_MODEL_ID, excluded: false, score: 1 }], cfg);
-  assert.equal(attempts[0].config.model, "");
-  assert.equal(attempts[0].providerDefault, true);
-  assert.equal(attempts[0].registryModel, PROVIDER_DEFAULT_MODEL_ID);
+  const plan = buildAttemptPlan([{ provider: "codex", providerModelId: PROVIDER_DEFAULT_MODEL_ID, excluded: false }], cfg);
+  assert.equal(plan[0].config.model, "");
+  assert.equal(plan[0].providerDefault, true);
+  assert.equal(plan[0].registryModel, PROVIDER_DEFAULT_MODEL_ID);
 });
 
-// ---------------------------------------------------------------- P0-5
+// ------------------------------------------------- non-chat models
 
 test("12. embedding models are excluded from chat routing", () => {
   assert.equal(classifyChatCapability({ modelId: "text-embedding-3-large" }), "unsupported");
@@ -306,7 +278,7 @@ test("12. embedding models are excluded from chat routing", () => {
 });
 
 test("13. jina-embeddings-v5-text-small-retrieval cannot enter the chat registry", () => {
-  const cfg = { routing: { taskRoutes: {} }, providers: { lmstudio: { enabled: true, type: "http", model: "", models: [] } } };
+  const cfg = { routing: { priority: "balanced" }, providers: { lmstudio: { enabled: true, type: "http", models: [] } } };
   const catalog = catalogWith({
     lmstudio: [
       { ...validated("jina-embeddings-v5-text-small-retrieval"), state: "exposed" },
@@ -319,10 +291,22 @@ test("13. jina-embeddings-v5-text-small-retrieval cannot enter the chat registry
 });
 
 test("14. text-embedding-nomic-embed-text-v1.5 cannot enter the chat registry", () => {
-  const cfg = { routing: { taskRoutes: {} }, providers: { lmstudio: { enabled: true, type: "http", model: "", models: [] } } };
+  const cfg = { routing: { priority: "balanced" }, providers: { lmstudio: { enabled: true, type: "http", models: [] } } };
   const catalog = catalogWith({ lmstudio: [{ ...validated("text-embedding-nomic-embed-text-v1.5"), state: "exposed" }] });
   const registry = buildModelRegistry(cfg, {}, catalog);
   assert.equal(registry.length, 0);
+});
+
+test("14b. a non-chat model cannot become a candidate for the live engine", () => {
+  const cfg = { routing: { priority: "balanced" }, providers: { lmstudio: { enabled: true, type: "http", models: [] } } };
+  const catalog = catalogWith({
+    lmstudio: [
+      { ...validated("text-embedding-3-large"), state: "exposed" },
+      { ...validated("google/gemma-4-26b-a4b-qat"), state: "exposed" }
+    ]
+  });
+  const result = route(cfg, catalog);
+  assert.ok(!result.ranked.some((c) => c.providerModelId === "text-embedding-3-large"));
 });
 
 test("12b. the capability classifier does not over-match a legitimate chat model", () => {
@@ -339,41 +323,51 @@ test("12b. the capability classifier does not over-match a legitimate chat model
   }
 });
 
-// ---------------------------------------------------------------- P0-8
+// ------------------------------------------------- every attempt is verified
 
-test("22. every generated attempt exists in the eligible registry", () => {
+test("22. every generated attempt maps to an eligible candidate from the same computation", () => {
   const cfg = config();
   const catalog = catalogWith({ claude: [validated("claude-opus-5")], codex: [validated("gpt-5.4")] });
-  const route = selectRoute({ config: cfg, statuses: {}, taskProfile: { taskType: "code", estimatedInputTokens: 100 }, catalog });
-  const attempts = buildRankedAttempts(route.ranking, cfg);
-  const registry = buildModelRegistry(cfg, {}, catalog);
-  assert.ok(attempts.length);
-  assert.deepEqual(verifyAttemptsAgainstRegistry(attempts, registry, cfg), []);
+  const result = route(cfg, catalog);
+  assert.ok(result.attemptPlan.length);
+  assert.deepEqual(verifyPlanAgainstCandidates(result.attemptPlan, result.ranked, cfg), []);
 });
 
-test("22b. verifyAttemptsAgainstRegistry flags an attempt that is not a current registry row", () => {
+test("22b. verification flags an attempt that is not a currently eligible candidate", () => {
   const cfg = config();
-  const registry = buildModelRegistry(cfg, {}, catalogWith({ claude: [validated("claude-opus-5")] }));
-  const smuggled = [{ name: "claude", registryModel: "claude-ghost-model", config: { ...cfg.providers.claude, model: "claude-ghost-model" } }];
-  const violations = verifyAttemptsAgainstRegistry(smuggled, registry, cfg);
+  const catalog = catalogWith({ claude: [validated("claude-opus-5")] });
+  const result = route(cfg, catalog);
+  const smuggled = [
+    { name: "claude", registryModel: "claude-ghost-model", config: { ...cfg.providers.claude, model: "claude-ghost-model" } }
+  ];
+  const violations = verifyPlanAgainstCandidates(smuggled, result.ranked, cfg);
   assert.equal(violations.length, 1);
   assert.match(violations[0].reason, /not a currently eligible registry entry/);
 });
 
-test("23. no attempt silently substitutes providerConfig.model when the candidate has no model", () => {
+test("23. no attempt is created for a candidate with no resolved model", () => {
   const cfg = config();
-  const attempts = buildRankedAttempts([{ provider: "claude", model: "", excluded: false, score: 5 }], cfg);
-  assert.deepEqual(attempts, [], "an unresolved candidate must be dropped, not backfilled from config");
+  const plan = buildAttemptPlan([{ provider: "claude", providerModelId: "", excluded: false }], cfg);
+  assert.deepEqual(plan, [], "an unresolved candidate must be dropped, not backfilled from config");
 });
 
-test("23b. a pending_assessment registry row can never become an attempt", () => {
+test("23b. an excluded candidate can never become an attempt", () => {
   const cfg = config();
-  const registry = buildModelRegistry(cfg, {}, defaultCatalog());
-  const ranking = registry.map((e) => ({ provider: e.provider, model: e.model, excluded: false, score: 1 }));
-  assert.deepEqual(buildRankedAttempts(ranking, cfg), []);
+  const plan = buildAttemptPlan(
+    [{ provider: "claude", providerModelId: "claude-opus-5", excluded: true, reasonCode: "eligibility.unhealthyProvider" }],
+    cfg
+  );
+  assert.deepEqual(plan, []);
 });
 
-// ---------------------------------------------------------------- P0-9 / hygiene
+test("23c. a disabled provider can never become an attempt", () => {
+  const cfg = config();
+  cfg.providers.claude.enabled = false;
+  const plan = buildAttemptPlan([{ provider: "claude", providerModelId: "claude-opus-5", excluded: false }], cfg);
+  assert.deepEqual(plan, []);
+});
+
+// ------------------------------------------------- hygiene
 
 test("25. no SmartRoute files or references exist in shipped source", async () => {
   const { readdirSync, statSync, readFileSync } = await import("node:fs");

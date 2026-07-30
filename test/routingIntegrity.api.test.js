@@ -73,7 +73,7 @@ test.before(async () => {
             timeoutMs: 10000
           }
         },
-        routing: { defaultProvider: "deadp", fallbackChain: ["deadp"], taskRoutes: { code: "deadp" } }
+        routing: { priority: "balanced" }
       },
       null,
       2
@@ -127,23 +127,22 @@ test("2/5. a configured-but-rejected model is never dispatched, even as a last r
   );
 });
 
-test("4. startup reconciliation cleared the stale configured model that predated this implementation", async () => {
+test("4. the schema no longer carries a per-provider configured model at all", async () => {
   const res = await fetch(`${BASE}/api/config`, { headers: authHeaders() });
   const config = await res.json();
-  assert.equal(config.providers.deadp.model, "", "a configured model the catalog rejected must be cleared at startup");
-
-  const logsRes = await fetch(`${BASE}/api/logs`, { headers: authHeaders() });
-  const logs = (await logsRes.json()).logs;
-  assert.ok(
-    logs.some((l) => l.message.includes("routing.configuredModelCleared") && l.message.includes("dead-model")),
-    "the cleanup must be recorded in bounded diagnostics"
-  );
+  for (const [name, providerConfig] of Object.entries(config.providers)) {
+    assert.equal(providerConfig.model, undefined, `providers.${name}.model must not exist`);
+  }
+  assert.equal(config.configVersion, 3);
 });
 
-test("4b. the cleared configured model is not replaced with an arbitrary catalog model", async () => {
+test("4b. a client cannot reintroduce a configured model by posting one", async () => {
   const res = await fetch(`${BASE}/api/config`, { headers: authHeaders() });
   const config = await res.json();
-  assert.equal(config.providers.deadp.model, "");
+  config.providers.deadp.model = "dead-model";
+  const put = await fetch(`${BASE}/api/config`, { method: "PUT", headers: authHeaders(), body: JSON.stringify(config) });
+  const saved = await put.json();
+  assert.equal(saved.providers.deadp.model, undefined, "the write path must strip a removed field, not persist it");
 });
 
 test("9. an unassessed provider is reported pending_assessment and contributes nothing routable", async () => {
@@ -155,13 +154,12 @@ test("9. an unassessed provider is reported pending_assessment and contributes n
     enabled: true,
     command: process.execPath,
     runArgs: [path.join(__dirname, "fixtures", "echo-json.js")],
-    model: "never-assessed",
     models: [{ id: "never-assessed", name: "never-assessed" }],
     timeoutMs: 10000
   };
   await fetch(`${BASE}/api/config`, { method: "PUT", headers: authHeaders(), body: JSON.stringify(config) });
 
-  const regRes = await fetch(`${BASE}/api/routing/registry`, { headers: authHeaders() });
+  const regRes = await fetch(`${BASE}/api/diagnostics/models`, { headers: authHeaders() });
   const { registry } = await regRes.json();
   const rows = registry.filter((e) => e.provider === "freshp");
   assert.equal(rows.length, 1);
@@ -175,7 +173,7 @@ test("9. an unassessed provider is reported pending_assessment and contributes n
 });
 
 test("21. the registry endpoint reports benchmark staleness so scoring can be withheld", async () => {
-  const res = await fetch(`${BASE}/api/routing/registry`, { headers: authHeaders() });
+  const res = await fetch(`${BASE}/api/diagnostics/models`, { headers: authHeaders() });
   const body = await res.json();
   // No OpenRouter key in this sandbox: benchmarks disabled, and never applied.
   assert.equal(body.benchmarks.enabled, false);

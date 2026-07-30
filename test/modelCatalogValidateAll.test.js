@@ -98,7 +98,7 @@ test("POST /api/model-catalog/validate-all probes every seeded model and does no
   assert.equal(bad.classification, "MODEL_NOT_FOUND");
   assert.notEqual(bad.state, "validated", "a model that fails validation must stay unvalidated, not silently pass");
 
-  const registryRes = await fetch(`${BASE}/api/routing/registry`, { headers: authHeaders() });
+  const registryRes = await fetch(`${BASE}/api/diagnostics/models`, { headers: authHeaders() });
   const registry = (await registryRes.json()).registry;
   const goodEntry = registry.find((e) => e.provider === "good" && e.model === "good-model");
   const badEntry = registry.find((e) => e.provider === "willfail" && e.model === "bad-model");

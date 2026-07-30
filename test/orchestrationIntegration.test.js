@@ -60,10 +60,8 @@ test.before(async () => {
     models: [{ id: "fixture-model", name: "fixture-model" }],
     timeoutMs: 10000
   };
-  for (const t of Object.keys(config.routing.taskRoutes)) {
-    config.routing.taskRoutes[t] = "fixturep";
-  }
-  config.routing.defaultProvider = "fixturep";
+  // The seeded catalog contains only this fixture provider, so automatic
+  // routing has exactly one eligible candidate.
   await fetch(`${BASE}/api/config`, { method: "PUT", headers: authHeaders(), body: JSON.stringify(config) });
 });
 

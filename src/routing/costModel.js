@@ -68,9 +68,27 @@ export function estimateReasoningTokens({
 } = {}) {
   const visible = Math.max(0, Number(expectedVisibleOutputTokens) || 0);
 
-  // 1/2/3 — measured evidence for this exact provider/model/profile.
   const measuredReasoning = Number(telemetry?.observedReasoningTokens);
   const samples = Number(telemetry?.sampleCount ?? 0);
+
+  // 1/2 — the provider's own reported reasoning-token usage. This is the
+  // directive's top evidence source and therefore outranks the sample-count
+  // threshold that governs inferred history below: one real number from the
+  // provider beats any prior, so a single reported observation is enough to
+  // stop using the ordinal guess. Confidence still scales with sample count.
+  const providerReported =
+    telemetry?.usageSource === "http_response_usage" || telemetry?.usageSource === "provider_cli_structured";
+  if (providerReported && Number.isFinite(measuredReasoning) && measuredReasoning >= 0 && (telemetry.usageObservationCount ?? 0) > 0) {
+    return {
+      expectedReasoningTokens: Math.round(measuredReasoning),
+      expectedReasoningTokenRange: { min: Math.round(measuredReasoning * 0.7), max: Math.round(measuredReasoning * 1.4) },
+      reasoningBurnClass: burnClassForRatio(visible > 0 ? measuredReasoning / visible : 0),
+      reasoningCostConfidence: samples >= minimumSamplesForMeasuredEstimate ? "high" : "medium",
+      reasoningEstimateSource: "provider_reported_usage"
+    };
+  }
+
+  // 3 — measured history for this exact provider/model/profile.
   if (Number.isFinite(measuredReasoning) && measuredReasoning >= 0 && samples >= minimumSamplesForMeasuredEstimate) {
     return {
       expectedReasoningTokens: Math.round(measuredReasoning),
@@ -122,8 +140,16 @@ function burnClassForRatio(ratio) {
 export function estimateVisibleOutputTokens({ taskProfile, telemetry = null, minimumSamplesForMeasuredEstimate = 10 } = {}) {
   const measured = Number(telemetry?.observedVisibleOutputTokens);
   const samples = Number(telemetry?.sampleCount ?? 0);
-  if (Number.isFinite(measured) && measured > 0 && samples >= minimumSamplesForMeasuredEstimate) {
-    return { expectedVisibleOutputTokens: Math.round(measured), source: "measured_history" };
+  // Provider-reported usage is evidence source 1 and does not wait for the
+  // sample threshold (see estimateReasoningTokens for the same rule).
+  const providerReported =
+    (telemetry?.usageSource === "http_response_usage" || telemetry?.usageSource === "provider_cli_structured") &&
+    (telemetry?.usageObservationCount ?? 0) > 0;
+  if (Number.isFinite(measured) && measured > 0 && (providerReported || samples >= minimumSamplesForMeasuredEstimate)) {
+    return {
+      expectedVisibleOutputTokens: Math.round(measured),
+      source: providerReported ? "provider_reported_usage" : "measured_history"
+    };
   }
   if (Number.isFinite(taskProfile?.requestedMaxOutputTokens) && taskProfile.requestedMaxOutputTokens > 0) {
     return { expectedVisibleOutputTokens: taskProfile.requestedMaxOutputTokens, source: "request_max_tokens" };
@@ -182,7 +208,20 @@ export function estimateEffectiveCost({
   });
 
   const input = Math.max(0, Number(estimatedInputTokens) || 0);
-  const reasoningTokens = reasoning.expectedReasoningTokens ?? 0;
+
+  // PARAGON-D-004E (Phase 1): unknown reasoning consumption must never be
+  // costed as zero. `?? 0` here was the exact artificial-advantage bug the
+  // directive forbids — a model whose reasoning behavior PARAGON cannot
+  // observe would price as if it did no reasoning at all and out-compete a
+  // model that honestly reported a large reasoning burn. When the source is
+  // `unknown` we substitute a conservative floor (the "high" effort prior
+  // midpoint) so the candidate is costed pessimistically, and flag it so the
+  // uncertainty penalty applies on top.
+  const reasoningUnknown = reasoning.reasoningEstimateSource === "unknown";
+  const conservativeReasoningFloor = Math.round(
+    expectedVisibleOutputTokens * ((REASONING_PRIOR.high.min + REASONING_PRIOR.high.max) / 2)
+  );
+  const reasoningTokens = reasoningUnknown ? conservativeReasoningFloor : (reasoning.expectedReasoningTokens ?? 0);
   const effectiveExpectedTokens = input + expectedVisibleOutputTokens + reasoningTokens;
 
   // --- monetary
@@ -227,7 +266,19 @@ export function estimateEffectiveCost({
   // axis. Exposed as a named constant rather than buried so it can be
   // recalibrated from shadow evidence.
   const MONETARY_TO_RESOURCE_UNITS = 1000;
-  const monetaryUnits = estimatedMonetaryCost != null ? estimatedMonetaryCost * MONETARY_TO_RESOURCE_UNITS : 0;
+  let monetaryUnits = estimatedMonetaryCost != null ? estimatedMonetaryCost * MONETARY_TO_RESOURCE_UNITS : 0;
+
+  // PARAGON-D-004E (Phase 1): a metered provider with no pricing evidence is
+  // not a free provider. Without this, an unpriced HTTP endpoint scored zero
+  // monetary cost AND zero quota burn — a perfect cost score built entirely on
+  // absence of information, which would beat every honestly-priced candidate.
+  // Charge it the same token-proportional relative cost a subscription
+  // provider pays, so missing pricing is neutral rather than advantageous.
+  const unpricedMeteredProvider = !isSubscription && promptPrice == null;
+  if (unpricedMeteredProvider) {
+    monetaryUnits = effectiveExpectedTokens / 1000;
+  }
+
   const estimatedTotalResourceCost = monetaryUnits + estimatedQuotaBurn + quotaScarcityPenalty;
 
   // Retry/failure expectation from real outcome history.
@@ -247,6 +298,12 @@ export function estimateEffectiveCost({
     monetaryCostConfidence: monetaryConfidence,
     pricingAvailable: promptPrice != null,
     cacheReadPriceKnown: cacheReadPrice != null,
+    // PARAGON-D-004E: surfaced so Diagnostics can show *why* a cost figure is
+    // soft, and so a reviewer can prove unknown usage was penalized rather
+    // than zeroed.
+    reasoningTokensAssumedConservative: reasoningUnknown,
+    conservativeReasoningFloorTokens: reasoningUnknown ? conservativeReasoningFloor : null,
+    unpricedMeteredProvider,
 
     isSubscriptionProvider: isSubscription,
     estimatedQuotaBurn,

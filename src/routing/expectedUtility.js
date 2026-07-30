@@ -42,9 +42,14 @@ export const UTILITY_WEIGHTS = {
   quotaScarcityScale: 1.0,
   uncertaintyScale: 20,
   reasoningFitScale: 15,
-  // Operator preference retained as a *bounded* nudge rather than the
-  // heaviest term it used to be (+3 of a ~8 point internal max).
-  taskRoutePreferenceBonus: 4
+  /**
+   * PARAGON-D-004E (Phase 4): pinned to 0. The legacy `routing.taskRoutes`
+   * provider preference is removed from the schema and must not be reachable
+   * through any routing-priority preset. The key stays present so callers
+   * reading the weights see an explicit "no operator provider preference is
+   * applied" rather than `undefined`.
+   */
+  taskRoutePreferenceBonus: 0
 };
 
 /** Neutral prior when there is no measured success history at all. */
@@ -109,7 +114,7 @@ function latencyPenalty({ telemetry, taskProfile, executionProfile, minimumSampl
  * and practical-context gates. Returns the first failure so the dashboard
  * can show a specific exclusion reason.
  */
-export function checkHardEligibility(candidate, { taskProfile, unknownLargeContextThresholdTokens, maxCostClass }) {
+export function checkHardEligibility(candidate, { taskProfile, unknownLargeContextThresholdTokens, maxCostClass, quotaState = null }) {
   if (candidate.pendingAssessment) {
     return { ok: false, reasonCode: "routing.providerPendingAssessment" };
   }
@@ -124,6 +129,18 @@ export function checkHardEligibility(candidate, { taskProfile, unknownLargeConte
   }
   if (isCircuitOpen(candidate.provider)) {
     return { ok: false, reasonCode: "eligibility.circuitOpen" };
+  }
+  // PARAGON-D-004E (Phase 1): a provider whose allowance is observably spent
+  // is inadmissible until its known reset, not merely expensive. Scoring must
+  // never be able to rescue it — that is what let an exhausted provider keep
+  // being attempted (and keep failing) once per request.
+  if (quotaState?.isExhausted?.(candidate.provider)) {
+    const state = quotaState.state?.(candidate.provider) ?? null;
+    return {
+      ok: false,
+      reasonCode: "eligibility.quotaExhausted",
+      detail: state?.resetAt ? `provider allowance exhausted; expected reset ${state.resetAt}` : "provider allowance exhausted"
+    };
   }
 
   const capability = checkRequiredCapabilities(candidate.capabilities, taskProfile?.requiredCapabilities ?? []);
@@ -154,8 +171,11 @@ export function checkHardEligibility(candidate, { taskProfile, unknownLargeConte
 /**
  * Scores one admissible candidate. Returns the full component breakdown.
  */
-export function scoreCandidate(candidate, { taskProfile, taskRoutes = {}, minimumSamplesForMeasuredEstimate = 10, quotaScarcity = 0, unknownContext = false }) {
+export function scoreCandidate(candidate, { taskProfile, weights = UTILITY_WEIGHTS, minimumSamplesForMeasuredEstimate = 10, quotaScarcity = 0, unknownContext = false }) {
   const telemetry = candidate.telemetry ?? null;
+  // Routing priority resolves to a weight set (see routingPriority.js). It can
+  // only reorder admissible candidates — hard eligibility was already decided.
+  const W = { ...UTILITY_WEIGHTS, ...weights };
 
   // --- probability of successful completion
   let probabilityOfSuccessfulCompletion = PRIOR_SUCCESS_PROBABILITY;
@@ -208,15 +228,32 @@ export function scoreCandidate(candidate, { taskProfile, taskRoutes = {}, minimu
 
   const costSensitivityScale = { low: 0.6, normal: 1, high: 1.8 }[taskProfile?.costSensitivity] ?? 1;
 
-  const qualityTerm = probabilityOfSuccessfulCompletion * expectedTaskQuality * UTILITY_WEIGHTS.qualityScale;
-  const costTerm = cost.estimatedTotalResourceCost * UTILITY_WEIGHTS.resourceCostScale * costSensitivityScale;
-  const latencyTerm = latency.penalty * UTILITY_WEIGHTS.latencyPenaltyScale;
-  const quotaTerm = cost.quotaScarcityPenalty * UTILITY_WEIGHTS.quotaScarcityScale;
-  const uncertaintyTerm = uncertainty.penalty * UTILITY_WEIGHTS.uncertaintyScale;
-  const reasoningFitTerm = fit.alignment * UTILITY_WEIGHTS.reasoningFitScale;
-  const taskRouteTerm = taskRoutes?.[taskProfile?.workType] === candidate.provider ? UTILITY_WEIGHTS.taskRoutePreferenceBonus : 0;
+  // Post-verified capabilities (structured output) are not hard gates — see
+  // taskProfile.js. A candidate with *positive* evidence for one still deserves
+  // to be preferred, so it is a bounded scoring term rather than an exclusion.
+  // A candidate with `unknown` is neither rewarded nor punished: PARAGON will
+  // verify the actual response and escalate if it is wrong.
+  let postVerifiedBonus = 0;
+  const postVerifiedReasons = [];
+  for (const capability of taskProfile?.postVerifiedCapabilities ?? []) {
+    if (candidate.capabilities?.[capability] === true) {
+      postVerifiedBonus += 2;
+      postVerifiedReasons.push(`${capability} positively supported`);
+    } else if (candidate.capabilities?.[capability] === false) {
+      postVerifiedBonus -= 4;
+      postVerifiedReasons.push(`${capability} positively unsupported`);
+    }
+  }
 
-  const expectedUtility = qualityTerm - costTerm - latencyTerm - quotaTerm - uncertaintyTerm + reasoningFitTerm + taskRouteTerm;
+  const qualityTerm = probabilityOfSuccessfulCompletion * expectedTaskQuality * W.qualityScale;
+  const costTerm = cost.estimatedTotalResourceCost * W.resourceCostScale * costSensitivityScale;
+  const latencyTerm = latency.penalty * W.latencyPenaltyScale;
+  const quotaTerm = cost.quotaScarcityPenalty * W.quotaScarcityScale;
+  const uncertaintyTerm = uncertainty.penalty * W.uncertaintyScale;
+  const reasoningFitTerm = fit.alignment * W.reasoningFitScale;
+
+  const expectedUtility =
+    qualityTerm - costTerm - latencyTerm - quotaTerm - uncertaintyTerm + reasoningFitTerm + postVerifiedBonus;
 
   return {
     provider: candidate.provider,
@@ -225,6 +262,10 @@ export function scoreCandidate(candidate, { taskProfile, taskRoutes = {}, minimu
     reasoningEffort: candidate.executionProfile?.reasoningEffort ?? "unknown",
     speedMode: candidate.executionProfile?.speedMode ?? "unknown",
     executionProfile: candidate.executionProfile?.executionProfile ?? "unknown",
+    // Carried through so response headers and Diagnostics can report catalog
+    // provenance without re-deriving the registry a second time.
+    modelState: candidate.modelState ?? null,
+    costClass: candidate.costClass ?? null,
     excluded: false,
 
     expectedUtility,
@@ -248,7 +289,11 @@ export function scoreCandidate(candidate, { taskProfile, taskRoutes = {}, minimu
       reasoningFitAlignment: fit.alignment,
       reasoningFitReason: fit.reason,
       reasoningFitTerm,
-      taskRouteTerm
+      postVerifiedBonus,
+      postVerifiedReasons,
+      // The weight set this candidate was scored with, so Diagnostics can
+      // prove which routing priority produced a given ordering.
+      appliedWeights: W
     },
     cost,
     contextModel: candidate.contextModel,
@@ -330,7 +375,7 @@ function measuredEvidenceShare({ successSource, qualitySource, cost, latency }) 
   };
   add(successSource === "measured");
   add(qualitySource === "measured_outcomes");
-  add(cost.reasoningEstimateSource === "measured_history");
+  add(cost.reasoningEstimateSource === "measured_history" || cost.reasoningEstimateSource === "provider_reported_usage");
   add(cost.quotaBurnSource === "measured_history" || cost.quotaBurnSource === "not_applicable");
   add(latency.source === "measured_p95");
   return total ? measured / total : 0;
@@ -459,6 +504,6 @@ export function rankCandidates(candidates, options) {
     winner: eligible[0] ?? null,
     confidence: routingConfidence(ranked, { explicitlyForced: Boolean(options?.explicitlyForced) }),
     circuitStates: circuitStateSnapshot(),
-    weights: UTILITY_WEIGHTS
+    weights: { ...UTILITY_WEIGHTS, ...(options?.weights ?? {}) }
   };
 }

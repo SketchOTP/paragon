@@ -1,5 +1,6 @@
 import { addLog } from "./logStore.js";
 import { alignProviderModel } from "./modelList.js";
+import { extractOpenAiUsage, unknownUsage } from "./routing/usageEvidence.js";
 
 function normalizeBaseUrl(baseUrl) {
   return String(baseUrl ?? "")
@@ -35,6 +36,12 @@ export async function runHttpProvider(provider, providerConfig, prompt, onChunk)
     messages: [{ role: "user", content: prompt }],
     stream: Boolean(onChunk)
   };
+  // PARAGON-D-004E (Phase 1): ask for real token accounting on the stream too.
+  // Without this an OpenAI-compatible endpoint emits no usage chunk and every
+  // streamed request would report usage as unknown.
+  if (onChunk) {
+    body.stream_options = { include_usage: true };
+  }
   // Only set for bounded validation probes (see modelCatalogRefresh.js) —
   // never for a real completion, where the caller must get the full
   // response it asked for.
@@ -60,13 +67,14 @@ export async function runHttpProvider(provider, providerConfig, prompt, onChunk)
 
   const payload = await response.json();
   const content = payload.choices?.[0]?.message?.content ?? "";
+  const usage = extractOpenAiUsage(payload);
   addLog({
     type: "completion",
     provider,
     level: "info",
-    message: `HTTP completion ${content.length} chars`
+    message: `HTTP completion ${content.length} chars${usage.usageUnknown ? " (usage not reported)" : ` (${usage.totalBilledTokens} billed tokens)`}`
   });
-  return { stdout: content, stderr: "", code: 0 };
+  return { stdout: content, stderr: "", code: 0, usage };
 }
 
 async function streamHttpResponse(provider, response, onChunk) {
@@ -74,6 +82,9 @@ async function streamHttpResponse(provider, response, onChunk) {
   const decoder = new TextDecoder();
   let buffer = "";
   let stdout = "";
+  // The usage chunk arrives last (and only when include_usage was honored),
+  // typically with an empty `choices` array.
+  let usage = unknownUsage("streamed response reported no usage chunk");
 
   while (true) {
     const { done, value } = await reader.read();
@@ -95,6 +106,12 @@ async function streamHttpResponse(provider, response, onChunk) {
       }
       try {
         const chunk = JSON.parse(data);
+        if (chunk.usage) {
+          const parsed = extractOpenAiUsage(chunk);
+          if (!parsed.usageUnknown) {
+            usage = parsed;
+          }
+        }
         const text = chunk.choices?.[0]?.delta?.content;
         if (text) {
           stdout += text;
@@ -110,9 +127,9 @@ async function streamHttpResponse(provider, response, onChunk) {
     type: "completion",
     provider,
     level: "info",
-    message: `HTTP stream ${stdout.length} chars`
+    message: `HTTP stream ${stdout.length} chars${usage.usageUnknown ? " (usage not reported)" : ` (${usage.totalBilledTokens} billed tokens)`}`
   });
-  return { stdout, stderr: "", code: 0 };
+  return { stdout, stderr: "", code: 0, usage };
 }
 
 export async function listHttpModels(provider, providerConfig) {

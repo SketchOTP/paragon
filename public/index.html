@@ -9,95 +9,357 @@
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
-    <dialog id="api-key-dialog" class="sheet">
-      <form method="dialog" id="api-key-form" class="sheet-body">
-        <h2>API key</h2>
-        <p class="sheet-lead">Required over Tailscale or tunnels.</p>
-        <label class="field">
-          <input type="password" id="api-key-input" placeholder="Paste key" autocomplete="off" required />
-        </label>
-        <div class="sheet-actions">
-          <button type="submit" class="btn primary">Continue</button>
-        </div>
-      </form>
-    </dialog>
+    <!-- ================= First-run setup (Phase 10) ================= -->
+    <section class="onboarding" id="onboarding" hidden>
+      <div class="onboarding-card">
+        <img class="onboarding-logo" src="/paragon-logo.png" alt="" />
+        <h1>Set up PARAGON</h1>
+        <p class="onboarding-lede">
+          PARAGON gives Cursor — or any OpenAI-compatible client — one address that
+          automatically picks the best available model from the providers you connect.
+        </p>
 
-    <dialog id="avatar-dialog" class="sheet">
-      <div class="sheet-body">
-        <h2>Provider avatar</h2>
-        <p class="sheet-lead">PNG, JPEG or WebP, up to 2&nbsp;MB. Portrait images fill the card best.</p>
-        <div class="avatar-dialog-preview">
-          <img id="avatar-dialog-image" alt="" />
+        <ol class="onboarding-steps" id="onboarding-steps">
+          <li class="onboarding-step" data-step="providers">
+            <div class="onboarding-step-head">
+              <span class="onboarding-step-num">1</span>
+              <h2>Connect a provider</h2>
+            </div>
+            <p>Connect at least one provider so PARAGON has something to route to.</p>
+            <div class="onboarding-providers" id="onboarding-providers"></div>
+            <div class="onboarding-step-actions">
+              <button type="button" class="btn secondary" id="onboarding-add-provider">Add another provider</button>
+              <button type="button" class="btn ghost" id="onboarding-recheck">Re-check</button>
+            </div>
+          </li>
+
+          <li class="onboarding-step" data-step="connection">
+            <div class="onboarding-step-head">
+              <span class="onboarding-step-num">2</span>
+              <h2>Point your client at PARAGON</h2>
+            </div>
+            <dl class="onboarding-facts">
+              <dt>Base URL</dt>
+              <dd><code id="onboarding-base-url"></code><button type="button" class="btn ghost sm copy-btn" data-copy="onboarding-base-url">Copy</button></dd>
+              <dt>Model name</dt>
+              <dd><code id="onboarding-model"></code><button type="button" class="btn ghost sm copy-btn" data-copy="onboarding-model">Copy</button></dd>
+              <dt>API key</dt>
+              <dd><code id="onboarding-api-key"></code><button type="button" class="btn ghost sm copy-btn" data-copy="onboarding-api-key">Copy</button></dd>
+            </dl>
+            <pre class="onboarding-snippet" id="onboarding-snippet"></pre>
+            <button type="button" class="btn ghost sm" id="onboarding-copy-snippet">Copy client configuration</button>
+          </li>
+
+          <li class="onboarding-step" data-step="test">
+            <div class="onboarding-step-head">
+              <span class="onboarding-step-num">3</span>
+              <h2>Send a test request</h2>
+            </div>
+            <p>Optional, but it proves the whole path works before you rely on it.</p>
+            <button type="button" class="btn secondary" id="onboarding-test">Run test request</button>
+            <p class="onboarding-test-result" id="onboarding-test-result" role="status" aria-live="polite"></p>
+          </li>
+        </ol>
+
+        <div class="onboarding-footer">
+          <button type="button" class="btn primary" id="onboarding-finish">Go to dashboard</button>
         </div>
-        <label class="field">
-          <span class="field-label">Choose an image</span>
-          <input type="file" id="avatar-file" accept="image/png,image/jpeg,image/webp" />
-        </label>
-        <p class="settings-save-note" id="avatar-status" role="status" aria-live="polite"></p>
-        <div class="sheet-actions">
-          <button type="button" id="avatar-reset" class="btn ghost">Use bundled</button>
-          <button type="button" id="avatar-cancel" class="btn secondary">Cancel</button>
-          <button type="button" id="avatar-apply" class="btn primary">Apply</button>
+      </div>
+    </section>
+
+    <!-- ================= Everyday dashboard ================= -->
+    <main class="app" id="app" hidden>
+      <header class="hero">
+        <div class="hero-brand">
+          <div class="hero-header-image-wrap">
+            <img class="hero-header-image" src="/paragon-header.png" alt="PARAGON" />
+          </div>
+        </div>
+        <div class="hero-actions">
+          <button type="button" id="add-provider" class="btn secondary">+ Provider</button>
+          <button type="button" id="open-settings" class="btn primary">Settings</button>
+        </div>
+      </header>
+
+      <!-- ---------- 1. Connection ---------- -->
+      <section class="metrics" id="connection" aria-label="Connection">
+        <div class="metric-card">
+          <span class="metric-label">Base URL</span>
+          <div class="metric-value-row">
+            <code class="metric-value" id="base-url"></code>
+            <button type="button" class="btn ghost sm copy-btn" data-copy="base-url">Copy</button>
+          </div>
+        </div>
+        <div class="metric-card">
+          <span class="metric-label">Model name</span>
+          <div class="metric-value-row">
+            <code class="metric-value" id="model-name"></code>
+            <button type="button" class="btn ghost sm copy-btn" data-copy="model-name">Copy</button>
+          </div>
+        </div>
+        <div class="metric-card">
+          <span class="metric-label">API key</span>
+          <div class="metric-value-row">
+            <code class="metric-value" id="api-key"></code>
+            <button type="button" class="btn ghost sm copy-btn" data-copy="api-key">Copy</button>
+          </div>
+        </div>
+        <div class="metric-card">
+          <span class="metric-label">Service</span>
+          <div class="metric-value-row">
+            <span class="service-health" id="service-health"></span>
+          </div>
+        </div>
+      </section>
+
+      <!-- ---------- 2. Providers ---------- -->
+      <section class="providers-section" aria-label="Providers">
+        <div class="panel-head">
+          <h2>Providers</h2>
+          <button type="button" id="refresh-status" class="btn ghost">Refresh</button>
+        </div>
+        <div class="providers-grid" id="providers"></div>
+      </section>
+
+      <div class="lower-grid">
+        <!-- ---------- 3. Automatic Routing ---------- -->
+        <section class="panel routing-card" aria-label="Automatic Routing">
+          <div class="panel-head">
+            <h2>Automatic Routing</h2>
+            <span class="routing-state" id="routing-state"></span>
+          </div>
+          <dl class="routing-facts" id="routing-facts"></dl>
+          <div class="routing-warnings" id="routing-warnings"></div>
+          <button type="button" class="btn ghost sm" id="edit-priority">Edit priority</button>
+        </section>
+
+        <!-- ---------- 4. Recent Activity ---------- -->
+        <section class="panel activity-panel" aria-label="Recent Activity">
+          <div class="panel-head">
+            <h2>Recent Activity</h2>
+            <button type="button" id="refresh-activity" class="btn ghost">Refresh</button>
+          </div>
+          <ul class="activity-list" id="activity-list"></ul>
+        </section>
+      </div>
+    </main>
+
+    <!-- ================= Settings (one surface, one save) ================= -->
+    <dialog id="settings-dialog" class="sheet sheet-wide">
+      <div class="sheet-body">
+        <div class="sheet-head">
+          <h2>Settings</h2>
+          <button type="button" class="btn ghost sm" id="settings-close-x" aria-label="Close">✕</button>
+        </div>
+
+        <h3 class="settings-group">General</h3>
+        <div class="settings-grid">
+          <label class="field">
+            <span class="field-label">Model name clients request</span>
+            <input id="setting-exposed-model" />
+          </label>
+          <label class="field">
+            <span class="field-label">API key</span>
+            <input id="setting-api-key" type="password" autocomplete="new-password" />
+          </label>
+          <label class="field field-span">
+            <span class="field-label">Base URL override</span>
+            <input id="setting-base-url" placeholder="https://host:10000/v1" />
+            <span class="field-hint">Leave empty to use the address PARAGON detects.</span>
+          </label>
+          <label class="field">
+            <span class="field-label">Tailscale host</span>
+            <input id="setting-tailscale-host" placeholder="machine.tail.ts.net" />
+          </label>
+          <label class="field">
+            <span class="field-label">Tailscale serve port</span>
+            <input type="number" id="setting-serve-port" min="1" max="65535" />
+          </label>
+          <label class="field">
+            <span class="field-label">Tailscale funnel port</span>
+            <input type="number" id="setting-funnel-port" min="1" max="65535" />
+          </label>
+        </div>
+
+        <h3 class="settings-group">Routing</h3>
+        <fieldset class="priority-picker" id="priority-picker">
+          <legend class="field-label">Routing priority</legend>
+        </fieldset>
+
+        <h3 class="settings-group">Data</h3>
+        <div class="settings-grid">
+          <label class="field">
+            <span class="field-label">Keep activity for (days)</span>
+            <input type="number" id="setting-retention-days" min="1" max="365" />
+          </label>
+          <div class="field">
+            <span class="field-label">Activity history</span>
+            <button type="button" class="btn ghost" id="clear-activity">Clear activity history</button>
+            <span class="field-hint" id="clear-activity-status" role="status" aria-live="polite"></span>
+          </div>
+        </div>
+
+        <p class="settings-save-note" id="settings-status" role="status" aria-live="polite"></p>
+
+        <div class="sheet-actions settings-actions">
+          <button type="button" class="btn ghost" id="open-diagnostics">Advanced Diagnostics</button>
+          <span class="sheet-actions-spacer"></span>
+          <button type="button" class="btn secondary" id="settings-close">Close</button>
+          <button type="button" class="btn primary" id="save-settings">Save Changes</button>
         </div>
       </div>
     </dialog>
 
-    <dialog id="catalog-inspect-dialog" class="sheet sheet-wide">
+    <!-- ================= Advanced Diagnostics (one surface, tabbed) ================= -->
+    <dialog id="diagnostics-dialog" class="sheet sheet-full">
       <div class="sheet-body">
-        <h2 id="catalog-inspect-title">Inspect catalog</h2>
-        <p class="sheet-lead">
-          Advanced action. Validating a model probes it with one minimal request and updates its catalog
-          state only — it never sets a preferred or selected model for this provider.
-        </p>
-        <div class="catalog-inspect-wrap">
-          <table class="registry-table" id="catalog-inspect-table">
-            <thead>
-              <tr>
-                <th>Model</th>
-                <th>State</th>
-                <th>Auto-eligible</th>
-                <th>Last validated</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody id="catalog-inspect-body"></tbody>
-          </table>
+        <div class="sheet-head">
+          <h2>Advanced Diagnostics</h2>
+          <button type="button" class="btn ghost sm" id="diagnostics-close" aria-label="Close">✕</button>
         </div>
+
+        <nav class="diag-tabs" id="diag-tabs" role="tablist">
+          <button type="button" class="diag-tab is-active" role="tab" data-tab="models">Models</button>
+          <button type="button" class="diag-tab" role="tab" data-tab="routing">Routing</button>
+          <button type="button" class="diag-tab" role="tab" data-tab="requests">Requests</button>
+          <button type="button" class="diag-tab" role="tab" data-tab="system">System</button>
+        </nav>
+
+        <section class="diag-panel is-active" data-panel="models" role="tabpanel">
+          <div class="diag-actions">
+            <button type="button" class="btn ghost sm" id="diag-refresh-catalog">Refresh all providers</button>
+            <button type="button" class="btn ghost sm" id="diag-validate-all">Validate all</button>
+            <span class="diag-note" id="diag-models-note"></span>
+          </div>
+          <div class="diag-table-wrap">
+            <table class="registry-table">
+              <thead>
+                <tr>
+                  <th>Provider</th><th>Model</th><th>Catalog state</th><th>Eligible</th>
+                  <th>Context</th><th>Benchmark</th><th>Capabilities</th><th></th>
+                </tr>
+              </thead>
+              <tbody id="diag-models-body"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="diag-panel" data-panel="routing" role="tabpanel">
+          <div class="diag-actions">
+            <button type="button" class="btn ghost sm" id="diag-run-preview">Preview ranking</button>
+            <input class="diag-input" id="diag-preview-prompt" value="implement a function" aria-label="Preview prompt" />
+            <span class="diag-note" id="diag-routing-note"></span>
+          </div>
+          <dl class="router-facts" id="diag-routing-facts"></dl>
+          <h4 class="diag-subhead">Latest attempt plan</h4>
+          <ol class="plan-list" id="diag-plan-list"></ol>
+          <h4 class="diag-subhead">Ranked candidates &amp; utility decomposition</h4>
+          <div class="diag-table-wrap">
+            <table class="registry-table">
+              <thead>
+                <tr>
+                  <th>#</th><th>Provider</th><th>Model</th><th>Effort</th><th>Utility</th>
+                  <th>Quality</th><th>Cost</th><th>Latency</th><th>Uncertainty</th><th>Evidence</th><th>Excluded because</th>
+                </tr>
+              </thead>
+              <tbody id="diag-candidates-body"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="diag-panel" data-panel="requests" role="tabpanel">
+          <div class="diag-actions">
+            <button type="button" class="btn ghost sm" id="diag-refresh-requests">Refresh</button>
+            <span class="diag-note" id="diag-requests-note"></span>
+          </div>
+          <h4 class="diag-subhead">Request outcomes</h4>
+          <div class="diag-table-wrap">
+            <table class="registry-table">
+              <thead>
+                <tr><th>Time</th><th>Result</th><th>Provider</th><th>Model</th><th>Duration</th><th>Fallback</th><th>Reason</th></tr>
+              </thead>
+              <tbody id="diag-requests-body"></tbody>
+            </table>
+          </div>
+          <h4 class="diag-subhead">Usage evidence per model</h4>
+          <div class="diag-table-wrap">
+            <table class="registry-table">
+              <thead>
+                <tr><th>Key</th><th>Samples</th><th>Success</th><th>Input</th><th>Output</th><th>Reasoning</th><th>Cost</th><th>Usage source</th></tr>
+              </thead>
+              <tbody id="diag-usage-body"></tbody>
+            </table>
+          </div>
+          <h4 class="diag-subhead">Raw log</h4>
+          <div id="diag-logs" class="logs"></div>
+        </section>
+
+        <section class="diag-panel" data-panel="system" role="tabpanel">
+          <div class="diag-actions">
+            <button type="button" class="btn ghost sm" id="diag-refresh-system">Refresh</button>
+            <button type="button" class="btn ghost sm" id="diag-export">Export diagnostic bundle</button>
+            <span class="diag-note" id="diag-system-note"></span>
+          </div>
+          <dl class="router-facts" id="diag-system-facts"></dl>
+        </section>
+      </div>
+    </dialog>
+
+    <!-- ================= Provider dialogs ================= -->
+    <dialog id="provider-edit-dialog" class="sheet">
+      <div class="sheet-body">
+        <div class="sheet-head">
+          <h2 id="provider-edit-title">Edit provider</h2>
+        </div>
+        <div class="settings-grid" id="provider-edit-fields">
+          <label class="field field-span" id="provider-edit-command-field">
+            <span class="field-label">Command</span>
+            <input id="provider-edit-command" />
+          </label>
+          <label class="field field-span" id="provider-edit-base-url-field" hidden>
+            <span class="field-label">Base URL</span>
+            <input id="provider-edit-base-url" placeholder="http://127.0.0.1:11434/v1" />
+          </label>
+          <label class="field field-span" id="provider-edit-api-key-field" hidden>
+            <span class="field-label">API key</span>
+            <input id="provider-edit-api-key" type="password" autocomplete="off" />
+          </label>
+        </div>
+        <p class="settings-save-note" id="provider-edit-status" role="status" aria-live="polite"></p>
         <div class="sheet-actions">
-          <button type="button" id="catalog-inspect-close" class="btn primary">Close</button>
+          <button type="button" class="btn ghost" id="provider-edit-test">Test connection</button>
+          <span class="sheet-actions-spacer"></span>
+          <button type="button" class="btn secondary" id="provider-edit-cancel">Cancel</button>
+          <button type="button" class="btn primary" id="provider-edit-apply">Update provider</button>
         </div>
       </div>
     </dialog>
 
     <dialog id="add-provider-dialog" class="sheet">
       <form method="dialog" id="add-provider-form" class="sheet-body">
-        <h2>Add provider</h2>
+        <div class="sheet-head"><h2>Add provider</h2></div>
         <label class="field">
-          <span class="field-label">ID</span>
+          <span class="field-label">Identifier</span>
           <input id="new-provider-id" pattern="[a-z0-9-]+" required placeholder="ollama-local" />
         </label>
         <label class="field">
-          <span class="field-label">Name</span>
+          <span class="field-label">Display name</span>
           <input id="new-provider-label" required placeholder="Ollama" />
         </label>
         <label class="field">
           <span class="field-label">Type</span>
           <select id="new-provider-type">
-            <option value="http">HTTP API</option>
-            <option value="generic-cli">CLI</option>
+            <option value="http">OpenAI-compatible HTTP endpoint</option>
+            <option value="generic-cli">Command-line tool</option>
           </select>
         </label>
-        <div class="field">
-          <span class="field-label">Avatar</span>
-          <div class="new-provider-avatar-row">
-            <div class="new-provider-avatar-preview">
-              <img id="new-provider-avatar-image" alt="" />
-              <span id="new-provider-avatar-placeholder">No image</span>
-            </div>
-            <div class="new-provider-avatar-controls">
-              <input type="file" id="new-provider-avatar-file" accept="image/png,image/jpeg,image/webp" />
-              <span class="field-hint">Optional. PNG, JPEG or WebP up to 2&nbsp;MB. Portrait images fill the card best.</span>
-            </div>
+        <div class="new-provider-avatar-row">
+          <div class="new-provider-avatar-preview">
+            <img id="new-provider-avatar-image" alt="" />
+            <span id="new-provider-avatar-placeholder">No image</span>
+          </div>
+          <div class="new-provider-avatar-controls">
+            <input type="file" id="new-provider-avatar-file" accept="image/png,image/jpeg,image/webp" />
           </div>
         </div>
         <div id="new-provider-http-fields">
@@ -116,562 +378,65 @@
             <input id="new-provider-command" placeholder="my-cli" />
           </label>
           <label class="field">
-            <span class="field-label">Args</span>
+            <span class="field-label">Run arguments</span>
             <input id="new-provider-run-args" placeholder="-m {{model}} -" />
           </label>
         </div>
-        <p class="field-hint">
-          Models are discovered automatically by the model catalog after the provider is added — there is no
-          model to pick here, and routing only ever uses catalog-eligible models.
-        </p>
         <div class="sheet-actions">
+          <span class="sheet-actions-spacer"></span>
           <button type="button" class="btn secondary" id="add-provider-cancel">Cancel</button>
-          <button type="submit" class="btn primary">Add</button>
+          <button type="submit" class="btn primary">Add provider</button>
         </div>
       </form>
     </dialog>
 
-    <main class="app">
-      <header class="hero">
-        <div class="hero-brand">
-          <div class="hero-header-image-wrap">
-            <img class="hero-header-image" src="/paragon-header.png" alt="PARAGON" />
-          </div>
+    <dialog id="avatar-dialog" class="sheet">
+      <div class="sheet-body">
+        <div class="sheet-head"><h2>Provider avatar</h2></div>
+        <div class="avatar-dialog-preview">
+          <img id="avatar-dialog-image" alt="" />
         </div>
-        <div class="hero-actions">
-          <button type="button" id="toggle-settings" class="btn icon-btn" title="Server settings" aria-label="Server settings">
-            <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M12 15.5A3.5 3.5 0 1 0 12 8.5a3.5 3.5 0 0 0 0 7Zm8.94-2.5a7.96 7.96 0 0 0 .06-.99 7.96 7.96 0 0 0-.06-.99l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a8.06 8.06 0 0 0-1.71-.99l-.36-2.54A.5.5 0 0 0 14 2h-4a.5.5 0 0 0-.49.42l-.36 2.54c-.6.24-1.17.56-1.71.99l-2.39-.96a.5.5 0 0 0-.6.22L2.53 8.54a.5.5 0 0 0 .12.64L4.68 10.76c-.04.33-.06.66-.06.99s.02.66.06.99l-2.03 1.58a.5.5 0 0 0-.12.64l1.92 3.32c.14.24.43.34.68.22l2.39-.96c.54.43 1.11.75 1.71.99l.36 2.54c.05.28.27.46.49.46h4c.22 0 .44-.18.49-.42l.36-2.54c.6-.24 1.17-.56 1.71-.99l2.39.96c.25.12.54.02.68-.22l1.92-3.32a.5.5 0 0 0-.12-.64l-2.03-1.58Z"/></svg>
-          </button>
-          <button type="button" id="add-provider" class="btn secondary">+ Provider</button>
-          <button type="button" id="save" class="btn primary">Save</button>
+        <label class="field">
+          <span class="field-label">Image file</span>
+          <input type="file" id="avatar-file" accept="image/png,image/jpeg,image/webp" />
+        </label>
+        <p class="settings-save-note" id="avatar-status" role="status" aria-live="polite"></p>
+        <div class="sheet-actions">
+          <button type="button" id="avatar-reset" class="btn ghost">Use bundled</button>
+          <span class="sheet-actions-spacer"></span>
+          <button type="button" id="avatar-cancel" class="btn secondary">Cancel</button>
+          <button type="button" id="avatar-apply" class="btn primary">Apply</button>
         </div>
-      </header>
+      </div>
+    </dialog>
 
-      <section class="metrics" id="metrics">
-        <article class="metric-card">
-          <div class="metric-icon" aria-hidden="true">↗</div>
-          <div class="metric-body">
-            <span class="metric-label">Base URL</span>
-            <code class="metric-value" id="paragon-base-url"></code>
-          </div>
-        </article>
-        <article class="metric-card">
-          <div class="metric-icon" aria-hidden="true">◎</div>
-          <div class="metric-body">
-            <span class="metric-label">Exposed model id</span>
-            <code class="metric-value" id="model-name"></code>
-          </div>
-        </article>
-        <article class="metric-card">
-          <div class="metric-icon" aria-hidden="true">🔑</div>
-          <div class="metric-body">
-            <span class="metric-label">API key</span>
-            <code class="metric-value" id="api-key"></code>
-          </div>
-        </article>
-        <article class="metric-card">
-          <div class="metric-icon" aria-hidden="true">◉</div>
-          <div class="metric-body">
-            <span class="metric-label">Health</span>
-            <div class="health-gauge" id="health-gauge" title="Provider readiness"></div>
-          </div>
-        </article>
-      </section>
-
-      <section class="panel settings-panel" id="settings-panel" hidden>
-        <div class="panel-head">
-          <h2>Server</h2>
+    <dialog id="model-inspect-dialog" class="sheet sheet-wide">
+      <div class="sheet-body">
+        <div class="sheet-head"><h2 id="model-inspect-title">Inspect model</h2></div>
+        <dl class="router-facts" id="model-inspect-facts"></dl>
+        <div class="sheet-actions">
+          <span class="sheet-actions-spacer"></span>
+          <button type="button" id="model-inspect-close" class="btn primary">Close</button>
         </div>
-        <div class="settings-grid">
-          <label class="field">
-            <span class="field-label">Tailscale host</span>
-            <input id="setting-tailscale-host" placeholder="machine.tail.ts.net" />
-          </label>
-          <label class="field">
-            <span class="field-label">Tailnet port</span>
-            <input type="number" id="setting-serve-port" min="1" max="65535" />
-          </label>
-          <label class="field">
-            <span class="field-label">Funnel port</span>
-            <input type="number" id="setting-funnel-port" min="1" max="65535" />
-          </label>
-          <label class="field field-span">
-            <span class="field-label">Base URL override</span>
-            <input id="setting-paragon-base" placeholder="https://host:10000/v1" />
-          </label>
-          <label class="field">
-            <span class="field-label">Model name</span>
-            <input id="setting-exposed-model" />
-          </label>
-          <label class="field">
-            <span class="field-label">API key</span>
-            <input id="setting-api-key" type="password" autocomplete="new-password" />
-          </label>
-          <label class="field field-span">
-            <span class="field-label">OpenRouter API key (optional — model benchmarks)</span>
-            <input id="setting-openrouter-api-key" type="password" autocomplete="new-password" placeholder="sk-or-..." />
-            <span class="field-hint">Enables real external benchmark citations (Artificial Analysis / Design Arena, via OpenRouter) in the Model Routing panel below. Leave blank to keep task-fit ranking internal-only.</span>
-          </label>
-        </div>
-      </section>
+      </div>
+    </dialog>
 
-      <section class="providers-section">
-        <div class="section-head">
-          <h2>Providers</h2>
-          <button type="button" id="refresh-status" class="btn ghost">Refresh</button>
+    <dialog id="api-key-dialog" class="sheet">
+      <form method="dialog" id="api-key-form" class="sheet-body">
+        <div class="sheet-head"><h2>API key</h2></div>
+        <label class="field">
+          <span class="field-label">Paste the PARAGON API key to continue</span>
+          <input type="password" id="api-key-input" placeholder="Paste key" autocomplete="off" required />
+        </label>
+        <div class="sheet-actions">
+          <span class="sheet-actions-spacer"></span>
+          <button type="submit" class="btn primary">Continue</button>
         </div>
-        <div class="providers-grid" id="providers"></div>
-      </section>
+      </form>
+    </dialog>
 
-      <section class="lower-grid">
-        <article class="panel routing-panel">
-          <div class="panel-head">
-            <h2>Routing</h2>
-            <button type="button" id="refresh-routing-status" class="btn ghost">Refresh</button>
-          </div>
+    <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
 
-          <div class="router-split">
-            <div class="router-block live" id="live-router-block">
-              <h3>Live router <span class="router-engine-tag live">executes</span></h3>
-              <dl class="router-facts" id="live-router-facts"></dl>
-            </div>
-            <div class="router-block shadow" id="shadow-router-block">
-              <h3>Shadow router <span class="router-engine-tag shadow">advisory</span></h3>
-              <dl class="router-facts" id="shadow-router-facts"></dl>
-            </div>
-          </div>
-
-          <p class="methodology-note" id="router-authority-note"></p>
-
-          <h3 class="router-subhead">Fallback behavior</h3>
-          <ul class="router-bullets">
-            <li>Candidate order comes from the live ranked registry, rebuilt per request.</li>
-            <li>Only eligible provider-model pairs are attempted.</li>
-            <li>Circuit, cost, context, capability and catalog gates remain active.</li>
-            <li>A model-specific failure may change the next attempt.</li>
-            <li>Maximum attempts are controlled by live-enforcement policy.</li>
-          </ul>
-          <p class="methodology-note" id="fallback-max-note"></p>
-        </article>
-
-        <article class="panel logs-panel">
-          <div class="panel-head">
-            <h2>Activity</h2>
-          </div>
-          <div id="logs" class="logs"></div>
-        </article>
-      </section>
-
-      <section class="panel model-routing-panel" id="attempt-plans-panel">
-        <div class="panel-head">
-          <button type="button" class="panel-collapse-toggle" id="toggle-attempt-plans" aria-expanded="false" aria-controls="attempt-plans-body">
-            <svg class="chevron" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M8.12 9.29 12 13.17l3.88-3.88a1 1 0 1 1 1.41 1.42l-4.59 4.58a1 1 0 0 1-1.41 0L6.7 10.71a1 1 0 1 1 1.42-1.42Z"/></svg>
-            <h2>Attempt plans</h2>
-          </button>
-        </div>
-        <div id="attempt-plans-body" hidden>
-          <p class="methodology-note">
-            The most recent ranked attempt plan produced by each engine. These are observations of real
-            requests, not a saved order — a different request can produce a different plan.
-          </p>
-          <div class="plan-split">
-            <div class="plan-block">
-              <h3>Latest live attempt plan <span class="router-engine-tag live">PARAGON-D-004C1</span></h3>
-              <p class="plan-meta" id="live-plan-meta">No live request observed since startup.</p>
-              <ol class="plan-list" id="live-plan-list"></ol>
-            </div>
-            <div class="plan-block">
-              <h3>Latest shadow attempt plan <span class="router-engine-tag shadow">PARAGON-D-004D</span></h3>
-              <p class="plan-meta" id="shadow-plan-meta">No shadow decision observed since startup.</p>
-              <ol class="plan-list" id="shadow-plan-list"></ol>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <section class="panel model-routing-panel" id="legacy-preferences-panel">
-        <div class="panel-head">
-          <button type="button" class="panel-collapse-toggle" id="toggle-legacy-preferences" aria-expanded="false" aria-controls="legacy-preferences-body">
-            <svg class="chevron" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M8.12 9.29 12 13.17l3.88-3.88a1 1 0 1 1 1.41 1.42l-4.59 4.58a1 1 0 0 1-1.41 0L6.7 10.71a1 1 0 1 1 1.42-1.42Z"/></svg>
-            <h2>Legacy live provider preferences</h2>
-          </button>
-        </div>
-        <div id="legacy-preferences-body" hidden>
-          <p class="mode-banner off" id="legacy-preferences-note"></p>
-          <div id="routes" class="routes"></div>
-        </div>
-      </section>
-
-      <section class="panel settings-panel" id="shadow-settings-panel">
-        <div class="panel-head">
-          <button type="button" class="panel-collapse-toggle" id="toggle-shadow-settings" aria-expanded="false" aria-controls="shadow-settings-body">
-            <svg class="chevron" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M8.12 9.29 12 13.17l3.88-3.88a1 1 0 1 1 1.41 1.42l-4.59 4.58a1 1 0 0 1-1.41 0L6.7 10.71a1 1 0 1 1 1.42-1.42Z"/></svg>
-            <h2>Shadow routing settings — PARAGON-D-004D</h2>
-          </button>
-          <button type="button" id="save-shadow-settings" class="btn primary sm">Save</button>
-        </div>
-        <div id="shadow-settings-body" hidden>
-          <p class="methodology-note">
-            These change the D-004D shadow computation only. Shadow mode does not select providers or models,
-            does not alter responses, and makes no additional provider calls. Promoting D-004D to live is an
-            activation decision and is deliberately not settable here.
-          </p>
-          <div class="settings-grid">
-            <label class="field">
-              <span class="field-label">Mode (read-only)</span>
-              <input id="shadow-setting-mode" readonly />
-            </label>
-            <label class="field">
-              <span class="field-label">Quota scarcity (0–1)</span>
-              <input type="number" id="shadow-setting-quota-scarcity" min="0" max="1" step="0.05" />
-            </label>
-            <label class="field">
-              <span class="field-label">Unknown large-context threshold (tokens)</span>
-              <input type="number" id="shadow-setting-context-threshold" min="1000" step="1000" />
-            </label>
-            <label class="field">
-              <span class="field-label">Minimum telemetry samples</span>
-              <input type="number" id="shadow-setting-min-samples" min="1" step="1" />
-            </label>
-            <label class="field">
-              <span class="field-label">Maximum shadow attempts</span>
-              <input type="number" id="shadow-setting-max-attempts" min="1" max="12" step="1" />
-            </label>
-            <label class="field">
-              <span class="field-label">Telemetry retention (days)</span>
-              <input type="number" id="shadow-setting-retention-days" min="1" step="1" />
-            </label>
-          </div>
-          <p class="settings-save-note" id="shadow-settings-status" role="status" aria-live="polite"></p>
-          <h3 class="router-subhead">Operator-reviewed mapping tables (read-only)</h3>
-          <p class="methodology-note">
-            Displayed rather than editable: a malformed hand-typed mapping would silently change how every
-            candidate is profiled. Edit these in <code>data/config.json</code> under
-            <code>routingIntelligence</code>.
-          </p>
-          <dl class="router-facts" id="shadow-mapping-facts"></dl>
-        </div>
-      </section>
-
-      <section class="panel settings-panel" id="deprecated-config-panel">
-        <div class="panel-head">
-          <button type="button" class="panel-collapse-toggle" id="toggle-deprecated-config" aria-expanded="false" aria-controls="deprecated-config-body">
-            <svg class="chevron" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M8.12 9.29 12 13.17l3.88-3.88a1 1 0 1 1 1.41 1.42l-4.59 4.58a1 1 0 0 1-1.41 0L6.7 10.71a1 1 0 1 1 1.42-1.42Z"/></svg>
-            <h2>Deprecated compatibility fields</h2>
-          </button>
-        </div>
-        <div id="deprecated-config-body" hidden>
-          <p class="methodology-note">
-            These fields are still present in <code>data/config.json</code> and are preserved byte-for-value
-            on every save, but none of them is authoritative for normal live routing. They are hidden from the
-            primary dashboard rather than deleted, so a rollback to an earlier release does not lose operator
-            state.
-          </p>
-          <div id="deprecated-config-list"></div>
-        </div>
-      </section>
-
-      <section class="panel model-routing-panel" id="model-routing-panel">
-        <div class="panel-head">
-          <button type="button" class="panel-collapse-toggle" id="toggle-model-routing" aria-expanded="false" aria-controls="model-routing-body">
-            <svg class="chevron" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M8.12 9.29 12 13.17l3.88-3.88a1 1 0 1 1 1.41 1.42l-4.59 4.58a1 1 0 0 1-1.41 0L6.7 10.71a1 1 0 1 1 1.42-1.42Z"/></svg>
-            <h2>Model Routing</h2>
-          </button>
-          <button type="button" id="refresh-registry" class="btn ghost">Refresh</button>
-        </div>
-        <div id="model-routing-body" class="model-routing-body" hidden>
-          <p class="mode-banner live" id="model-routing-note">
-            Every request is scored live against the table below — provider and model are chosen automatically
-            per request. The legacy provider preferences are one scoring signal into that score, never a fixed
-            mapping, and only catalog-eligible models appear here.
-          </p>
-          <div class="registry-filter-bar">
-            <label class="field compact">
-              <span class="field-label">Rank for task</span>
-              <select id="registry-task-filter"></select>
-            </label>
-            <label class="field compact">
-              <span class="field-label">Provider</span>
-              <select id="registry-provider-filter">
-                <option value="">All</option>
-              </select>
-            </label>
-            <label class="field compact">
-              <span class="field-label">Health</span>
-              <select id="registry-health-filter">
-                <option value="">All</option>
-                <option value="healthy">Healthy</option>
-                <option value="unhealthy">Unhealthy</option>
-                <option value="unknown">Unknown</option>
-              </select>
-            </label>
-            <button type="button" class="btn ghost sm" id="registry-sources-btn">Sources / methodology</button>
-            <span class="registry-updated-note" id="registry-benchmark-note"></span>
-            <span class="registry-updated-note" id="registry-updated-note"></span>
-          </div>
-          <div class="registry-table-wrap">
-            <table class="registry-table" id="registry-table">
-              <thead>
-                <tr>
-                  <th data-sort-key="provider">Provider</th>
-                  <th data-sort-key="model">Model</th>
-                  <th data-sort-key="tenScale">Task fit (1-10, 10=worst)</th>
-                  <th data-sort-key="benchmarkIndex">External benchmark</th>
-                  <th data-sort-key="health">Health</th>
-                  <th data-sort-key="costClass">Cost class</th>
-                  <th data-sort-key="latencyClass">Latency class</th>
-                  <th data-sort-key="contextWindow">Context window</th>
-                  <th data-sort-key="automaticEligibility">Auto-eligible</th>
-                </tr>
-              </thead>
-              <tbody id="registry-table-body"></tbody>
-            </table>
-          </div>
-        </div>
-      </section>
-
-      <dialog id="registry-sources-dialog" class="sheet sheet-wide">
-        <div class="sheet-body">
-          <h2>Model routing: sources &amp; methodology</h2>
-          <div id="registry-sources-content"></div>
-          <div class="sheet-actions">
-            <button type="button" class="btn primary" id="registry-sources-close">Close</button>
-          </div>
-        </div>
-      </dialog>
-
-      <section class="panel model-routing-panel" id="model-catalog-panel">
-        <div class="panel-head">
-          <button type="button" class="panel-collapse-toggle" id="toggle-model-catalog" aria-expanded="false" aria-controls="model-catalog-body">
-            <svg class="chevron" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M8.12 9.29 12 13.17l3.88-3.88a1 1 0 1 1 1.41 1.42l-4.59 4.58a1 1 0 0 1-1.41 0L6.7 10.71a1 1 0 1 1 1.42-1.42Z"/></svg>
-            <h2>Model Catalog</h2>
-          </button>
-          <button type="button" id="refresh-catalog" class="btn ghost">Refresh all providers</button>
-          <button type="button" id="validate-all-catalog" class="btn ghost">Validate all</button>
-        </div>
-        <div id="model-catalog-body" class="model-routing-body" hidden>
-          <p class="mode-banner live" id="model-catalog-note">
-            Only <strong>exposed</strong> or <strong>validated</strong> entries below are automatically routed —
-            a model appearing in a static list, an installed binary, or a previous config is a candidate only,
-            never automatic evidence of current availability (PARAGON-D-004C). Refreshes automatically every 24h.
-          </p>
-          <div class="registry-filter-bar">
-            <span class="registry-updated-note" id="catalog-schedule-note"></span>
-            <span class="registry-updated-note" id="catalog-updated-note"></span>
-          </div>
-          <div class="registry-table-wrap">
-            <table class="registry-table" id="catalog-table">
-              <thead>
-                <tr>
-                  <th>Provider</th>
-                  <th>Model</th>
-                  <th>State</th>
-                  <th>Auto-eligible</th>
-                  <th>Discovery source</th>
-                  <th>Last validated</th>
-                  <th>Last failure</th>
-                  <th></th>
-                </tr>
-              </thead>
-              <tbody id="catalog-table-body"></tbody>
-            </table>
-          </div>
-        </div>
-      </section>
-
-      <section class="panel model-routing-panel" id="routing-intelligence-panel">
-        <div class="panel-head">
-          <button type="button" class="panel-collapse-toggle" id="toggle-routing-intelligence" aria-expanded="false" aria-controls="routing-intelligence-body">
-            <svg class="chevron" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M8.12 9.29 12 13.17l3.88-3.88a1 1 0 1 1 1.41 1.42l-4.59 4.58a1 1 0 0 1-1.41 0L6.7 10.71a1 1 0 1 1 1.42-1.42Z"/></svg>
-            <h2>Routing Intelligence (shadow)</h2>
-          </button>
-          <button type="button" id="run-scenario" class="btn ghost">Evaluate scenario</button>
-        </div>
-        <div id="routing-intelligence-body" class="model-routing-body" hidden>
-          <p class="mode-banner" id="routing-intelligence-note">
-            PARAGON-D-004D runs in <strong>shadow mode</strong>: the live route is still chosen by the
-            verified PARAGON-D-004C1 selector above. Nothing here changes provider selection, model
-            selection, fallback order, or any response. The ranking below is produced by the same
-            engine and settings the live shadow pass uses, so for an identical task profile the two
-            are identical by construction.
-          </p>
-
-          <div class="registry-filter-bar">
-            <label class="field compact">
-              <span class="field-label">Context scenario</span>
-              <select id="scenario-context">
-                <option value="1000">Small (~1k tokens)</option>
-                <option value="20000">Medium (~20k tokens)</option>
-                <option value="120000">Large (~120k tokens)</option>
-                <option value="custom">Custom…</option>
-              </select>
-            </label>
-            <label class="field compact" id="scenario-custom-wrap" hidden>
-              <span class="field-label">Custom input tokens</span>
-              <input type="number" id="scenario-custom-tokens" min="1" step="1000" value="50000" />
-            </label>
-            <label class="field compact">
-              <span class="field-label">Reasoning demand</span>
-              <select id="scenario-reasoning">
-                <option value="">(derive from prompt)</option>
-                <option value="minimal">minimal</option>
-                <option value="low">low</option>
-                <option value="medium">medium</option>
-                <option value="high">high</option>
-                <option value="maximum">maximum</option>
-              </select>
-            </label>
-            <label class="field compact">
-              <span class="field-label">Latency</span>
-              <select id="scenario-latency">
-                <option value="">(derive)</option>
-                <option value="interactive">interactive</option>
-                <option value="normal">normal</option>
-                <option value="batch">batch</option>
-              </select>
-            </label>
-            <label class="field compact">
-              <span class="field-label">Cost sensitivity</span>
-              <select id="scenario-cost">
-                <option value="">(derive)</option>
-                <option value="low">low</option>
-                <option value="normal">normal</option>
-                <option value="high">high</option>
-              </select>
-            </label>
-          </div>
-
-          <div class="registry-filter-bar">
-            <label class="field compact" style="flex:1 1 320px">
-              <span class="field-label">Prompt (used only to derive the task profile — never stored)</span>
-              <input type="text" id="scenario-prompt" value="implement a function" />
-            </label>
-            <label class="field compact"><span class="field-label">Streaming</span><input type="checkbox" id="scenario-streaming" /></label>
-            <label class="field compact"><span class="field-label">Tool calls</span><input type="checkbox" id="scenario-tools" /></label>
-            <label class="field compact"><span class="field-label">Structured output</span><input type="checkbox" id="scenario-structured" /></label>
-          </div>
-
-          <p class="methodology-note" id="scenario-profile-note"></p>
-          <p class="methodology-note" id="scenario-shadow-summary"></p>
-
-          <div class="registry-table-wrap">
-            <table class="registry-table" id="scenario-table">
-              <thead>
-                <tr>
-                  <th>Provider</th>
-                  <th>Provider model</th>
-                  <th>Canonical model</th>
-                  <th>Effort</th>
-                  <th>Speed</th>
-                  <th>Usable context</th>
-                  <th>Exp. in/out/reasoning</th>
-                  <th>Monetary</th>
-                  <th>Quota burn</th>
-                  <th>Latency</th>
-                  <th>P(success)</th>
-                  <th>Quality</th>
-                  <th>Uncertainty</th>
-                  <th>Expected utility</th>
-                  <th>Benchmark</th>
-                  <th>Samples</th>
-                  <th>Status</th>
-                </tr>
-              </thead>
-              <tbody id="scenario-table-body"></tbody>
-            </table>
-          </div>
-
-          <p class="methodology-note" id="scenario-plan-note"></p>
-        </div>
-      </section>
-
-      <section class="panel orchestration-panel" id="orchestration-panel">
-        <div class="panel-head">
-          <button type="button" class="panel-collapse-toggle" id="toggle-orchestration" aria-expanded="false" aria-controls="orchestration-body">
-            <svg class="chevron" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M8.12 9.29 12 13.17l3.88-3.88a1 1 0 1 1 1.41 1.42l-4.59 4.58a1 1 0 0 1-1.41 0L6.7 10.71a1 1 0 1 1 1.42-1.42Z"/></svg>
-            <h2>Orchestration</h2>
-          </button>
-          <button type="button" id="refresh-orchestration" class="btn ghost">Refresh</button>
-        </div>
-        <div id="orchestration-body" hidden>
-          <p class="mode-banner" id="mode-banner"></p>
-          <div class="orch-grid" id="orch-overview"></div>
-          <div class="orch-columns">
-            <div class="orch-col">
-              <h3>Context</h3>
-              <div id="orch-context"></div>
-            </div>
-            <div class="orch-col">
-              <h3>Sessions</h3>
-              <div id="orch-sessions"></div>
-            </div>
-            <div class="orch-col">
-              <h3>Agents</h3>
-              <div id="orch-agents"></div>
-            </div>
-            <div class="orch-col">
-              <h3>Providers</h3>
-              <div id="orch-providers"></div>
-            </div>
-          </div>
-          <div class="orch-col orch-governor">
-            <h3 id="orch-governor-heading">Governor — recent actions</h3>
-            <div id="orch-governor"></div>
-          </div>
-        </div>
-      </section>
-
-      <section class="panel settings-panel" id="orch-settings-panel">
-        <div class="panel-head">
-          <button type="button" class="panel-collapse-toggle" id="toggle-orch-settings" aria-expanded="false" aria-controls="orch-settings-body">
-            <svg class="chevron" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M8.12 9.29 12 13.17l3.88-3.88a1 1 0 1 1 1.41 1.42l-4.59 4.58a1 1 0 0 1-1.41 0L6.7 10.71a1 1 0 1 1 1.42-1.42Z"/></svg>
-            <h2>Live routing &amp; enforcement settings — PARAGON-D-004C1</h2>
-          </button>
-          <button type="button" id="save-orch-settings" class="btn primary sm">Save</button>
-        </div>
-        <div id="orch-settings-body" hidden>
-          <div class="settings-grid" id="orch-settings-grid">
-            <label class="field">
-              <span class="field-label">Mode</span>
-              <select id="orch-setting-mode">
-                <option value="live">Live (enforced)</option>
-                <option value="off">Off</option>
-              </select>
-            </label>
-            <label class="field">
-              <span class="field-label">Context ceiling (tokens)</span>
-              <input type="number" id="orch-setting-context-ceiling" min="1000" step="1000" />
-            </label>
-            <label class="field">
-              <span class="field-label">Max concurrent executions</span>
-              <input type="number" id="orch-setting-max-concurrent" min="1" step="1" />
-            </label>
-            <label class="field">
-              <span class="field-label">Max fallback attempts</span>
-              <input type="number" id="orch-setting-max-fallback" min="1" step="1" />
-            </label>
-            <label class="field">
-              <span class="field-label">Circuit-breaker threshold</span>
-              <input type="number" id="orch-setting-circuit-threshold" min="1" step="1" />
-            </label>
-            <label class="field">
-              <span class="field-label">Circuit-breaker cooldown (ms)</span>
-              <input type="number" id="orch-setting-circuit-cooldown" min="1000" step="1000" />
-            </label>
-            <label class="field">
-              <span class="field-label">Session hard limit (minutes)</span>
-              <input type="number" id="orch-setting-session-hard-limit" min="1" step="1" />
-            </label>
-            <label class="field">
-              <span class="field-label">Telemetry retention (days)</span>
-              <input type="number" id="orch-setting-retention-days" min="1" step="1" />
-            </label>
-          </div>
-          <p class="settings-save-note" id="orch-settings-status" role="status" aria-live="polite"></p>
-          <p class="settings-save-note" id="orch-storage-usage"></p>
-        </div>
-      </section>
-    </main>
-    <script src="/app.js" type="module"></script>
+    <script type="module" src="/app.js"></script>
   </body>
 </html>

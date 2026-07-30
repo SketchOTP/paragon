@@ -6,37 +6,43 @@ import { AUTH_FLOWS } from "./authFlows.js";
 import { createAuthMiddleware } from "./auth.js";
 import { dataDir, readConfig, writeConfig } from "./configStore.js";
 import { getEnv } from "./env.js";
-import { getLogs, subscribeLogs, addLog } from "./logStore.js";
+import { getLogs, subscribeLogs, addLog, clearLogs } from "./logStore.js";
 import { registerOpenAiRoutes } from "./openaiApi.js";
 import { getAuthSession, getAuthState, listModels, runStatus, startAuth, submitAuthCode } from "./cli.js";
 import { tailscaleUrls } from "./tailscaleUrls.js";
 import { createOrchestrationRuntime } from "./orchestration/telemetry.js";
 import { registerOrchestrationRoutes } from "./orchestration/api.js";
 import { buildModelRegistry } from "./routing/modelRegistry.js";
-import { rankRegistryByTask, scoringMethodology, TASK_TYPES } from "./routing/router.js";
 import { getBenchmarkData, annotateRegistryWithBenchmarks } from "./routing/benchmarks.js";
-import { applyExecutionResult, loadCatalog, reconcileConfiguredModels, saveCatalog } from "./modelCatalog.js";
-import { defaultProbe, runFullRefresh, refreshProviderCatalog } from "./modelCatalogRefresh.js";
+import { applyExecutionResult, loadCatalog, saveCatalog } from "./modelCatalog.js";
+import { defaultProbe, refreshProviderCatalog } from "./modelCatalogRefresh.js";
 import { startModelCatalogScheduler } from "./modelCatalogScheduler.js";
 import { loadTelemetry, saveTelemetry, recordOutcome as recordTelemetryOutcome, pruneTelemetry } from "./routing/outcomeTelemetry.js";
-import { createShadowStore } from "./routing/shadowStore.js";
-import { computeShadowRoute } from "./routing/shadowEngine.js";
+import { selectAutomaticRoute } from "./routing/automaticRouting.js";
 import { buildTaskProfile } from "./routing/taskProfile.js";
 import { providerGrammarSummary } from "./routing/executionProfile.js";
 import { createRouteActivityStore } from "./routing/routeActivity.js";
+import { createQuotaStateStore } from "./routing/quotaState.js";
 import { buildProviderRoutingSummaries } from "./routing/providerSummary.js";
-import { ACTIVE_BUT_MISREPRESENTED_FIELDS, DEPRECATED_CONFIG_FIELDS } from "./deprecatedConfig.js";
+import {
+  normalizeRoutingPriority,
+  routingPriorityDescription,
+  routingPriorityOptions
+} from "./routing/routingPriority.js";
+import { circuitStateSnapshot } from "./orchestration/liveEnforcement.js";
 import { AVATAR_DIR, AVATAR_ROUTE, removeProviderAvatar, saveProviderAvatar } from "./providerAvatars.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 let cachedConfig = await readConfig();
 let cachedCatalog = await loadCatalog();
 
-// PARAGON-D-004C: single in-process view of the persisted model catalog.
-// recordResult() is the immediate-exclusion feedback path — a request that
-// fails with a model-specific classification updates the shared in-memory
-// catalog (and persists it) before the *next* request is routed, without
-// waiting for the next scheduled refresh.
+/**
+ * Single in-process view of the persisted model catalog. recordResult() is the
+ * immediate-exclusion feedback path — a request that fails with a
+ * model-specific classification updates the shared in-memory catalog (and
+ * persists it) before the *next* request is routed, without waiting for the
+ * next scheduled refresh.
+ */
 const catalogStore = {
   get: () => cachedCatalog,
   async recordResult(provider, modelId, resultInfo) {
@@ -46,40 +52,9 @@ const catalogStore = {
   }
 };
 
-/**
- * PARAGON-D-004C1 (P0-3): clears any `config.providers[x].model` that the
- * catalog no longer considers eligible, and persists atomically. Runs at
- * startup (so models made stale before this code existed are cleaned up
- * too) and after every catalog refresh. Never substitutes a replacement
- * model — see reconcileConfiguredModels().
- */
-async function reconcileConfigWithCatalog(reason) {
-  const { config: nextConfig, cleared } = reconcileConfiguredModels(cachedConfig, cachedCatalog, {
-    ttlHours: cachedConfig.modelCatalog?.validationTtlHours ?? 24
-  });
-  if (!cleared.length) {
-    return cleared;
-  }
-  cachedConfig = await writeConfig(nextConfig);
-  for (const entry of cleared) {
-    addLog({
-      type: "models",
-      provider: entry.provider,
-      level: "warn",
-      message: `routing.configuredModelCleared: "${entry.model}" (catalog state: ${entry.previousState}) cleared from provider config during ${reason}`
-    });
-  }
-  return cleared;
-}
-
-/**
- * PARAGON-D-004D runtime (Phase 12). Shadow-only: it computes the new
- * ranking and accumulates outcome telemetry, but nothing here participates
- * in live provider or model selection while `mode` is "shadow".
- */
 let cachedTelemetry = await loadTelemetry();
 {
-  const settings = cachedConfig.routingIntelligence ?? {};
+  const settings = cachedConfig.automaticRouting ?? {};
   const { removed } = pruneTelemetry(cachedTelemetry, { retentionDays: settings.telemetryRetentionDays ?? 30 });
   if (removed) {
     await saveTelemetry(cachedTelemetry).catch(() => {});
@@ -98,20 +73,19 @@ const telemetryFlushTimer = setInterval(() => {
 }, 30_000);
 telemetryFlushTimer.unref?.();
 
-/**
- * PARAGON-D-004D1: observed routing activity, so the dashboard can show the
- * model each provider actually ran last (and what shadow would have picked)
- * instead of the deprecated configured-model preference. Instrumentation
- * only — nothing here is read by a routing decision.
- */
 const routeActivity = createRouteActivityStore();
+const quotaState = createQuotaStateStore();
 
-const routingIntelligence = {
+/**
+ * The routing runtime. One engine, always live. There is no mode, no second
+ * ranking, and nothing here that can be switched to a different selector.
+ */
+const routing = {
   get settings() {
-    return cachedConfig.routingIntelligence ?? {};
+    return cachedConfig.automaticRouting ?? {};
   },
   routeActivity,
-  shadowStore: createShadowStore({ limit: cachedConfig.routingIntelligence?.shadowRecordLimit ?? 200 }),
+  quotaState,
   getTelemetry: () => cachedTelemetry,
   recordOutcome(observation) {
     if (this.settings.enabled === false) {
@@ -131,17 +105,9 @@ const modelCatalogScheduler = startModelCatalogScheduler(async () => cachedConfi
     if (result?.catalog) {
       cachedCatalog = result.catalog;
     }
-    await reconcileConfigWithCatalog("scheduled catalog refresh").catch((error) => {
-      console.warn(`model catalog: config reconciliation failed (non-fatal): ${error.message}`);
-    });
   }
 });
 
-// Startup reconciliation: catches configured models that went stale before
-// this implementation existed, without waiting for the next refresh cycle.
-await reconcileConfigWithCatalog("startup reconciliation").catch((error) => {
-  console.warn(`model catalog: startup config reconciliation failed (non-fatal): ${error.message}`);
-});
 // Registering a SIGTERM/SIGINT listener replaces Node's default
 // terminate-immediately behavior, so each handler must explicitly exit —
 // otherwise `kill`/systemd stop would leave the process running forever.
@@ -160,8 +126,8 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: "5mb" }));
 app.use(express.static(path.resolve(__dirname, "../public")));
-// Operator-uploaded provider avatars (PARAGON-D-004D1). Bundled avatars ship
-// under public/avatars/; these are the per-deployment overrides.
+// Operator-uploaded provider avatars. Bundled avatars ship under
+// public/avatars/; these are the per-deployment overrides.
 app.use(AVATAR_ROUTE, express.static(AVATAR_DIR));
 
 const getConfig = async () => cachedConfig;
@@ -211,9 +177,9 @@ function invalidateStatusCache() {
 
 /**
  * Reuses the same cached status snapshot the dashboard already warms via
- * /api/status — the router (D-004) needs a health signal per request but
- * must never trigger a fresh CLI spawn per chat completion. Returns {}
- * (all providers "unknown" health) until the cache has been warmed once.
+ * /api/status — the router needs a health signal per request but must never
+ * trigger a fresh CLI spawn per chat completion. Returns {} (all providers
+ * "unknown" health) until the cache has been warmed once.
  */
 function getStatuses() {
   const statuses = {};
@@ -238,12 +204,12 @@ app.put("/api/config", async (req, res) => {
   cachedConfig = await writeConfig(req.body);
   res.json(cachedConfig);
 
-  // PARAGON-D-004C1 (P0-4): a newly enabled provider is `pending_assessment`
-  // and contributes nothing routable until real discovery succeeds — so kick
-  // off a bounded refresh for it immediately rather than leaving it dark
-  // until the next 24h cycle. Fire-and-forget: the operator's config write
-  // has already been acknowledged above, and a discovery failure correctly
-  // leaves the provider unavailable rather than trusted.
+  // A newly enabled provider is `pending_assessment` and contributes nothing
+  // routable until real discovery succeeds — so kick off a bounded refresh for
+  // it immediately rather than leaving it dark until the next 24h cycle.
+  // Fire-and-forget: the operator's config write has already been
+  // acknowledged, and a discovery failure correctly leaves the provider
+  // unavailable rather than trusted.
   const newlyEnabled = Object.entries(cachedConfig.providers ?? {})
     .filter(([name, cfg]) => cfg.enabled && (!previousProviders.has(name) || !cachedCatalog.providers?.[name]))
     .map(([name]) => name);
@@ -258,7 +224,6 @@ app.put("/api/config", async (req, res) => {
     })
       .then(async () => {
         await saveCatalog(cachedCatalog);
-        await reconcileConfigWithCatalog(`initial assessment of ${provider}`);
         addLog({ type: "models", provider, level: "info", message: "Initial model-catalog assessment complete" });
       })
       .catch((error) => {
@@ -270,6 +235,108 @@ app.put("/api/config", async (req, res) => {
         });
       });
   }
+});
+
+/**
+ * The one settings write (Phase 7). Bounded and explicitly enumerated: a
+ * category the caller did not send is left exactly as it was, so saving
+ * General can never clear Routing, and neither can touch credentials,
+ * provider enablement, avatars, or catalog state.
+ */
+app.put("/api/settings", async (req, res) => {
+  const config = await getConfig();
+  const incoming = req.body ?? {};
+  const errors = [];
+
+  const server = { ...config.server };
+  const routingSection = { ...config.routing };
+  const integrations = { ...config.integrations };
+  const automaticRouting = { ...config.automaticRouting };
+
+  if (incoming.server && typeof incoming.server === "object") {
+    for (const field of ["exposedModel", "apiKey", "tailscaleHost", "cursorBaseUrl"]) {
+      if (incoming.server[field] !== undefined) {
+        if (typeof incoming.server[field] !== "string") {
+          errors.push(`server.${field} must be a string`);
+          continue;
+        }
+        server[field] = incoming.server[field].trim();
+      }
+    }
+    for (const field of ["tailscaleServePort", "tailscaleFunnelPort"]) {
+      if (incoming.server[field] !== undefined) {
+        const value = Number(incoming.server[field]);
+        if (!Number.isInteger(value) || value < 1 || value > 65535) {
+          errors.push(`server.${field} must be a port between 1 and 65535`);
+          continue;
+        }
+        server[field] = value;
+      }
+    }
+    if (incoming.server.exposedModel !== undefined && !server.exposedModel) {
+      errors.push("server.exposedModel cannot be empty");
+    }
+  }
+
+  if (incoming.routing && typeof incoming.routing === "object") {
+    if (incoming.routing.priority !== undefined) {
+      const requested = String(incoming.routing.priority);
+      if (normalizeRoutingPriority(requested) !== requested) {
+        errors.push("routing.priority must be one of balanced, quality, cost, speed");
+      } else {
+        routingSection.priority = requested;
+      }
+    }
+  }
+
+  if (incoming.integrations && typeof incoming.integrations === "object") {
+    if (incoming.integrations.openrouterApiKey !== undefined) {
+      integrations.openrouterApiKey = String(incoming.integrations.openrouterApiKey).trim();
+    }
+  }
+
+  if (incoming.data && typeof incoming.data === "object") {
+    if (incoming.data.activityRetentionDays !== undefined) {
+      const value = Number(incoming.data.activityRetentionDays);
+      if (!Number.isInteger(value) || value < 1 || value > 365) {
+        errors.push("data.activityRetentionDays must be an integer between 1 and 365");
+      } else {
+        automaticRouting.telemetryRetentionDays = value;
+      }
+    }
+  }
+
+  if (errors.length) {
+    res.status(400).json({ error: { message: "Invalid settings", type: "paragon_settings_error", details: errors } });
+    return;
+  }
+
+  cachedConfig = await writeConfig({ ...config, server, routing: routingSection, integrations, automaticRouting });
+  res.json({ ok: true, settings: productSettings(cachedConfig) });
+});
+
+/** The bounded, product-facing view of settings — never the whole config object. */
+function productSettings(config) {
+  return {
+    server: {
+      exposedModel: config.server.exposedModel,
+      apiKeyConfigured: Boolean(config.server.apiKey),
+      tailscaleHost: config.server.tailscaleHost,
+      tailscaleServePort: config.server.tailscaleServePort,
+      tailscaleFunnelPort: config.server.tailscaleFunnelPort,
+      cursorBaseUrl: config.server.cursorBaseUrl
+    },
+    routing: {
+      priority: normalizeRoutingPriority(config.routing?.priority),
+      options: routingPriorityOptions()
+    },
+    integrations: { openrouterApiKeyConfigured: Boolean(config.integrations?.openrouterApiKey) },
+    data: { activityRetentionDays: config.automaticRouting?.telemetryRetentionDays ?? 30 }
+  };
+}
+
+app.get("/api/settings", async (_req, res) => {
+  res.json(productSettings(await getConfig()));
 });
 
 app.get("/api/status", async (req, res) => {
@@ -289,23 +356,180 @@ app.get("/api/status", async (req, res) => {
   res.json(body);
 });
 
-app.get("/api/routing/registry", async (req, res) => {
+/** Connection block for the everyday dashboard (Phase 6.1). */
+function connectionInfo(config) {
+  const ts = tailscaleUrls(config.server);
+  return {
+    baseUrl: config.server.cursorBaseUrl || ts?.cursorBaseUrl || `http://${config.server.host}:${config.server.port}/v1`,
+    exposedModel: config.server.exposedModel,
+    apiKeyConfigured: Boolean(config.server.apiKey),
+    apiKey: config.server.apiKey || "",
+    tailnetDashboard: ts?.tailnetDashboard ?? null
+  };
+}
+
+/**
+ * Overall service health, expressed the way the product talks about it rather
+ * than as an internal state machine.
+ */
+function serviceHealth(providers) {
+  const enabled = providers.filter((p) => p.enabled);
+  if (!enabled.length) {
+    return { state: "setup_required", summary: "No providers are connected yet" };
+  }
+  const ready = enabled.filter((p) => p.status === "ready");
+  if (!ready.length) {
+    return { state: "needs_attention", summary: "No provider is currently able to serve requests" };
+  }
+  if (ready.length < enabled.length) {
+    return { state: "degraded", summary: `${ready.length} of ${enabled.length} providers ready` };
+  }
+  return { state: "ready", summary: `${ready.length} provider${ready.length === 1 ? "" : "s"} ready` };
+}
+
+/**
+ * Provider cards (Phase 6.2). Product vocabulary only: a card says Ready or
+ * Needs attention and why, and reports the model that actually ran last. It
+ * never shows a model selector — the model is chosen per request — and it
+ * only surfaces internal catalog counts when something is wrong.
+ */
+function providerCards(config, summaries) {
+  return summaries.map((summary) => {
+    const providerConfig = config.providers?.[summary.provider] ?? {};
+    let status = "ready";
+    let attention = null;
+
+    if (!summary.enabled) {
+      status = "disabled";
+    } else if (summary.usageLimit) {
+      status = "usage_limited";
+      attention = summary.usageLimit.resetAt
+        ? `Usage limit reached — expected to reset ${summary.usageLimit.resetAt}`
+        : "Usage limit reached";
+    } else if (summary.pendingAssessment) {
+      status = "needs_attention";
+      attention = "Model discovery has not completed yet";
+    } else if (summary.health === "unhealthy") {
+      status = "needs_attention";
+      attention = "Sign-in required or provider unreachable";
+    } else if (!summary.counts.eligible) {
+      status = "needs_attention";
+      attention = "Model discovery failed — no models are currently available";
+    }
+
+    return {
+      provider: summary.provider,
+      label: summary.label,
+      avatar: providerConfig.avatar ?? "",
+      icon: providerConfig.icon ?? "",
+      type: summary.type,
+      enabled: summary.enabled,
+      status,
+      attention,
+      modelsAvailable: summary.counts.eligible,
+      lastUsed: summary.lastExecutedModel,
+      lastFailure: summary.lastFailure,
+      usageLimit: summary.usageLimit,
+      // Only meaningful for an HTTP provider; the UI shows these behind Edit.
+      baseUrl: providerConfig.baseUrl ?? "",
+      apiKeyConfigured: Boolean(providerConfig.apiKey),
+      command: providerConfig.command ?? "",
+      // Engineering detail, shown on the card only when the provider has a
+      // problem the operator has to act on.
+      diagnostics: status === "ready" || status === "disabled" ? null : { counts: summary.counts, catalogState: summary.catalogState }
+    };
+  });
+}
+
+/** The Automatic Routing card (Phase 6.3) — compact, product language only. */
+function automaticRoutingCard(config, cards) {
+  const priority = normalizeRoutingPriority(config.routing?.priority);
+  const available = cards.filter((c) => c.enabled && c.status === "ready");
+  const warnings = [];
+  for (const card of cards) {
+    if (card.status === "usage_limited") {
+      warnings.push(`${card.label} reached its usage limit`);
+    } else if (card.status === "needs_attention") {
+      warnings.push(`${card.label} needs attention`);
+    }
+  }
+  const latest = routeActivity.latestSuccess();
+  const recovery = routeActivity.latestRecovery();
+  return {
+    active: available.length > 0,
+    priority,
+    priorityLabel: routingPriorityOptions().find((o) => o.value === priority)?.label ?? priority,
+    availableProviders: available.map((c) => ({ provider: c.provider, label: c.label })),
+    latestRoute: latest
+      ? { at: latest.at, provider: latest.provider, model: latest.model, durationMs: latest.durationMs }
+      : null,
+    latestRecovery: recovery
+      ? {
+          at: recovery.at,
+          provider: recovery.provider,
+          model: recovery.model,
+          recoveredFrom: recovery.recoveredFrom,
+          reason: recovery.recoveredFromReason
+        }
+      : null,
+    warnings
+  };
+}
+
+/**
+ * One payload for the everyday dashboard: Connection, Providers, Automatic
+ * Routing, Recent Activity. Nothing else — no attempt plans, no catalog
+ * tables, no engine identity, no routing internals.
+ */
+app.get("/api/overview", async (_req, res) => {
+  const config = await getConfig();
+  const summaries = buildProviderRoutingSummaries(config, getStatuses(), catalogStore.get(), routeActivity, { quotaState });
+  const cards = providerCards(config, summaries);
+  const anyAssessed = summaries.some((s) => s.enabled && !s.pendingAssessment && s.counts.eligible > 0);
+
+  res.json({
+    connection: connectionInfo(config),
+    health: serviceHealth(cards),
+    providers: cards,
+    routing: automaticRoutingCard(config, cards),
+    activity: routeActivity.recent({ limit: 20 }),
+    // Drives the first-run flow (Phase 10) rather than a separate probe.
+    onboarding: { required: !anyAssessed, hasProviders: cards.some((c) => c.enabled) },
+    builtAt: new Date().toISOString()
+  });
+});
+
+/** Recent Activity on its own, for refresh without re-fetching everything. */
+app.get("/api/activity", async (req, res) => {
+  const limit = Math.min(50, Math.max(1, Number(req.query.limit) || 20));
+  res.json({ activity: routeActivity.recent({ limit }) });
+});
+
+app.post("/api/activity/clear", async (_req, res) => {
+  routeActivity.reset();
+  clearLogs();
+  res.json({ ok: true });
+});
+
+// --------------------------------------------------------------------------
+// Diagnostics (Phase 9). One surface, read-only except for explicit
+// maintenance actions. No general-purpose save lives here.
+// --------------------------------------------------------------------------
+
+/** Diagnostics -> Models: eligible registry, catalog state, benchmark attribution. */
+app.get("/api/diagnostics/models", async (req, res) => {
   const config = await getConfig();
   const rawRegistry = buildModelRegistry(config, getStatuses(), catalogStore.get());
   const benchmarks = await getBenchmarkData(config.integrations?.openrouterApiKey, { force: req.query.refreshBenchmarks === "1" });
-  // P0-7: stale benchmark data must not influence scoring. Withheld from
-  // annotation entirely so the panel's ranking stays identical to the live
-  // routing decision; staleness is reported in the `benchmarks` block below
-  // so the dashboard can say why scoring went internal-only.
+  // Stale benchmark data must not influence scoring, so it is withheld from
+  // annotation entirely; staleness is reported below so the UI can say why.
   const applyBenchmarks = benchmarks.enabled && !benchmarks.stale;
   const registry = applyBenchmarks
     ? annotateRegistryWithBenchmarks(rawRegistry, benchmarks.rows, { fetchedAt: benchmarks.lastSuccessfulFetchAt })
     : rawRegistry;
   res.json({
     registry,
-    taskRanking: rankRegistryByTask(registry, config.routing?.taskRoutes),
-    taskTypes: TASK_TYPES,
-    methodology: scoringMethodology(),
+    catalog: catalogStore.get(),
     benchmarks: {
       enabled: benchmarks.enabled,
       applied: applyBenchmarks,
@@ -323,111 +547,103 @@ app.get("/api/routing/registry", async (req, res) => {
   });
 });
 
-
 /**
- * PARAGON-D-004D1 (Phase 1): the read-only provider routing summary that
- * replaced the provider card's `Model` dropdown. Counts and observed usage,
- * never a stored selection.
+ * Diagnostics -> Routing: the live engine's own evidence. Ranked candidates,
+ * utility decomposition, exclusion reasons, reasoning effort, and the resolved
+ * priority weights — all read-only.
  */
-app.get("/api/routing/providers", async (_req, res) => {
+app.get("/api/diagnostics/routing", async (_req, res) => {
   const config = await getConfig();
   res.json({
-    providers: buildProviderRoutingSummaries(config, getStatuses(), catalogStore.get(), routeActivity),
-    selection: "automatic-per-request",
+    engine: { selectionMethod: "expected-utility", decidesExecution: true, enginesRunningPerRequest: 1 },
+    priority: routingPriorityDescription(config.routing?.priority),
+    latestPlan: routeActivity.plan(),
+    telemetryEntryCount: Object.keys(routing.getTelemetry().entries ?? {}).length,
+    quotaState: quotaState.snapshot(),
+    providerGrammars: providerGrammarSummary(),
+    bounds: {
+      maximumAttempts: routing.settings.maximumAttempts ?? 4,
+      minimumSamplesForMeasuredEstimate: routing.settings.minimumSamplesForMeasuredEstimate ?? 10,
+      unknownLargeContextThresholdTokens: routing.settings.unknownLargeContextThresholdTokens ?? 50000,
+      telemetryRetentionDays: routing.settings.telemetryRetentionDays ?? 30
+    },
     builtAt: new Date().toISOString()
   });
 });
 
 /**
- * PARAGON-D-004D1 (Phases 2, 3, 5, 7): what actually decides a live route,
- * what shadow would decide, the latest attempt plan from each engine, and the
- * deprecated compatibility fields — in one payload, so the dashboard cannot
- * describe one engine using the other's wording.
+ * Read-only routing preview. Runs the *same* selectAutomaticRoute() the live
+ * request path uses, with the same settings, so for an identical profile the
+ * preview and the real decision are identical by construction rather than by
+ * convention. Executes nothing.
  */
-app.get("/api/routing/status", async (_req, res) => {
+app.post("/api/diagnostics/routing/preview", async (req, res) => {
   const config = await getConfig();
-  const settings = config.routingIntelligence ?? {};
-  const plans = routeActivity.plans();
+  try {
+    const scenario = req.body ?? {};
+    const taskProfile = scenario.taskProfile
+      ? scenario.taskProfile
+      : buildTaskProfile({
+          prompt: String(scenario.prompt ?? ""),
+          body: {
+            stream: Boolean(scenario.streaming),
+            tools: scenario.toolCalls ? [{ type: "function", function: { name: "preview" } }] : undefined,
+            response_format: scenario.structuredOutput ? { type: scenario.jsonSchema ? "json_schema" : "json_object" } : undefined,
+            max_tokens: Number.isFinite(scenario.maxOutputTokens) ? scenario.maxOutputTokens : undefined
+          },
+          estimatedInputTokens: Number.isFinite(scenario.estimatedInputTokens) ? scenario.estimatedInputTokens : 0,
+          hints: { maxCostClass: scenario.maxCostClass ?? null },
+          options: { largeThreshold: routing.settings.unknownLargeContextThresholdTokens ?? 50000 }
+        });
+
+    for (const field of ["reasoningDemand", "latencyPreference", "costSensitivity", "qualityPreference", "complexity", "risk", "workType"]) {
+      if (scenario[field]) taskProfile[field] = scenario[field];
+    }
+
+    const benchmarks = await getBenchmarkData(config.integrations?.openrouterApiKey);
+    const route = selectAutomaticRoute({
+      config,
+      statuses: getStatuses(),
+      catalog: catalogStore.get(),
+      telemetryStore: routing.getTelemetry(),
+      benchmarkRows: benchmarks.enabled && !benchmarks.stale ? benchmarks.rows : [],
+      taskProfile,
+      hints: { maxCostClass: scenario.maxCostClass ?? null },
+      settings: routing.settings,
+      quotaState,
+      priority: scenario.priority ?? config.routing?.priority
+    });
+
+    res.json({ taskProfile, ...route, computedAt: new Date().toISOString() });
+  } catch (error) {
+    res.status(400).json({ error: { message: error.message, type: "paragon_diagnostics_error" } });
+  }
+});
+
+/** Diagnostics -> Requests: the raw activity log and provider errors. */
+app.get("/api/diagnostics/requests", async (_req, res) => {
   res.json({
-    liveRouter: {
-      engine: "paragon-d-004c1",
-      mode: "live",
-      selectionMethod: "deterministic-score",
-      decidesExecution: true,
-      catalogEligibilityEnforced: true,
-      staticDefaultFallback: false,
-      taskProviderPreferenceActive: true,
-      taskProviderPreferencePoints: scoringMethodology().weights.taskRoutePreference,
-      emptyEligibleSetBehavior: { status: 503, code: "no_eligible_model" },
-      maxAttempts: config.orchestration?.fallback?.maxAttempts ?? null,
-      latestAttemptPlan: plans.live
-    },
-    shadowRouter: {
-      engine: "paragon-d-004d",
-      mode: settings.mode ?? "shadow",
-      enabled: settings.enabled !== false,
-      selectionMethod: "expected-utility",
-      maximumAttempts: settings.maximumAttempts ?? 4,
-      decidesExecution: false,
-      affectsProviderExecution: false,
-      additionalProviderCalls: false,
-      // Explicitly stated so the dashboard never has to infer it: taskRoutes
-      // is a D-004C1 input and is not consumed as an operator-policy input by
-      // the shadow expected-utility scorer's preference term.
-      consumesTaskProviderPreference: false,
-      summary: routingIntelligence.shadowStore.summary(),
-      latest: routingIntelligence.shadowStore.list({ limit: 1 })[0] ?? null,
-      latestAttemptPlan: plans.shadow,
-      telemetryEntryCount: Object.keys(routingIntelligence.getTelemetry().entries ?? {}).length
-    },
-    deprecatedConfigFields: DEPRECATED_CONFIG_FIELDS,
-    activePreferenceFields: ACTIVE_BUT_MISREPRESENTED_FIELDS,
+    activity: routeActivity.recent({ limit: 50 }),
+    logs: getLogs(),
+    telemetry: routing.getTelemetry()
+  });
+});
+
+/** Diagnostics -> System: circuit states, storage, scheduler, service facts. */
+app.get("/api/diagnostics/system", async (_req, res) => {
+  const config = await getConfig();
+  res.json({
+    circuitStates: circuitStateSnapshot(),
+    quotaState: quotaState.snapshot(),
+    catalogSchedule: catalogStore.get().schedule,
+    configVersion: config.configVersion,
+    orchestration: { enabled: Boolean(config.orchestration?.enabled), mode: config.orchestration?.mode ?? "off" },
+    dataDir,
+    uptimeSeconds: Math.round(process.uptime()),
+    memory: process.memoryUsage(),
+    node: process.version,
     builtAt: new Date().toISOString()
   });
-});
-
-/**
- * PARAGON-D-004D1: avatar upload for any provider, including operator-added
- * ones. Writes the file and returns the served path; the dashboard then stores
- * that path in `providers.<id>.avatar` through the normal config save, so the
- * config never carries base64 image data.
- */
-app.post("/api/providers/:provider/avatar", async (req, res) => {
-  const config = await getConfig();
-  const provider = req.params.provider;
-  if (!config.providers[provider]) {
-    res.status(404).json({ error: { message: "Unknown provider" } });
-    return;
-  }
-  const result = await saveProviderAvatar(provider, req.body?.dataUrl);
-  if (result.error) {
-    res.status(400).json({ error: { message: result.error, type: "paragon_avatar_error" } });
-    return;
-  }
-  cachedConfig = await writeConfig({
-    ...config,
-    providers: { ...config.providers, [provider]: { ...config.providers[provider], avatar: result.avatar } }
-  });
-  res.json({ provider, avatar: result.avatar, bytes: result.bytes });
-});
-
-app.delete("/api/providers/:provider/avatar", async (req, res) => {
-  const config = await getConfig();
-  const provider = req.params.provider;
-  if (!config.providers[provider]) {
-    res.status(404).json({ error: { message: "Unknown provider" } });
-    return;
-  }
-  const result = await removeProviderAvatar(provider);
-  if (result.error) {
-    res.status(400).json({ error: { message: result.error } });
-    return;
-  }
-  cachedConfig = await writeConfig({
-    ...config,
-    providers: { ...config.providers, [provider]: { ...config.providers[provider], avatar: "" } }
-  });
-  res.json({ provider, avatar: "" });
 });
 
 app.get("/api/auth/flows", (_req, res) => {
@@ -476,6 +692,44 @@ app.post("/api/auth/:provider/code", async (req, res) => {
   }
 });
 
+app.post("/api/providers/:provider/avatar", async (req, res) => {
+  const config = await getConfig();
+  const provider = req.params.provider;
+  if (!config.providers[provider]) {
+    res.status(404).json({ error: { message: "Unknown provider" } });
+    return;
+  }
+  const result = await saveProviderAvatar(provider, req.body?.dataUrl);
+  if (result.error) {
+    res.status(400).json({ error: { message: result.error, type: "paragon_avatar_error" } });
+    return;
+  }
+  cachedConfig = await writeConfig({
+    ...config,
+    providers: { ...config.providers, [provider]: { ...config.providers[provider], avatar: result.avatar } }
+  });
+  res.json({ provider, avatar: result.avatar, bytes: result.bytes });
+});
+
+app.delete("/api/providers/:provider/avatar", async (req, res) => {
+  const config = await getConfig();
+  const provider = req.params.provider;
+  if (!config.providers[provider]) {
+    res.status(404).json({ error: { message: "Unknown provider" } });
+    return;
+  }
+  const result = await removeProviderAvatar(provider);
+  if (result.error) {
+    res.status(400).json({ error: { message: result.error } });
+    return;
+  }
+  cachedConfig = await writeConfig({
+    ...config,
+    providers: { ...config.providers, [provider]: { ...config.providers[provider], avatar: "" } }
+  });
+  res.json({ provider, avatar: "" });
+});
+
 app.post("/api/providers/:provider/models", async (req, res) => {
   const config = await getConfig();
   const provider = req.params.provider;
@@ -520,7 +774,6 @@ app.post("/api/model-catalog/refresh", async (_req, res) => {
     res.status(409).json({ error: { message: "A catalog refresh is already in progress" } });
     return;
   }
-  const config = await getConfig();
   catalogRefreshInFlight = modelCatalogScheduler.triggerNow().finally(() => {
     catalogRefreshInFlight = null;
   });
@@ -531,8 +784,7 @@ app.post("/api/model-catalog/refresh", async (_req, res) => {
       return;
     }
     cachedCatalog = result.catalog;
-    const cleared = await reconcileConfigWithCatalog("manual catalog refresh");
-    res.json({ ok: true, outcomes: result.outcomes, clearedConfiguredModels: cleared, catalog: cachedCatalog });
+    res.json({ ok: true, outcomes: result.outcomes, catalog: cachedCatalog });
   } catch (error) {
     res.status(500).json({ error: { message: error.message } });
   }
@@ -552,8 +804,7 @@ app.post("/api/model-catalog/providers/:provider/refresh", async (req, res) => {
       maxValidationProbesPerProvider: settings.maxValidationProbesPerProvider ?? 10
     });
     await saveCatalog(cachedCatalog);
-    const cleared = await reconcileConfigWithCatalog(`manual ${provider} catalog refresh`);
-    res.json({ provider, ...result, clearedConfiguredModels: cleared, catalog: cachedCatalog.providers[provider] });
+    res.json({ provider, ...result, catalog: cachedCatalog.providers[provider] });
   } catch (error) {
     res.status(500).json({ error: { message: error.message, provider } });
   }
@@ -570,13 +821,11 @@ app.post("/api/model-catalog/providers/:provider/models/:model/validate", async 
   }
   const result = await defaultProbe(provider, providerConfig, modelId, {});
   await catalogStore.recordResult(provider, modelId, result);
-  const cleared = await reconcileConfigWithCatalog(`validation of ${provider}/${modelId}`);
   res.json({
     provider,
     model: modelId,
     state: cachedCatalog.providers[provider]?.models[modelId]?.state,
-    classification: result.classification,
-    clearedConfiguredModels: cleared
+    classification: result.classification
   });
 });
 
@@ -585,12 +834,9 @@ let validateAllInFlight = null;
 /**
  * Walks every non-alias, non-retired model currently in the catalog across
  * every enabled provider and probes each one individually with a minimal,
- * cheap request (max_tokens: 1 where the provider honors it — see
- * defaultProbe's doc comment for the CLI-provider caveat). Sequential and
- * synchronous per model, but each await yields the event loop, so this
- * never blocks other requests — and a failure on one model is recorded and
- * skipped, never aborting the run: "don't block, just leave it
- * unvalidated" is the whole point of this endpoint.
+ * cheap request. Sequential per model, but each await yields the event loop,
+ * so this never blocks other requests — and a failure on one model is
+ * recorded and skipped, never aborting the run.
  */
 app.post("/api/model-catalog/validate-all", async (req, res) => {
   if (validateAllInFlight) {
@@ -646,145 +892,6 @@ app.post("/api/model-catalog/validate-all", async (req, res) => {
   }
 });
 
-/**
- * PARAGON-D-004D routing-intelligence API (Phases 11 and 12).
- *
- * `/scenario` is the dashboard's ranking source and calls the *same*
- * computeShadowRoute() the live shadow pass uses, with the same settings —
- * so for an identical task profile the dashboard and shadow rankings are
- * identical by construction, not by convention (directive test 23).
- */
-app.get("/api/routing-intelligence", async (_req, res) => {
-  const config = await getConfig();
-  const settings = config.routingIntelligence ?? {};
-  res.json({
-    settings: {
-      enabled: settings.enabled !== false,
-      mode: settings.mode ?? "shadow",
-      unknownLargeContextThresholdTokens: settings.unknownLargeContextThresholdTokens ?? 50000,
-      minimumSamplesForMeasuredEstimate: settings.minimumSamplesForMeasuredEstimate ?? 10,
-      maximumAttempts: settings.maximumAttempts ?? 4,
-      telemetryRetentionDays: settings.telemetryRetentionDays ?? 30
-    },
-    // The live selector remains D-004C1 for the whole of this directive.
-    liveRouteSelector: "paragon-d-004c1",
-    shadowSummary: routingIntelligence.shadowStore.summary(),
-    telemetryEntryCount: Object.keys(routingIntelligence.getTelemetry().entries ?? {}).length,
-    providerGrammars: providerGrammarSummary()
-  });
-});
-
-/**
- * PARAGON-D-004D1 (Phase 6): the D-004D shadow settings that genuinely change
- * the shadow computation. Only these scalars are writable — the operator-
- * reviewed mapping tables (canonical aliases, reasoning profiles, capability
- * overrides, context overrides) are displayed read-only, because a malformed
- * hand-typed mapping would silently change how every candidate is profiled.
- *
- * `mode` is deliberately NOT writable here. Promoting D-004D from shadow to
- * live is an activation decision gated behind its own directive; a dashboard
- * field would make it a stray click.
- */
-const SHADOW_SETTING_BOUNDS = {
-  unknownLargeContextThresholdTokens: { min: 1000, max: 2_000_000, integer: true },
-  minimumSamplesForMeasuredEstimate: { min: 1, max: 1000, integer: true },
-  maximumAttempts: { min: 1, max: 12, integer: true },
-  telemetryRetentionDays: { min: 1, max: 365, integer: true },
-  quotaScarcity: { min: 0, max: 1, integer: false }
-};
-
-app.put("/api/routing-intelligence/settings", async (req, res) => {
-  const config = await getConfig();
-  const incoming = req.body ?? {};
-  const errors = [];
-  const next = { ...(config.routingIntelligence ?? {}) };
-
-  if (incoming.mode !== undefined && incoming.mode !== (config.routingIntelligence?.mode ?? "shadow")) {
-    errors.push("mode is not settable from the dashboard — live activation of D-004D requires its own directive");
-  }
-  if (incoming.enabled !== undefined) {
-    if (typeof incoming.enabled !== "boolean") {
-      errors.push("enabled must be a boolean");
-    } else {
-      next.enabled = incoming.enabled;
-    }
-  }
-  for (const [key, bounds] of Object.entries(SHADOW_SETTING_BOUNDS)) {
-    if (incoming[key] === undefined) {
-      continue;
-    }
-    const value = Number(incoming[key]);
-    if (!Number.isFinite(value) || value < bounds.min || value > bounds.max || (bounds.integer && !Number.isInteger(value))) {
-      errors.push(`${key} must be ${bounds.integer ? "an integer" : "a number"} between ${bounds.min} and ${bounds.max}`);
-      continue;
-    }
-    next[key] = value;
-  }
-
-  if (errors.length) {
-    res.status(400).json({ error: { message: "Invalid shadow settings", type: "paragon_routing_intelligence_error", details: errors } });
-    return;
-  }
-
-  cachedConfig = await writeConfig({ ...config, routingIntelligence: next });
-  res.json(cachedConfig.routingIntelligence);
-});
-
-app.get("/api/routing-intelligence/shadow-records", async (req, res) => {
-  const limit = Math.min(200, Math.max(1, Number(req.query.limit) || 50));
-  res.json({ records: routingIntelligence.shadowStore.list({ limit }), summary: routingIntelligence.shadowStore.summary() });
-});
-
-app.post("/api/routing-intelligence/scenario", async (req, res) => {
-  const config = await getConfig();
-  const settings = config.routingIntelligence ?? {};
-  try {
-    const scenario = req.body ?? {};
-    // A scenario may either supply an explicit profile or a prompt to derive
-    // one from, so the dashboard can reproduce a real recorded request.
-    const taskProfile = scenario.taskProfile
-      ? scenario.taskProfile
-      : buildTaskProfile({
-          prompt: String(scenario.prompt ?? ""),
-          body: {
-            stream: Boolean(scenario.streaming),
-            tools: scenario.toolCalls ? [{ type: "function", function: { name: "scenario" } }] : undefined,
-            response_format: scenario.structuredOutput ? { type: scenario.jsonSchema ? "json_schema" : "json_object" } : undefined,
-            max_tokens: Number.isFinite(scenario.maxOutputTokens) ? scenario.maxOutputTokens : undefined
-          },
-          estimatedInputTokens: Number.isFinite(scenario.estimatedInputTokens) ? scenario.estimatedInputTokens : 0,
-          hints: { maxCostClass: scenario.maxCostClass ?? null },
-          options: { largeThreshold: settings.unknownLargeContextThresholdTokens ?? 50000 }
-        });
-
-    // Explicit scenario overrides on top of the derived profile.
-    for (const field of ["reasoningDemand", "latencyPreference", "costSensitivity", "qualityPreference", "complexity", "risk", "workType"]) {
-      if (scenario[field]) taskProfile[field] = scenario[field];
-    }
-
-    const shadow = computeShadowRoute({
-      config,
-      statuses: getStatuses(),
-      catalog: catalogStore.get(),
-      telemetryStore: routingIntelligence.getTelemetry(),
-      benchmarkRows: await benchmarkRowsForScoring(config),
-      taskProfile,
-      hints: { maxCostClass: scenario.maxCostClass ?? null },
-      settings
-    });
-
-    res.json({ taskProfile, ...shadow, liveRouteSelector: "paragon-d-004c1", computedAt: new Date().toISOString() });
-  } catch (error) {
-    res.status(400).json({ error: { message: error.message, type: "paragon_routing_intelligence_error" } });
-  }
-});
-
-/** Shared helper so scenario scoring uses the same stale-withholding rule as live scoring (D-004C1 P0-7). */
-async function benchmarkRowsForScoring(config) {
-  const benchmarks = await getBenchmarkData(config.integrations?.openrouterApiKey);
-  return benchmarks.enabled && !benchmarks.stale ? benchmarks.rows : [];
-}
-
 app.get("/api/logs", (_req, res) => {
   res.json({ logs: getLogs() });
 });
@@ -802,7 +909,7 @@ app.get("/api/logs/stream", (req, res) => {
   req.on("close", unsubscribe);
 });
 
-registerOpenAiRoutes(app, getConfig, orchestration, getStatuses, catalogStore, routingIntelligence);
+registerOpenAiRoutes(app, getConfig, orchestration, getStatuses, catalogStore, routing);
 // Mounted after `app.use("/api", adminAuth)` above, so these inherit admin auth.
 registerOrchestrationRoutes(app, orchestration, getConfig, async (next) => {
   cachedConfig = await writeConfig(next);
@@ -816,6 +923,7 @@ app.listen(port, host, () => {
   console.log(`PARAGON dashboard:   http://${host}:${port}`);
   console.log(`Cursor model:        ${cachedConfig.server.exposedModel}`);
   console.log(`API key:             ${cachedConfig.server.apiKey ? "(configured)" : "(missing — set PARAGON_API_KEY)"}`);
+  console.log(`Routing priority:    ${normalizeRoutingPriority(cachedConfig.routing?.priority)}`);
   const ts = tailscaleUrls(cachedConfig.server);
   if (ts) {
     console.log(`Tailnet dashboard:   ${ts.tailnetDashboard}`);
