@@ -18,9 +18,12 @@
  *   "ActionRequiredError: You've hit your usage limit ... Your usage limits
  *    will reset when your monthly cycle ends on 8/12/2026."
  *
- * In-memory by design: an exhaustion observation describes this process's
- * experience right now. A restart correctly re-probes rather than replaying a
- * stale exclusion from disk.
+ * Persisted, deliberately. An allowance that resets on the 12th is still spent
+ * after a restart, so forgetting it means re-attempting a provider that cannot
+ * serve — one guaranteed failure, and its latency, on the next request. What
+ * makes persistence safe is that every record carries an expiry: the state is
+ * a claim about a *window*, not a permanent verdict, and it is dropped the
+ * moment that window closes or the provider succeeds again.
  */
 
 /** Failure classifications that mean "this provider's allowance is spent", not "this model is bad". */
@@ -51,7 +54,12 @@ export function parseQuotaReset(text, { now = Date.now() } = {}) {
   }
 
   // 1. Explicit ISO timestamp: "resets at 2026-08-12T00:00:00Z".
-  const iso = raw.match(/\b(\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2})?(?:Z|[+-]\d{2}:?\d{2})?)?)\b/);
+  //
+  // Fractional seconds and the zone designator must be part of the capture.
+  // Without them, `2026-08-12T00:00:00.123Z` matched only up to the seconds and
+  // was then parsed as *local* time, silently shifting the reset by the host's
+  // UTC offset — up to 14 hours in the wrong direction.
+  const iso = raw.match(/\b(\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)?)/);
   if (iso) {
     const parsed = Date.parse(iso[1]);
     if (Number.isFinite(parsed) && parsed > now) {
@@ -88,9 +96,19 @@ export function parseQuotaReset(text, { now = Date.now() } = {}) {
  * Nothing here is a routing *score* — it is a hard gate plus a scarcity
  * signal. Scoring lives in costModel.js/expectedUtility.js.
  */
-export function createQuotaStateStore({ defaultExclusionMs = DEFAULT_EXCLUSION_MS } = {}) {
+export function createQuotaStateStore({ defaultExclusionMs = DEFAULT_EXCLUSION_MS, onChange = null, initial = null } = {}) {
   /** provider -> { exhaustedAt, resetAt, resetSource, observedFailures, lastDetail } */
   const byProvider = new Map();
+
+  // Restored records are re-validated against their own expiry on load, so a
+  // window that closed while PARAGON was stopped is never replayed.
+  for (const [provider, state] of Object.entries(initial ?? {})) {
+    if (state?.resetAt && Date.parse(state.resetAt) > Date.now()) {
+      byProvider.set(provider, state);
+    }
+  }
+
+  const changed = () => onChange?.(Object.fromEntries(byProvider));
 
   function clampReset(resetAt, now) {
     const parsed = Date.parse(resetAt);
@@ -120,6 +138,7 @@ export function createQuotaStateStore({ defaultExclusionMs = DEFAULT_EXCLUSION_M
         observedFailures: (previous?.observedFailures ?? 0) + 1
       };
       byProvider.set(provider, state);
+      changed();
       return state;
     },
 
@@ -128,8 +147,8 @@ export function createQuotaStateStore({ defaultExclusionMs = DEFAULT_EXCLUSION_M
      * any parsed reset time, because the provider just proved it is serving.
      */
     recordSuccess(provider) {
-      if (provider) {
-        byProvider.delete(provider);
+      if (provider && byProvider.delete(provider)) {
+        changed();
       }
     },
 
@@ -140,9 +159,11 @@ export function createQuotaStateStore({ defaultExclusionMs = DEFAULT_EXCLUSION_M
         return false;
       }
       if (Date.parse(state.resetAt) <= now) {
-        // Reset has passed: stop excluding, but keep no memory of scarcity we
-        // can no longer justify.
+        // The window closed: stop excluding, and keep no memory of scarcity we
+        // can no longer justify. The provider returns to the ranking on the
+        // very next read, with no restart or manual step required.
         byProvider.delete(provider);
+        changed();
         return false;
       }
       return true;
@@ -182,6 +203,12 @@ export function createQuotaStateStore({ defaultExclusionMs = DEFAULT_EXCLUSION_M
 
     reset() {
       byProvider.clear();
+      changed();
+    },
+
+    /** Persistable snapshot, including records whose window is still open. */
+    serialize() {
+      return Object.fromEntries(byProvider);
     }
   };
 }

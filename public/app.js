@@ -731,6 +731,17 @@ const THINKING_LABELS = {
   unknown: "Not stated"
 };
 
+/** "Aug 12" / "14:30" — a usage limit is only actionable with its reset. */
+function formatResetInstant(iso) {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) {
+    return "soon";
+  }
+  return date.getTime() - Date.now() < 24 * 3600000
+    ? date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+    : date.toLocaleDateString([], { month: "short", day: "numeric" });
+}
+
 /** Compact evidence label — measured beats assumed, and the difference matters. */
 function evidenceLabel(row) {
   const share = row.measuredEvidenceShare;
@@ -772,7 +783,7 @@ function reasoningCell(row) {
       : cost.reasoningEstimateSource === "measured_history"
         ? "from history"
         : cost.reasoningAssumedConservative
-          ? "unknown — charged high"
+          ? "effort not stated — assumed"
           : "estimated";
   return `${cost.expectedReasoningTokens.toLocaleString()} tok<span class="cell-sub">${escapeHtml(source)}${
     range ? ` · ${range.min.toLocaleString()}–${range.max.toLocaleString()}` : ""
@@ -821,12 +832,18 @@ function renderRanking(data) {
       const stateLabel = STATE_LABELS[row.state] ?? row.state;
 
       if (!row.routable) {
+        // A usage limit is temporary, so say when the model comes back rather
+        // than only that it is gone. It re-enters the ranking on its own once
+        // that instant passes — no restart, no manual step.
+        const reason = row.availableAgainAt
+          ? `${row.excludedDetail ?? "usage limit reached"} — available again ${escapeHtml(formatResetInstant(row.availableAgainAt))}`
+          : (row.excludedDetail ?? row.excludedBecause ?? "not available");
         return `<tr class="excluded">
           <td class="muted">—</td>
           <td>${escapeHtml(row.providerLabel)}</td>
           <td><code>${escapeHtml(row.model ?? "—")}</code></td>
           <td><span class="${stateClass}">${escapeHtml(stateLabel)}</span></td>
-          <td colspan="7" class="ranking-reason">${escapeHtml(row.excludedDetail ?? row.excludedBecause ?? "not available")}</td>
+          <td colspan="7" class="ranking-reason">${escapeHtml(reason)}</td>
           <td class="muted">—</td>
         </tr>`;
       }

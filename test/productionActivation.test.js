@@ -22,7 +22,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { selectAutomaticRoute } from "../src/routing/automaticRouting.js";
-import { estimateEffectiveCost, estimateReasoningTokens } from "../src/routing/costModel.js";
+import { estimateEffectiveCost, estimateReasoningTokens, reasoningFit } from "../src/routing/costModel.js";
 import { defaultTelemetryStore, recordOutcome, readTelemetry } from "../src/routing/outcomeTelemetry.js";
 import { rankCandidates, UTILITY_WEIGHTS } from "../src/routing/expectedUtility.js";
 import { buildTaskProfile } from "../src/routing/taskProfile.js";
@@ -365,6 +365,149 @@ test("14d. quota scarcity is a relative signal derived from observation, never a
   assert.equal(quotaState.scarcity(config), 0);
   quotaState.recordQuotaFailure("a", { classification: "QUOTA_EXHAUSTED", detail: "usage limit" });
   assert.equal(quotaState.scarcity(config), 0.5, "one of two enabled providers exhausted");
+});
+
+test("14e. an exhausted provider returns to routing on its own once the reset passes", () => {
+  const quotaState = createQuotaStateStore();
+  const soon = new Date(Date.now() + 40).toISOString();
+  quotaState.recordQuotaFailure("cursor", { classification: "QUOTA_EXHAUSTED", detail: `resets at ${soon}` });
+  assert.equal(quotaState.isExhausted("cursor"), true);
+
+  // No restart, no manual step: the next read past the reset re-admits it.
+  assert.equal(quotaState.isExhausted("cursor", { now: Date.now() + 60_000 }), false);
+  assert.equal(quotaState.state("cursor", { now: Date.now() + 60_000 }), null);
+  assert.equal(quotaState.scarcity({ providers: { cursor: { enabled: true } } }, { now: Date.now() + 60_000 }), 0);
+});
+
+test("14f. quota state survives a restart, but a window that closed while down is not replayed", () => {
+  const open = new Date(Date.now() + 3_600_000).toISOString();
+  const closed = new Date(Date.now() - 1000).toISOString();
+
+  let persisted = null;
+  const first = createQuotaStateStore({ onChange: (snapshot) => (persisted = snapshot) });
+  first.recordQuotaFailure("cursor", { classification: "QUOTA_EXHAUSTED", detail: `resets at ${open}` });
+  assert.ok(persisted.cursor, "the record must be handed to the persistence hook");
+
+  // Restart: an allowance that resets on the 12th is still spent afterwards.
+  const restored = createQuotaStateStore({ initial: persisted });
+  assert.equal(restored.isExhausted("cursor"), true, "a still-open window must survive a restart");
+
+  // But a record whose window already closed must not be replayed.
+  const stale = createQuotaStateStore({
+    initial: { cursor: { resetAt: closed, classification: "QUOTA_EXHAUSTED", observedFailures: 1 } }
+  });
+  assert.equal(stale.isExhausted("cursor"), false);
+});
+
+test("14g. a success clears the exclusion and is persisted", () => {
+  let persisted = null;
+  const quotaState = createQuotaStateStore({ onChange: (snapshot) => (persisted = snapshot) });
+  quotaState.recordQuotaFailure("cursor", { classification: "QUOTA_EXHAUSTED", detail: "usage limit" });
+  assert.ok(persisted.cursor);
+  quotaState.recordSuccess("cursor");
+  assert.deepEqual(persisted, {}, "recovery must be persisted too, not just held in memory");
+});
+
+// ============================================ ranking must not reward legibility
+
+test("a model is not scored worse merely because its provider does not encode reasoning effort in model ids", () => {
+  // cursor declares a model-id grammar, so `-medium` parses as an effort.
+  // codex does not, so its effort is unknown. That is a fact about the
+  // provider's naming, not about the model — it must not become a scoring
+  // advantage for the one PARAGON happens to be able to read.
+  const shared = {
+    catalogEligible: true,
+    health: "healthy",
+    isHttpProvider: false,
+    costClass: "standard",
+    capabilities: { chatCompletions: true, streaming: true, capabilityConfidence: "high" },
+    contextModel: { effectiveUsableContextWindow: 400000, contextConfidence: "high", outputTokenReserve: 4096 },
+    benchmark: null,
+    telemetry: null
+  };
+  const taskProfile = buildTaskProfile({ prompt: "implement a function", estimatedInputTokens: 2000 });
+  assert.equal(taskProfile.reasoningDemand, "medium");
+
+  const { ranked } = rankCandidates(
+    [
+      {
+        ...shared,
+        provider: "cursor",
+        providerModelId: "m-medium",
+        executionProfile: { canonicalModelId: "m", reasoningEffort: "medium", speedMode: "standard", executionProfile: "effort:medium" }
+      },
+      {
+        ...shared,
+        provider: "codex",
+        providerModelId: "m",
+        executionProfile: { canonicalModelId: "m", reasoningEffort: "unknown", speedMode: "unknown", executionProfile: "default" }
+      }
+    ],
+    { taskProfile, unknownLargeContextThresholdTokens: 50000 }
+  );
+
+  const parseable = ranked.find((c) => c.provider === "cursor");
+  const opaque = ranked.find((c) => c.provider === "codex");
+
+  // Matching the demand is the baseline, not a bonus — so neither collects a
+  // positive reasoning-fit term.
+  assert.equal(parseable.components.reasoningFitTerm, 0, "a parsed, matching effort must not be rewarded");
+  assert.equal(opaque.components.reasoningFitTerm, 0, "an unknown effort must not be punished on fit");
+
+  // The opaque model still carries a genuine uncertainty penalty — not knowing
+  // is a real cost — but it must be that penalty alone, not a compounded one.
+  assert.ok(opaque.components.uncertaintyPenalty > parseable.components.uncertaintyPenalty);
+  assert.ok(
+    Math.abs(opaque.expectedUtility - parseable.expectedUtility) < UTILITY_WEIGHTS.qualityScale * 0.25,
+    `legibility alone must not dominate the score (gap was ${Math.abs(opaque.expectedUtility - parseable.expectedUtility).toFixed(1)})`
+  );
+});
+
+test("unknown reasoning effort is costed at the neutral default, not assumed worst-case", () => {
+  const forEffort = (reasoningEffort) =>
+    estimateEffectiveCost({
+      provider: "codex",
+      isHttpProvider: false,
+      executionProfile: { reasoningEffort, speedMode: "standard" },
+      taskProfile: { workType: "code", complexity: "normal" },
+      estimatedInputTokens: 2000
+    });
+
+  const unknown = forEffort("unknown");
+  const medium = forEffort("medium");
+  const high = forEffort("high");
+
+  assert.ok(unknown.reasoningTokensAssumedConservative);
+  // Not zero — that is the property that matters.
+  assert.ok(unknown.conservativeReasoningFloorTokens > 0);
+  // But not worst-case either: "unknown" overwhelmingly means "this provider
+  // does not encode effort in its ids", not "this model reasons a lot".
+  assert.ok(
+    unknown.effectiveExpectedTokens <= medium.effectiveExpectedTokens,
+    "unknown must not be charged more than the neutral default"
+  );
+  assert.ok(unknown.effectiveExpectedTokens < high.effectiveExpectedTokens, "unknown must not be charged as high effort");
+  // The honesty burden is carried by uncertainty, not by a pessimistic guess.
+  assert.ok(unknown.costUncertainty >= medium.costUncertainty + 0.2);
+});
+
+test("under-reasoning is penalized harder than over-reasoning, because only over-reasoning is already priced", () => {
+  const over = reasoningFit({ reasoningEffort: "max", reasoningDemand: "minimal" });
+  const under = reasoningFit({ reasoningEffort: "none", reasoningDemand: "maximum" });
+  const match = reasoningFit({ reasoningEffort: "medium", reasoningDemand: "medium" });
+
+  assert.equal(match.alignment, 0, "matching the demand is the baseline expectation");
+  assert.ok(over.alignment < 0);
+  assert.ok(under.alignment < 0);
+  // Over-reasoning's cost is already counted in the cost term; under-reasoning's
+  // harm (failing the task) appears nowhere else, so it must carry more weight
+  // per unit of mismatch.
+  const mildOver = reasoningFit({ reasoningEffort: "high", reasoningDemand: "medium" });
+  const mildUnder = reasoningFit({ reasoningEffort: "low", reasoningDemand: "high" });
+  assert.ok(
+    Math.abs(mildUnder.alignment) > Math.abs(mildOver.alignment),
+    "a comparable shortfall must outweigh a comparable excess"
+  );
 });
 
 // ============================================================ 17/18. priority
