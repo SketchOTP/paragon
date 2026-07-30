@@ -251,8 +251,10 @@ select {
 .panel {
   background: var(--bg-elevated);
   border-radius: var(--radius);
-  box-shadow: var(--shadow);
-  border: 1px solid var(--line);
+  /* Same neon-purple border and layered glow as the metric and provider cards,
+     so every box on the page reads as one family. */
+  border: 1px solid rgba(168, 85, 247, 0.3);
+  box-shadow: var(--glow-card);
   padding: 16px 18px;
 }
 
@@ -839,8 +841,18 @@ dialog.sheet {
   box-shadow: var(--shadow-lg);
 }
 
+/* Element-qualified so these beat `dialog.sheet` above — a plain `.sheet-full`
+   class selector loses to it on specificity, which is why the Diagnostics
+   dialog rendered at 400px no matter what width it asked for. */
 dialog.sheet-wide {
-  max-width: 440px;
+  max-width: 780px;
+}
+
+dialog.sheet-full {
+  width: min(1800px, 97vw);
+  max-width: 97vw;
+  height: 92vh;
+  max-height: 92vh;
 }
 
 dialog::backdrop {
@@ -1588,13 +1600,6 @@ button.danger-text {
 
 /* ---------- Diagnostics ---------- */
 
-.sheet-full {
-  width: min(1400px, 96vw);
-  max-width: 96vw;
-  height: 92vh;
-  max-height: 92vh;
-}
-
 .sheet-full .sheet-body {
   height: 100%;
   display: flex;
@@ -1658,8 +1663,11 @@ button.danger-text {
   color: var(--muted);
 }
 
+/* The dialog is 92vh tall, so a fixed 340px table left most of it empty.
+   Viewport-relative keeps the multi-table tabs (Routing, Requests) sane while
+   letting the single-table Models tab use the height it now has. */
 .diag-table-wrap {
-  max-height: 340px;
+  max-height: min(62vh, 720px);
   overflow: auto;
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
@@ -1773,12 +1781,16 @@ button.danger-text {
 
 .btn.danger { color: #fca5a5; }
 
-/* The base URL is the value users copy most often; give it room so it does not
-   wrap mid-token in the four-across connection row. */
-@media (min-width: 900px) {
-  #connection .metric-card:first-child {
-    grid-column: span 2;
-  }
+/* Connection stays one row of four. The base URL is the longest value, so it
+   wraps within its own card rather than widening the track — a second row for
+   four short facts reads as clutter. */
+#connection .metric-card {
+  min-width: 0;
+}
+
+#connection .metric-value {
+  font-size: 11px;
+  line-height: 1.45;
 }
 
 /* ---------- Model Ranking (collapsed by default) ---------- */
