@@ -67,6 +67,18 @@ async function recordEnforcementDecision(orchestration, telemetry, { reasonCode,
   );
 }
 
+/** "on Aug 12" / "at 14:30" — a usage limit is only actionable with its reset. */
+function formatResetInstant(iso) {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) {
+    return "soon";
+  }
+  const withinADay = date.getTime() - Date.now() < 24 * 3_600_000;
+  return withinADay
+    ? `at ${date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
+    : `on ${date.toLocaleDateString([], { month: "short", day: "numeric" })}`;
+}
+
 function logParagonRequest(message, { level = "info", provider = "paragon" } = {}) {
   addLog({ type: "request", provider, level, message });
 }
@@ -89,11 +101,15 @@ async function safely(fn, fallback = null) {
  * Diagnostics keeps the raw classification and bounded diagnostic; this is
  * what an ordinary user reads, so it must not leak reason codes or stderr.
  */
-function friendlyFailureReason(classification, provider) {
+function friendlyFailureReason(classification, provider, { resetAt = null } = {}) {
   const label = provider ?? "the provider";
   switch (classification) {
     case "QUOTA_EXHAUSTED":
-      return `${label} reached its usage limit`;
+      // Naming the reset turns a dead end into something the user can plan
+      // around — it is the single most useful fact about a usage limit.
+      return resetAt
+        ? `${label} reached its usage limit, which resets ${formatResetInstant(resetAt)}`
+        : `${label} reached its usage limit`;
     case "ENTITLEMENT_REQUIRED":
       return `${label} requires a plan upgrade for this model`;
     case "AUTHENTICATION_FAILED":
@@ -537,7 +553,7 @@ function recordSuccessfulRoute({ routing, outcome, durationMs, plan }) {
     // recovery and vice versa.
     fallback: outcome.failures.length > 0,
     recoveredFrom: firstFailure?.provider ?? null,
-    recoveredFromReason: firstFailure ? friendlyFailureReason(firstFailure.classification, firstFailure.provider) : null
+    recoveredFromReason: firstFailure?.failureReason ?? null
   });
 }
 
@@ -667,17 +683,19 @@ async function runPlan(initialPlan, prompt, context = {}) {
       // Quota/entitlement exhaustion is provider-wide and durable: record it
       // so this provider is excluded from *subsequent* requests until its
       // known reset, not just skipped for the rest of this one.
+      let quotaRecord = null;
       if (PROVIDER_WIDE_FAILURES.has(classification)) {
-        routing?.quotaState?.recordQuotaFailure(name, {
+        quotaRecord = routing?.quotaState?.recordQuotaFailure(name, {
           classification,
           detail: `${error.message ?? ""} ${error.stdout ?? ""} ${error.stderr ?? ""}`
         });
       }
+      const failureReason = friendlyFailureReason(classification, name, { resetAt: quotaRecord?.resetAt });
 
       routing?.routeActivity?.recordFailed({
         provider: name,
         model: attempt.registryModel,
-        reason: friendlyFailureReason(classification, name)
+        reason: failureReason
       });
 
       if (catalogStore && providerConfig.model) {
@@ -708,7 +726,7 @@ async function runPlan(initialPlan, prompt, context = {}) {
         retriesUsed
       });
 
-      failures.push({ provider: name, model: attempt.registryModel, classification, action: decision.action });
+      failures.push({ provider: name, model: attempt.registryModel, classification, action: decision.action, failureReason });
 
       if (attemptRecord) {
         const hasNext = decision.action === "retry" || plan.length > 1;
@@ -758,7 +776,10 @@ async function runPlan(initialPlan, prompt, context = {}) {
   exhausted.lastProvider = last?.provider ?? initialPlan[0]?.name ?? null;
   exhausted.lastModel = last?.model ?? null;
   exhausted.lastClassification = last?.classification ?? null;
-  exhausted.friendlyReason = last ? friendlyFailureReason(last.classification, last.provider) : null;
+  // Reuse the reason computed at failure time — recomputing it here loses the
+  // parsed reset instant, which is the most useful part of a usage-limit
+  // message.
+  exhausted.friendlyReason = last?.failureReason ?? null;
   throw exhausted;
 }
 

@@ -218,8 +218,24 @@ export function estimateEffectiveCost({
   // midpoint) so the candidate is costed pessimistically, and flag it so the
   // uncertainty penalty applies on top.
   const reasoningUnknown = reasoning.reasoningEstimateSource === "unknown";
+  /**
+   * The floor for unknown reasoning consumption is the **medium** prior, not
+   * the high one.
+   *
+   * "Unknown" here overwhelmingly means "this provider does not encode
+   * reasoning effort in its model ids", not "this model secretly reasons a
+   * lot". Charging it the high prior assumed worst-case consumption on no
+   * evidence, doubled its expected reasoning tokens against a comparable
+   * model whose effort could be parsed, and — because reasoning tokens are
+   * priced — inflated its monetary cost with them. Measured against real
+   * data, that turned a 2x token assumption into an 11x cost term.
+   *
+   * The neutral default still refuses to treat unknown as zero, which is the
+   * property that matters; the honesty burden is carried by the uncertainty
+   * penalty (see uncertaintyPenalty), not by a pessimistic guess.
+   */
   const conservativeReasoningFloor = Math.round(
-    expectedVisibleOutputTokens * ((REASONING_PRIOR.high.min + REASONING_PRIOR.high.max) / 2)
+    expectedVisibleOutputTokens * ((REASONING_PRIOR.medium.min + REASONING_PRIOR.medium.max) / 2)
   );
   const reasoningTokens = reasoningUnknown ? conservativeReasoningFloor : (reasoning.expectedReasoningTokens ?? 0);
   const effectiveExpectedTokens = input + expectedVisibleOutputTokens + reasoningTokens;
@@ -349,8 +365,35 @@ export function reasoningFit({ reasoningEffort, reasoningDemand }) {
   const effortOnDemandScale = (effortRank / 6) * 4;
   const delta = effortOnDemandScale - demandRank;
   if (Math.abs(delta) <= 0.5) {
-    return { alignment: 1, reason: `reasoning effort ${reasoningEffort} matches ${reasoningDemand} demand` };
+    /**
+     * Alignment is **penalty-only**: matching the task's reasoning demand is
+     * the baseline expectation, not a bonus.
+     *
+     * This used to return +1, which was a reward for *legibility* rather than
+     * capability. Only some providers encode reasoning effort in their model
+     * ids (cursor and antigravity do; claude and codex do not — see
+     * executionProfile.js). A model whose effort PARAGON could parse therefore
+     * collected a full reasoningFitScale bonus, while an equally good model
+     * from a provider without that grammar scored 0 and looked worse for a
+     * reason that had nothing to do with the model. Measured against real
+     * data: two models with identical benchmarked quality (0.71) sat 15
+     * utility points apart on this term alone.
+     */
+    return { alignment: 0, reason: `reasoning effort ${reasoningEffort} matches ${reasoningDemand} demand` };
   }
+  /**
+   * The two directions are deliberately **not** symmetric.
+   *
+   * Over-reasoning's harm is paying for thinking the task did not need — and
+   * that harm is already counted, in full, by the cost term (more reasoning
+   * tokens cost more). Penalizing it steeply here would charge for it twice.
+   *
+   * Under-reasoning's harm is failing the task, and nothing else in the
+   * utility function represents it: a cheap shallow model looks cheap right up
+   * until it produces a wrong answer. So it is the direction that has to carry
+   * real weight, otherwise a security-critical task demanding maximum
+   * reasoning can never justify a model that actually does it.
+   */
   if (delta > 0) {
     return {
       alignment: -Math.min(1, (delta - 0.5) / 3),
@@ -358,7 +401,7 @@ export function reasoningFit({ reasoningEffort, reasoningDemand }) {
     };
   }
   return {
-    alignment: -Math.min(1, (Math.abs(delta) - 0.5) / 3),
+    alignment: -Math.min(1, (Math.abs(delta) - 0.5) / 1.5),
     reason: `reasoning effort ${reasoningEffort} is below ${reasoningDemand} demand — quality risk`
   };
 }

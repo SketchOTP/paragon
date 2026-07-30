@@ -285,6 +285,34 @@ test("36b. an exhausted provider is excluded from the next request entirely", as
   assert.equal(body.error.code, "no_eligible_model");
 });
 
+test("a usage-limited model leaves the ranking, says when it returns, and names the reset in activity", async () => {
+  // quotap has already hit its limit in the tests above.
+  const ranking = await (await fetch(`${BASE}/api/models/ranking`, { headers: authHeaders() })).json();
+  const limited = ranking.rows.filter((r) => r.provider === "quotap");
+  assert.ok(limited.length, "the model must still be listed, not hidden");
+  for (const row of limited) {
+    assert.equal(row.routable, false, "a spent allowance must remove it from routing");
+    assert.ok(row.availableAgainAt, "and the row must say when it comes back");
+    assert.ok(Date.parse(row.availableAgainAt) > Date.now());
+  }
+
+  // The product's activity language names the reset, because "unavailable" is
+  // far less useful than "unavailable until".
+  const activity = await (await fetch(`${BASE}/api/activity`, { headers: authHeaders() })).json();
+  const mentioned = activity.activity.find((e) => /quotap/.test(e.failureReason ?? e.recoveredFromReason ?? ""));
+  assert.ok(mentioned, "the usage limit must appear in Recent Activity");
+  assert.match(
+    mentioned.failureReason ?? mentioned.recoveredFromReason,
+    /resets (on|at) /,
+    "the reason must name the reset, not just the limit"
+  );
+
+  // Every row carries the same shape, whatever branch produced it — including
+  // the providers that were never assessed.
+  const keys = new Set(ranking.rows.map((r) => JSON.stringify(Object.keys(r).sort())));
+  assert.equal(keys.size, 1, "every ranking row must have an identical shape");
+});
+
 test("13. planned, failed and executed provider-models stay distinct on the dashboard payload", async () => {
   await onlyProvider("counterp");
   await fetch(`${BASE}/v1/chat/completions`, {

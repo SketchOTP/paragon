@@ -1,6 +1,7 @@
 import cors from "cors";
 import express from "express";
 import path from "node:path";
+import fsp from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { AUTH_FLOWS } from "./authFlows.js";
 import { createAuthMiddleware } from "./auth.js";
@@ -75,7 +76,35 @@ const telemetryFlushTimer = setInterval(() => {
 telemetryFlushTimer.unref?.();
 
 const routeActivity = createRouteActivityStore();
-const quotaState = createQuotaStateStore();
+
+/**
+ * Quota state persists across restarts. An allowance that resets on the 12th is
+ * still spent after a restart, so forgetting it would cost one guaranteed
+ * failed attempt (and its latency) on the next request. Every record carries
+ * its own expiry, so a window that closed while PARAGON was stopped is dropped
+ * on load rather than replayed.
+ */
+const quotaStatePath = path.join(dataDir, "quota-state.json");
+let restoredQuotaState = {};
+try {
+  restoredQuotaState = JSON.parse(await fsp.readFile(quotaStatePath, "utf8"));
+} catch (error) {
+  if (error.code !== "ENOENT") {
+    console.warn(`quota state: could not read store, starting fresh: ${error.message}`);
+  }
+}
+const quotaState = createQuotaStateStore({
+  initial: restoredQuotaState,
+  onChange: (snapshot) => {
+    // Best-effort and atomic: losing this file costs one re-probe, never a
+    // wrong routing decision.
+    fsp
+      .mkdir(dataDir, { recursive: true })
+      .then(() => fsp.writeFile(`${quotaStatePath}.tmp`, `${JSON.stringify(snapshot, null, 2)}\n`, "utf8"))
+      .then(() => fsp.rename(`${quotaStatePath}.tmp`, quotaStatePath))
+      .catch((error) => console.warn(`quota state: flush failed (non-fatal): ${error.message}`));
+  }
+});
 
 /**
  * The routing runtime. One engine, always live. There is no mode, no second
@@ -405,7 +434,12 @@ function providerCards(config, summaries) {
     } else if (summary.usageLimit) {
       status = "usage_limited";
       attention = summary.usageLimit.resetAt
-        ? `Usage limit reached — expected to reset ${summary.usageLimit.resetAt}`
+        ? `Usage limit reached — available again ${new Date(summary.usageLimit.resetAt).toLocaleString([], {
+            month: "short",
+            day: "numeric",
+            hour: "2-digit",
+            minute: "2-digit"
+          })}`
         : "Usage limit reached";
     } else if (summary.pendingAssessment) {
       status = "needs_attention";
@@ -519,6 +553,55 @@ app.get("/api/overview", async (_req, res) => {
  * the response and can be varied by the caller — a rank is only meaningful
  * relative to a kind of work.
  */
+/**
+ * The shape every Model Ranking row carries, so a consumer never has to know
+ * which branch produced it.
+ */
+function emptyRankingRow() {
+  return {
+    provider: null,
+    providerLabel: null,
+    providerEnabled: false,
+    model: null,
+    displayName: null,
+    canonicalModel: null,
+    state: "unknown",
+    validated: false,
+    catalogEligible: false,
+    isAlias: false,
+    discoverySource: null,
+    validatedAt: null,
+    lastSuccessAt: null,
+    lastFailureAt: null,
+    lastFailureClassification: null,
+    routable: false,
+    rank: null,
+    of: null,
+    attemptOrder: null,
+    excludedBecause: null,
+    excludedDetail: null,
+    availableAgainAt: null,
+    reasoningEffort: null,
+    speedMode: null,
+    executionProfile: null,
+    reasoningFit: null,
+    reasoningFitReason: null,
+    expectedUtility: null,
+    quality: null,
+    successProbability: null,
+    latency: null,
+    uncertainty: null,
+    cost: null,
+    contextWindow: null,
+    contextConfidence: null,
+    capabilities: null,
+    benchmark: null,
+    telemetry: null,
+    measuredEvidenceShare: null,
+    lastExecuted: null
+  };
+}
+
 app.get("/api/models/ranking", async (req, res) => {
   const config = await getConfig();
   const catalog = catalogStore.get();
@@ -557,13 +640,15 @@ app.get("/api/models/ranking", async (req, res) => {
   for (const [provider, providerConfig] of Object.entries(config.providers ?? {})) {
     const assessed = Boolean(catalog?.providers && Object.prototype.hasOwnProperty.call(catalog.providers, provider));
     if (!assessed) {
+      // Same shape as every other row. A row that omits keys the rest carry
+      // forces every consumer to special-case it, and a table that renders
+      // `undefined` for a provider is worse than one that renders "unknown".
       rows.push({
+        ...emptyRankingRow(),
         provider,
         providerLabel: providerConfig.label || provider,
         providerEnabled: Boolean(providerConfig.enabled),
-        model: null,
         state: "pending_assessment",
-        routable: false,
         excludedBecause: "routing.providerPendingAssessment",
         excludedDetail: "model discovery has not completed for this provider"
       });
@@ -584,15 +669,32 @@ app.get("/api/models/ranking", async (req, res) => {
        */
       let excludedBecause = null;
       let excludedDetail = null;
+      let availableAgainAt = null;
       if (candidate?.excluded) {
         excludedBecause = candidate.reasonCode;
         excludedDetail = candidate.detail ?? null;
+        if (candidate.reasonCode === "eligibility.quotaExhausted") {
+          // A usage limit is temporary, and the provider usually says when it
+          // lifts. Reporting the instant turns "unavailable" into "unavailable
+          // until", and lets the table re-include the model automatically once
+          // the window closes.
+          availableAgainAt = quotaState.state(provider)?.resetAt ?? null;
+          excludedDetail = "the provider's usage limit was reached";
+        }
       } else if (!candidate) {
         if (!providerConfig.enabled) {
           excludedBecause = "eligibility.providerDisabled";
           excludedDetail = "the provider is turned off";
         } else if (!entry.automaticEligibility) {
           excludedBecause = "eligibility.catalogState";
+          // A usage limit is recorded in two places: per-model in the catalog
+          // (`quota_blocked`) and per-provider in the quota store, which is the
+          // one that knows *when it lifts*. Surface the reset on this path too,
+          // otherwise the model that actually hit the limit is the one row that
+          // fails to say when it comes back.
+          if (entry.state === "quota_blocked") {
+            availableAgainAt = quotaState.state(provider)?.resetAt ?? null;
+          }
           // A `validated` entry that is nonetheless ineligible has simply aged
           // past its validation TTL — reporting "catalog state: validated" as
           // the reason it cannot route would be actively confusing.
@@ -619,6 +721,7 @@ app.get("/api/models/ranking", async (req, res) => {
       }
 
       rows.push({
+        ...emptyRankingRow(),
         provider,
         providerLabel: providerConfig.label || provider,
         providerEnabled: Boolean(providerConfig.enabled),
@@ -644,6 +747,7 @@ app.get("/api/models/ranking", async (req, res) => {
         attemptOrder: plannedOrder.get(`${provider}/${entry.modelId}`) ?? null,
         excludedBecause,
         excludedDetail,
+        availableAgainAt,
 
         // --- how it thinks
         reasoningEffort: candidate?.reasoningEffort ?? null,
@@ -682,7 +786,11 @@ app.get("/api/models/ranking", async (req, res) => {
               quotaBurnSource: cost.quotaBurnSource,
               expectedInputTokens: cost.expectedInputTokens,
               expectedOutputTokens: cost.expectedVisibleOutputTokens,
-              expectedReasoningTokens: cost.expectedReasoningTokens,
+              // When the provider does not state a reasoning effort, the cost
+              // above is still charged for an assumed amount — so report that
+              // amount rather than "not reported", which would leave the table
+              // showing a cost for tokens it claims do not exist.
+              expectedReasoningTokens: cost.expectedReasoningTokens ?? cost.conservativeReasoningFloorTokens,
               reasoningTokenRange: cost.expectedReasoningTokenRange,
               reasoningEstimateSource: cost.reasoningEstimateSource,
               reasoningAssumedConservative: cost.reasoningTokensAssumedConservative,
