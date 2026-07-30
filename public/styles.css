@@ -1780,3 +1780,136 @@ button.danger-text {
     grid-column: span 2;
   }
 }
+
+/* ---------- Model Ranking (collapsed by default) ---------- */
+
+.ranking-panel {
+  margin-top: 16px;
+}
+
+.ranking-toggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: none;
+  border: 0;
+  padding: 0;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.ranking-toggle h2 {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.ranking-chevron {
+  color: var(--accent);
+  font-size: 12px;
+  transition: transform 0.15s ease;
+}
+
+.ranking-toggle[aria-expanded="true"] .ranking-chevron {
+  transform: rotate(90deg);
+}
+
+.ranking-summary {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.ranking-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.ranking-control {
+  display: grid;
+  gap: 4px;
+  min-width: 140px;
+}
+
+.ranking-control select {
+  min-height: 32px;
+  font-size: 12px;
+}
+
+.ranking-note {
+  margin: 0 0 12px;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--muted);
+}
+
+.ranking-table-wrap {
+  max-height: 520px;
+}
+
+.ranking-table {
+  font-size: 12px;
+}
+
+.ranking-table th {
+  white-space: nowrap;
+}
+
+.ranking-table td {
+  vertical-align: top;
+}
+
+.ranking-table code {
+  overflow-wrap: anywhere;
+}
+
+.cell-sub {
+  display: block;
+  font-size: 10px;
+  color: var(--muted);
+  margin-top: 2px;
+}
+
+.ranking-rank {
+  font-weight: 700;
+  color: var(--accent);
+  white-space: nowrap;
+}
+
+.ranking-planned {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  vertical-align: middle;
+}
+
+.ranking-score {
+  font-size: 13px;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.ranking-reason {
+  color: var(--muted);
+  font-style: italic;
+}
+
+.ranking-empty {
+  padding: 18px;
+  text-align: center;
+  color: var(--muted);
+}
+
+.ranking-table .ok { color: #6ee7b7; }
+.ranking-table .warn { color: #fcd34d; }

@@ -13,8 +13,9 @@ import { tailscaleUrls } from "./tailscaleUrls.js";
 import { createOrchestrationRuntime } from "./orchestration/telemetry.js";
 import { registerOrchestrationRoutes } from "./orchestration/api.js";
 import { buildModelRegistry } from "./routing/modelRegistry.js";
+import { classifyChatCapability } from "./modelCapability.js";
 import { getBenchmarkData, annotateRegistryWithBenchmarks } from "./routing/benchmarks.js";
-import { applyExecutionResult, loadCatalog, saveCatalog } from "./modelCatalog.js";
+import { applyExecutionResult, listCatalogEntries, loadCatalog, saveCatalog } from "./modelCatalog.js";
 import { defaultProbe, refreshProviderCatalog } from "./modelCatalogRefresh.js";
 import { startModelCatalogScheduler } from "./modelCatalogScheduler.js";
 import { loadTelemetry, saveTelemetry, recordOutcome as recordTelemetryOutcome, pruneTelemetry } from "./routing/outcomeTelemetry.js";
@@ -495,6 +496,240 @@ app.get("/api/overview", async (_req, res) => {
     activity: routeActivity.recent({ limit: 20 }),
     // Drives the first-run flow (Phase 10) rather than a separate probe.
     onboarding: { required: !anyAssessed, hasProviders: cards.some((c) => c.enabled) },
+    builtAt: new Date().toISOString()
+  });
+});
+
+/**
+ * The combined Model Ranking (one table, not two).
+ *
+ * Merges what used to be the separate "Model Catalog" and "Model Routing"
+ * panels: every model PARAGON has access to, its catalog/validation status,
+ * and — for the ones that are actually routable — the live ranking with the
+ * factors that produced it (reasoning effort, quality and its evidence, cost
+ * and its evidence, latency, uncertainty, context, benchmark attribution).
+ *
+ * The ranking is the *real* one: it calls the same selectAutomaticRoute() the
+ * request path calls, with the configured routing priority, so what this table
+ * shows is what would actually happen. A model that cannot route is listed with
+ * the specific gate that excluded it rather than being hidden or given a
+ * meaningless score.
+ *
+ * Because ranking is per-request, the profile used here is stated explicitly in
+ * the response and can be varied by the caller — a rank is only meaningful
+ * relative to a kind of work.
+ */
+app.get("/api/models/ranking", async (req, res) => {
+  const config = await getConfig();
+  const catalog = catalogStore.get();
+  const ttlHours = config.modelCatalog?.validationTtlHours ?? 24;
+
+  const taskProfile = buildTaskProfile({
+    prompt: String(req.query.prompt ?? "implement a function"),
+    body: {},
+    estimatedInputTokens: Number.isFinite(Number(req.query.tokens)) ? Number(req.query.tokens) : 4000,
+    options: { largeThreshold: routing.settings.unknownLargeContextThresholdTokens ?? 50000 }
+  });
+  for (const field of ["workType", "complexity", "reasoningDemand", "latencyPreference", "costSensitivity", "qualityPreference"]) {
+    if (req.query[field]) taskProfile[field] = String(req.query[field]);
+  }
+
+  const benchmarks = await getBenchmarkData(config.integrations?.openrouterApiKey);
+  const route = selectAutomaticRoute({
+    config,
+    statuses: getStatuses(),
+    catalog,
+    telemetryStore: routing.getTelemetry(),
+    benchmarkRows: benchmarks.enabled && !benchmarks.stale ? benchmarks.rows : [],
+    taskProfile,
+    settings: routing.settings,
+    quotaState,
+    priority: req.query.priority ?? config.routing?.priority
+  });
+
+  const rankedByKey = new Map();
+  for (const candidate of route.ranked ?? []) {
+    rankedByKey.set(`${candidate.provider}/${candidate.providerModelId}`, candidate);
+  }
+  const plannedOrder = new Map((route.attemptPlan ?? []).map((a, index) => [`${a.name}/${a.registryModel}`, index + 1]));
+
+  const rows = [];
+  for (const [provider, providerConfig] of Object.entries(config.providers ?? {})) {
+    const assessed = Boolean(catalog?.providers && Object.prototype.hasOwnProperty.call(catalog.providers, provider));
+    if (!assessed) {
+      rows.push({
+        provider,
+        providerLabel: providerConfig.label || provider,
+        providerEnabled: Boolean(providerConfig.enabled),
+        model: null,
+        state: "pending_assessment",
+        routable: false,
+        excludedBecause: "routing.providerPendingAssessment",
+        excludedDetail: "model discovery has not completed for this provider"
+      });
+      continue;
+    }
+
+    for (const entry of listCatalogEntries(catalog, provider, { ttlHours })) {
+      const candidate = rankedByKey.get(`${provider}/${entry.modelId}`);
+      const components = candidate?.components ?? null;
+      const cost = candidate?.cost ?? null;
+
+      /**
+       * Why this model cannot route. A candidate carries its own gate reason;
+       * a model that never became a candidate was filtered earlier, and the
+       * specific cause is worth naming rather than reporting a generic "not
+       * eligible" for a rejected model, a non-chat model and a disabled
+       * provider alike.
+       */
+      let excludedBecause = null;
+      let excludedDetail = null;
+      if (candidate?.excluded) {
+        excludedBecause = candidate.reasonCode;
+        excludedDetail = candidate.detail ?? null;
+      } else if (!candidate) {
+        if (!providerConfig.enabled) {
+          excludedBecause = "eligibility.providerDisabled";
+          excludedDetail = "the provider is turned off";
+        } else if (!entry.automaticEligibility) {
+          excludedBecause = "eligibility.catalogState";
+          // A `validated` entry that is nonetheless ineligible has simply aged
+          // past its validation TTL — reporting "catalog state: validated" as
+          // the reason it cannot route would be actively confusing.
+          const expired = entry.state === "validated" || entry.state === "stale";
+          excludedDetail = expired
+            ? "validation has expired and needs re-checking"
+            : {
+                retired: "no longer offered by the provider",
+                unknown: "discovered but never validated",
+                rejected: "the provider rejected this model",
+                unavailable: "the provider reported it unavailable",
+                quota_blocked: "the provider's usage limit was reached",
+                authentication_blocked: "the provider needs to be signed in again",
+                entitlement_blocked: "your plan does not include this model",
+                configuration_blocked: "the provider is misconfigured",
+                provider_offline: "the provider was unreachable"
+              }[entry.state] ?? `catalog state: ${entry.state}`;
+        } else if (classifyChatCapability({ modelId: entry.modelId, metadata: entry.metadata }) === "unsupported") {
+          excludedBecause = "routing.chatCapabilityUnsupported";
+          excludedDetail = "not a chat model";
+        } else {
+          excludedBecause = "eligibility.notACandidate";
+        }
+      }
+
+      rows.push({
+        provider,
+        providerLabel: providerConfig.label || provider,
+        providerEnabled: Boolean(providerConfig.enabled),
+        model: entry.modelId,
+        displayName: entry.displayName ?? entry.modelId,
+        canonicalModel: candidate?.canonicalModelId ?? null,
+
+        // --- catalog / validation status
+        state: entry.state,
+        validated: entry.state === "validated",
+        catalogEligible: Boolean(entry.automaticEligibility),
+        isAlias: Boolean(entry.isAlias),
+        discoverySource: entry.discoverySource ?? null,
+        validatedAt: entry.validatedAt ?? null,
+        lastSuccessAt: entry.lastSuccessAt ?? null,
+        lastFailureAt: entry.lastFailureAt ?? null,
+        lastFailureClassification: entry.lastFailureClassification ?? null,
+
+        // --- routability and rank
+        routable: Boolean(candidate) && !candidate.excluded,
+        rank: candidate && !candidate.excluded ? candidate.rank : null,
+        of: candidate && !candidate.excluded ? candidate.of : null,
+        attemptOrder: plannedOrder.get(`${provider}/${entry.modelId}`) ?? null,
+        excludedBecause,
+        excludedDetail,
+
+        // --- how it thinks
+        reasoningEffort: candidate?.reasoningEffort ?? null,
+        speedMode: candidate?.speedMode ?? null,
+        executionProfile: candidate?.executionProfile ?? null,
+        reasoningFit: components?.reasoningFitAlignment ?? null,
+        reasoningFitReason: components?.reasoningFitReason ?? null,
+
+        // --- the score and every factor behind it
+        expectedUtility: candidate?.expectedUtility ?? null,
+        quality: components
+          ? { value: components.expectedTaskQuality, source: components.qualitySource, term: components.qualityTerm }
+          : null,
+        successProbability: components
+          ? { value: components.probabilityOfSuccessfulCompletion, source: components.successSource }
+          : null,
+        latency: components
+          ? { penalty: components.expectedLatencyPenalty, term: components.latencyTerm, source: components.latencySource, measuredP95Ms: components.measuredLatencyP95Ms }
+          : null,
+        uncertainty: components
+          ? { penalty: components.uncertaintyPenalty, term: components.uncertaintyTerm, reasons: components.uncertaintyReasons }
+          : null,
+
+        // --- cost, with its evidence
+        cost: cost
+          ? {
+              costClass: candidate.costClass,
+              totalResourceCost: cost.estimatedTotalResourceCost,
+              term: components?.costTerm ?? null,
+              monetary: cost.estimatedMonetaryCost,
+              monetaryConfidence: cost.monetaryCostConfidence,
+              pricingAvailable: cost.pricingAvailable,
+              unpricedMetered: cost.unpricedMeteredProvider,
+              subscription: cost.isSubscriptionProvider,
+              quotaBurn: cost.estimatedQuotaBurn,
+              quotaBurnSource: cost.quotaBurnSource,
+              expectedInputTokens: cost.expectedInputTokens,
+              expectedOutputTokens: cost.expectedVisibleOutputTokens,
+              expectedReasoningTokens: cost.expectedReasoningTokens,
+              reasoningTokenRange: cost.expectedReasoningTokenRange,
+              reasoningEstimateSource: cost.reasoningEstimateSource,
+              reasoningAssumedConservative: cost.reasoningTokensAssumedConservative,
+              uncertainty: cost.costUncertainty
+            }
+          : null,
+
+        // --- context and capability evidence
+        contextWindow: candidate?.contextModel?.effectiveUsableContextWindow ?? null,
+        contextConfidence: candidate?.contextModel?.contextConfidence ?? null,
+        capabilities: candidate?.capabilities ?? null,
+
+        // --- external and observed evidence
+        benchmark: candidate?.benchmark ?? null,
+        telemetry: candidate?.telemetry ?? null,
+        measuredEvidenceShare: candidate?.measuredEvidenceShare ?? null,
+        lastExecuted: routeActivity.lastExecuted(provider)?.model === entry.modelId ? routeActivity.lastExecuted(provider) : null
+      });
+    }
+  }
+
+  // Routable models first in rank order, then everything else grouped by
+  // provider so the catalog stays readable.
+  rows.sort((a, b) => {
+    if (a.routable !== b.routable) return a.routable ? -1 : 1;
+    if (a.routable && b.routable) return (a.rank ?? 1e9) - (b.rank ?? 1e9);
+    return `${a.provider}/${a.model}`.localeCompare(`${b.provider}/${b.model}`);
+  });
+
+  res.json({
+    rows,
+    priority: routingPriorityDescription(req.query.priority ?? config.routing?.priority),
+    // A rank is only meaningful relative to a kind of work; say which.
+    rankedFor: {
+      workType: taskProfile.workType,
+      complexity: taskProfile.complexity,
+      reasoningDemand: taskProfile.reasoningDemand,
+      contextBand: taskProfile.contextBand,
+      estimatedInputTokens: taskProfile.estimatedInputTokens
+    },
+    totals: {
+      models: rows.length,
+      routable: rows.filter((r) => r.routable).length,
+      validated: rows.filter((r) => r.validated).length,
+      excluded: rows.filter((r) => !r.routable).length
+    },
+    benchmarks: { enabled: benchmarks.enabled, applied: benchmarks.enabled && !benchmarks.stale, stale: benchmarks.stale },
     builtAt: new Date().toISOString()
   });
 });

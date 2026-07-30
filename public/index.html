@@ -142,6 +142,89 @@
           <ul class="activity-list" id="activity-list"></ul>
         </section>
       </div>
+
+      <!-- ---------- Model Ranking (collapsed by default) ----------
+           Every model PARAGON can reach, its validation status, and the live
+           ranking with the factors behind it. One table: this replaces the
+           separate Model Catalog and Model Routing panels rather than
+           reinstating both. Collapsed so the everyday page stays four areas. -->
+      <section class="panel ranking-panel" aria-label="Model Ranking">
+        <div class="panel-head">
+          <button type="button" class="ranking-toggle" id="toggle-ranking" aria-expanded="false" aria-controls="ranking-body">
+            <span class="ranking-chevron" aria-hidden="true">▸</span>
+            <h2>Model Ranking</h2>
+          </button>
+          <span class="ranking-summary" id="ranking-summary"></span>
+        </div>
+
+        <div id="ranking-body" hidden>
+          <div class="ranking-controls">
+            <label class="ranking-control">
+              <span class="field-label">Ranked for</span>
+              <select id="ranking-worktype">
+                <option value="code">Writing code</option>
+                <option value="debug">Debugging</option>
+                <option value="review">Reviewing</option>
+                <option value="planning">Planning</option>
+                <option value="architecture">Architecture</option>
+                <option value="explain">Explaining</option>
+                <option value="documentation">Documentation</option>
+                <option value="quick">Quick answers</option>
+              </select>
+            </label>
+            <label class="ranking-control">
+              <span class="field-label">Complexity</span>
+              <select id="ranking-complexity">
+                <option value="trivial">Trivial</option>
+                <option value="normal" selected>Normal</option>
+                <option value="complex">Complex</option>
+                <option value="extreme">Extreme</option>
+              </select>
+            </label>
+            <label class="ranking-control">
+              <span class="field-label">Context size</span>
+              <select id="ranking-tokens">
+                <option value="4000" selected>Small (4k)</option>
+                <option value="40000">Medium (40k)</option>
+                <option value="150000">Large (150k)</option>
+                <option value="400000">Huge (400k)</option>
+              </select>
+            </label>
+            <label class="ranking-control">
+              <span class="field-label">Show</span>
+              <select id="ranking-filter">
+                <option value="routable" selected>Available models</option>
+                <option value="all">All models</option>
+                <option value="excluded">Unavailable only</option>
+              </select>
+            </label>
+            <button type="button" class="btn ghost sm" id="refresh-ranking">Refresh</button>
+          </div>
+          <p class="ranking-note" id="ranking-note"></p>
+
+          <div class="diag-table-wrap ranking-table-wrap">
+            <table class="registry-table ranking-table">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>Provider</th>
+                  <th>Model</th>
+                  <th>Status</th>
+                  <th title="How much the model thinks before answering">Thinking</th>
+                  <th title="Context window PARAGON can actually use">Context</th>
+                  <th title="Expected quality, and the evidence behind it">Quality</th>
+                  <th title="Expected cost per request in normalized resource units">Cost</th>
+                  <th title="Expected tokens spent thinking">Reasoning</th>
+                  <th title="Expected responsiveness">Speed</th>
+                  <th title="How much of this score is measured rather than assumed">Evidence</th>
+                  <th title="Overall score the router uses">Score</th>
+                </tr>
+              </thead>
+              <tbody id="ranking-body-rows"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
     </main>
 
     <!-- ================= Settings (one surface, one save) ================= -->
