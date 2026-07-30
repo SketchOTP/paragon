@@ -113,6 +113,19 @@ async function computeShadowSafely({ routingIntelligence, config, statuses, cata
     });
     const record = buildShadowRecord({ taskProfile, shadow, liveProvider, liveModel });
     routingIntelligence.shadowStore.record(record);
+    // PARAGON-D-004D1: surfaced on the dashboard as the shadow *recommendation*
+    // per provider. Recording only — shadow still executes nothing.
+    routingIntelligence.routeActivity?.recordShadow({
+      provider: shadow?.winner?.provider,
+      model: shadow?.winner?.providerModelId,
+      reasoningEffort: shadow?.winner?.reasoningEffort ?? null,
+      speedMode: shadow?.winner?.speedMode ?? null,
+      taskProfile,
+      attemptPlan: shadow?.attemptPlan ?? [],
+      agrees: record.agrees,
+      confidence: shadow?.confidence?.level ?? null,
+      at: record.at
+    });
     return { taskProfile, shadow, record };
   } catch (error) {
     routingIntelligence.shadowStore.recordError();
@@ -273,6 +286,36 @@ export function registerOpenAiRoutes(app, getConfig, orchestration, getStatuses 
     });
     const started = Date.now();
 
+    // PARAGON-D-004D1: record the ranked plan this request produced, so the
+    // dashboard can show a real attempt plan instead of a saved provider list.
+    // The plan is a decision, not an execution — the model each provider
+    // actually ran is recorded separately, after a response exists (see
+    // recordExecutedRoute below). Instrumentation only.
+    routingIntelligence?.routeActivity?.recordLivePlan({
+      taskType: task,
+      attemptPlan: attempts.map((attempt, index) => ({
+        order: index + 1,
+        provider: attempt.name,
+        model: attempt.providerDefault ? "provider-default" : attempt.registryModel,
+        providerDefault: Boolean(attempt.providerDefault)
+      }))
+    });
+
+    /**
+     * Called once a provider has actually produced the response. `provider` may
+     * differ from the plan head: service-failure fallback and JSON-validation
+     * escalation both legitimately move execution to a later attempt, and the
+     * card must report the executor rather than the original pick.
+     */
+    const recordExecutedRoute = (executedProvider) => {
+      const attempt = attempts.find((a) => a.name === executedProvider);
+      routingIntelligence?.routeActivity?.recordExecuted({
+        provider: executedProvider,
+        model: attempt?.providerDefault ? "provider-default" : attempt?.registryModel ?? null,
+        providerDefault: Boolean(attempt?.providerDefault)
+      });
+    };
+
     // PARAGON-D-004D shadow pass. Computed *after* the live route is already
     // fixed and its headers sent, so it structurally cannot influence the
     // decision. Awaited only because the engine is async-shaped; it performs
@@ -413,7 +456,7 @@ export function registerOpenAiRoutes(app, getConfig, orchestration, getStatuses 
 
     try {
       if (req.body.stream) {
-        await streamCompletion({ res, config, policy, isLive, attempts, prompt, started, orchestration, telemetry, cwd: runtimeDir, catalogStore, recordOutcome: recordAttemptOutcome });
+        await streamCompletion({ res, config, policy, isLive, attempts, prompt, started, orchestration, telemetry, cwd: runtimeDir, catalogStore, recordOutcome: recordAttemptOutcome, onExecuted: recordExecutedRoute });
         return;
       }
 
@@ -470,6 +513,7 @@ export function registerOpenAiRoutes(app, getConfig, orchestration, getStatuses 
       }
 
       const durationMs = Date.now() - started;
+      recordExecutedRoute(provider);
       logParagonRequest(
         `POST /v1/chat/completions → 200 (${durationMs}ms) via ${provider}${provider !== primary ? ` (routed ${primary})` : ""}`,
         { provider }
@@ -667,7 +711,7 @@ async function runWithFallback(attempts, prompt, { onChunk, orchestration, runId
   throw new Error(CLIENT_ERROR_MESSAGE);
 }
 
-async function streamCompletion({ res, config, policy, isLive, attempts, prompt, started, orchestration, telemetry, cwd, catalogStore, recordOutcome }) {
+async function streamCompletion({ res, config, policy, isLive, attempts, prompt, started, orchestration, telemetry, cwd, catalogStore, recordOutcome, onExecuted }) {
   const id = `chatcmpl-${Date.now()}`;
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache, no-transform");
@@ -710,6 +754,9 @@ async function streamCompletion({ res, config, policy, isLive, attempts, prompt,
     logParagonRequest(`POST /v1/chat/completions (stream) → 200 (${durationMs}ms) via ${provider}`, {
       provider
     });
+    // PARAGON-D-004D1: the streaming path has its own fallback call, so the
+    // executed provider is only known here.
+    onExecuted?.(provider);
     if (telemetry) {
       await safely(() =>
         orchestration.finishRequest(telemetry, {

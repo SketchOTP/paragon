@@ -12,26 +12,26 @@ const TASK_ICONS = {
   quick: "⚡"
 };
 
-const DEFAULT_PROVIDER_ICON = {
-  claude: "🧠",
-  codex: "⚡",
-  cursor: "🖱️",
-  antigravity: "🪐",
-  http: "🌐",
-  cli: "🔧",
-  default: "🤖"
+/**
+ * Bundled avatars for the providers that ship with PARAGON. An operator can
+ * override any of these (and supply one for a provider they add) via the
+ * card's avatar control, which stores the uploaded path in
+ * `providers.<id>.avatar`.
+ */
+const BUNDLED_PROVIDER_AVATARS = {
+  claude: "/avatars/claude.webp",
+  codex: "/avatars/codex.webp",
+  cursor: "/avatars/cursor.webp",
+  antigravity: "/avatars/antigravity.webp",
+  lmstudio: "/avatars/lmstudio.webp"
 };
 
-const EMOJI_PICKS = [
-  "🤖", "🧠", "⚡", "✨", "🖱️", "🌐", "🔧", "🦙",
-  "💬", "📝", "🔍", "📦", "🎯", "🚀", "💡", "🔮",
-  "🟠", "🟢", "🔵", "🟣", "⚙️", "📡", "🛡️", "🎨",
-  "🐙", "🦾", "☁️", "🏠", "🔥", "❄️", "🎭", "📊"
-];
+/** Matches the server's ceiling in src/providerAvatars.js. */
+const MAX_AVATAR_BYTES = 2 * 1024 * 1024;
 
-let emojiEditProvider = null;
-let emojiPickDraft = "";
-let newProviderIconLocked = false;
+let avatarEditProvider = null;
+let avatarDraftDataUrl = "";
+let newProviderAvatarDataUrl = "";
 
 const authUi = {
   claude: { label: "Sign in", short: "Browser" },
@@ -57,9 +57,13 @@ const AUTH_POLL_INTERVAL_MS = 8000;
 
 let config;
 let statuses = {};
-let fallbackDraft = [];
 let orchestrationPolicy = null;
 let logsConnectionState = "connecting";
+/** PARAGON-D-004D1: per-provider routing summaries from /api/routing/providers. */
+let providerSummaries = {};
+/** PARAGON-D-004D1: live-vs-shadow router status from /api/routing/status. */
+let routingStatus = null;
+let catalogSnapshot = null;
 
 const els = {
   providers: document.querySelector("#providers"),
@@ -71,8 +75,6 @@ const els = {
   modelName: document.querySelector("#model-name"),
   apiKey: document.querySelector("#api-key"),
   healthGauge: document.querySelector("#health-gauge"),
-  fallbackViz: document.querySelector("#fallback-viz"),
-  defaultProvider: document.querySelector("#default-provider"),
   addProvider: document.querySelector("#add-provider"),
   addProviderDialog: document.querySelector("#add-provider-dialog"),
   addProviderForm: document.querySelector("#add-provider-form"),
@@ -80,9 +82,9 @@ const els = {
   newProviderType: document.querySelector("#new-provider-type"),
   newProviderHttpFields: document.querySelector("#new-provider-http-fields"),
   newProviderCliFields: document.querySelector("#new-provider-cli-fields"),
-  newProviderIconDisplay: document.querySelector("#new-provider-icon-display"),
-  newProviderIconInput: document.querySelector("#new-provider-icon-input"),
-  newProviderEmojiGrid: document.querySelector("#new-provider-emoji-grid"),
+  newProviderAvatarFile: document.querySelector("#new-provider-avatar-file"),
+  newProviderAvatarImage: document.querySelector("#new-provider-avatar-image"),
+  newProviderAvatarPlaceholder: document.querySelector("#new-provider-avatar-placeholder"),
   apiKeyDialog: document.querySelector("#api-key-dialog"),
   apiKeyForm: document.querySelector("#api-key-form"),
   apiKeyInput: document.querySelector("#api-key-input"),
@@ -95,19 +97,45 @@ const els = {
   settingOpenrouterApiKey: document.querySelector("#setting-openrouter-api-key"),
   settingsPanel: document.querySelector("#settings-panel"),
   toggleSettings: document.querySelector("#toggle-settings"),
-  editFallback: document.querySelector("#edit-fallback"),
-  fallbackDialog: document.querySelector("#fallback-dialog"),
-  fallbackOrder: document.querySelector("#fallback-order"),
-  fallbackAddSelect: document.querySelector("#fallback-add-select"),
-  fallbackAddBtn: document.querySelector("#fallback-add-btn"),
-  fallbackCancel: document.querySelector("#fallback-cancel"),
-  fallbackSave: document.querySelector("#fallback-save"),
-  emojiDialog: document.querySelector("#emoji-dialog"),
-  emojiGrid: document.querySelector("#emoji-grid"),
-  emojiPreview: document.querySelector("#emoji-preview"),
-  emojiCustom: document.querySelector("#emoji-custom"),
-  emojiCancel: document.querySelector("#emoji-cancel"),
-  emojiApply: document.querySelector("#emoji-apply"),
+  avatarDialog: document.querySelector("#avatar-dialog"),
+  avatarDialogImage: document.querySelector("#avatar-dialog-image"),
+  avatarFile: document.querySelector("#avatar-file"),
+  avatarStatus: document.querySelector("#avatar-status"),
+  avatarReset: document.querySelector("#avatar-reset"),
+  avatarCancel: document.querySelector("#avatar-cancel"),
+  avatarApply: document.querySelector("#avatar-apply"),
+  catalogInspectDialog: document.querySelector("#catalog-inspect-dialog"),
+  catalogInspectTitle: document.querySelector("#catalog-inspect-title"),
+  catalogInspectBody: document.querySelector("#catalog-inspect-body"),
+  catalogInspectClose: document.querySelector("#catalog-inspect-close"),
+  refreshRoutingStatus: document.querySelector("#refresh-routing-status"),
+  liveRouterFacts: document.querySelector("#live-router-facts"),
+  shadowRouterFacts: document.querySelector("#shadow-router-facts"),
+  routerAuthorityNote: document.querySelector("#router-authority-note"),
+  fallbackMaxNote: document.querySelector("#fallback-max-note"),
+  toggleAttemptPlans: document.querySelector("#toggle-attempt-plans"),
+  attemptPlansBody: document.querySelector("#attempt-plans-body"),
+  livePlanMeta: document.querySelector("#live-plan-meta"),
+  livePlanList: document.querySelector("#live-plan-list"),
+  shadowPlanMeta: document.querySelector("#shadow-plan-meta"),
+  shadowPlanList: document.querySelector("#shadow-plan-list"),
+  toggleLegacyPreferences: document.querySelector("#toggle-legacy-preferences"),
+  legacyPreferencesBody: document.querySelector("#legacy-preferences-body"),
+  legacyPreferencesNote: document.querySelector("#legacy-preferences-note"),
+  toggleShadowSettings: document.querySelector("#toggle-shadow-settings"),
+  shadowSettingsBody: document.querySelector("#shadow-settings-body"),
+  saveShadowSettings: document.querySelector("#save-shadow-settings"),
+  shadowSettingsStatus: document.querySelector("#shadow-settings-status"),
+  shadowSettingMode: document.querySelector("#shadow-setting-mode"),
+  shadowSettingQuotaScarcity: document.querySelector("#shadow-setting-quota-scarcity"),
+  shadowSettingContextThreshold: document.querySelector("#shadow-setting-context-threshold"),
+  shadowSettingMinSamples: document.querySelector("#shadow-setting-min-samples"),
+  shadowSettingMaxAttempts: document.querySelector("#shadow-setting-max-attempts"),
+  shadowSettingRetentionDays: document.querySelector("#shadow-setting-retention-days"),
+  shadowMappingFacts: document.querySelector("#shadow-mapping-facts"),
+  toggleDeprecatedConfig: document.querySelector("#toggle-deprecated-config"),
+  deprecatedConfigBody: document.querySelector("#deprecated-config-body"),
+  deprecatedConfigList: document.querySelector("#deprecated-config-list"),
   refreshOrchestration: document.querySelector("#refresh-orchestration"),
   orchOverview: document.querySelector("#orch-overview"),
   orchContext: document.querySelector("#orch-context"),
@@ -238,34 +266,43 @@ function providerLabel(provider, providerConfig) {
   return providerConfig?.label || provider;
 }
 
-function defaultIconForProvider(provider, providerConfig) {
-  if (DEFAULT_PROVIDER_ICON[provider]) {
-    return DEFAULT_PROVIDER_ICON[provider];
+/**
+ * Resolution order: an uploaded/configured avatar wins, then a bundled avatar
+ * matched on the provider id. Returns "" when there is nothing to show, so the
+ * card renders initials rather than a broken image.
+ */
+function providerAvatar(provider, providerConfig) {
+  const configured = String(providerConfig?.avatar ?? "").trim();
+  if (configured) {
+    return configured;
   }
-  if (providerConfig?.type === "http") {
-    return DEFAULT_PROVIDER_ICON.http;
+  const key = String(provider).toLowerCase();
+  if (BUNDLED_PROVIDER_AVATARS[key]) {
+    return BUNDLED_PROVIDER_AVATARS[key];
   }
-  if (providerConfig?.type === "generic-cli") {
-    return DEFAULT_PROVIDER_ICON.cli;
+  // A provider added as e.g. "lm-studio-local" should still get the bundled
+  // LM Studio avatar rather than falling through to initials.
+  const collapsed = key.replace(/[^a-z0-9]/g, "");
+  for (const [name, path] of Object.entries(BUNDLED_PROVIDER_AVATARS)) {
+    if (collapsed.includes(name)) {
+      return path;
+    }
   }
-  return DEFAULT_PROVIDER_ICON.default;
+  return "";
 }
 
-function providerIcon(provider, providerConfig) {
-  const icon = (providerConfig?.icon || "").trim();
-  return icon || defaultIconForProvider(provider, providerConfig);
-}
-
-function firstEmoji(text) {
-  const trimmed = String(text ?? "").trim();
-  if (!trimmed) {
-    return "";
+function providerInitials(label) {
+  const words = String(label ?? "")
+    .trim()
+    .split(/[\s_-]+/)
+    .filter(Boolean);
+  if (!words.length) {
+    return "?";
   }
-  if (typeof Intl.Segmenter !== "undefined") {
-    const segments = [...new Intl.Segmenter().segment(trimmed)].map((s) => s.segment);
-    return segments[0] ?? trimmed.charAt(0);
-  }
-  return [...trimmed][0] ?? trimmed.charAt(0);
+  return words
+    .slice(0, 2)
+    .map((word) => word[0].toUpperCase())
+    .join("");
 }
 
 function isCustomProvider(provider) {
@@ -290,12 +327,6 @@ function routeProviderOptions() {
   return [...options, ...[...extras].filter((p) => !options.includes(p))];
 }
 
-function ensureFallbackChain() {
-  if (!Array.isArray(config.routing.fallbackChain)) {
-    config.routing.fallbackChain = ["codex", "cursor"];
-  }
-}
-
 await loadConfig();
 render();
 connectLogs();
@@ -305,8 +336,15 @@ refreshOrchestration();
 loadOrchestrationPolicy();
 refreshModelRegistry();
 refreshModelCatalog();
+refreshProviderSummaries();
+refreshRoutingStatus();
 setInterval(refreshOrchestration, 30000);
 setInterval(refreshModelRegistry, 30000);
+// Provider summaries and router status track live activity (last live model,
+// last shadow recommendation, latest attempt plans), so they follow the same
+// 30s cadence as the rest of the live panels — not the 24h catalog cadence.
+setInterval(refreshProviderSummaries, 30000);
+setInterval(refreshRoutingStatus, 30000);
 // The catalog itself only changes on a refresh (default every 24h) or a
 // manual/validate action — those already re-render the table immediately,
 // so polling every 30s bought nothing but load. Matches the real cadence.
@@ -324,6 +362,16 @@ wireCollapsePanel(els.toggleOrchestration, els.orchestrationBody);
 wireCollapsePanel(els.toggleOrchSettings, els.orchSettingsBody);
 wireCollapsePanel(els.toggleModelCatalog, els.modelCatalogBody);
 wireCollapsePanel(els.toggleRoutingIntelligence, els.routingIntelligenceBody);
+wireCollapsePanel(els.toggleAttemptPlans, els.attemptPlansBody);
+wireCollapsePanel(els.toggleLegacyPreferences, els.legacyPreferencesBody);
+wireCollapsePanel(els.toggleShadowSettings, els.shadowSettingsBody);
+wireCollapsePanel(els.toggleDeprecatedConfig, els.deprecatedConfigBody);
+els.refreshRoutingStatus?.addEventListener("click", () => {
+  refreshRoutingStatus();
+  refreshProviderSummaries();
+});
+els.saveShadowSettings?.addEventListener("click", saveShadowSettings);
+els.catalogInspectClose?.addEventListener("click", () => els.catalogInspectDialog.close());
 els.runScenario?.addEventListener("click", () => runRoutingScenario());
 els.scenarioContext?.addEventListener("change", () => {
   if (els.scenarioCustomWrap) els.scenarioCustomWrap.hidden = els.scenarioContext.value !== "custom";
@@ -353,20 +401,11 @@ els.registrySourcesBtn?.addEventListener("click", () => {
 els.registrySourcesClose?.addEventListener("click", () => els.registrySourcesDialog.close());
 els.addProvider.addEventListener("click", openAddProviderDialog);
 els.addProviderCancel.addEventListener("click", () => els.addProviderDialog.close());
-els.newProviderType.addEventListener("change", () => {
-  toggleNewProviderFields();
-  if (!newProviderIconLocked) {
-    setNewProviderIcon(
-      els.newProviderType.value === "http" ? DEFAULT_PROVIDER_ICON.http : DEFAULT_PROVIDER_ICON.cli
-    );
-  }
-});
-els.newProviderIconInput.addEventListener("input", () => {
-  const emoji = firstEmoji(els.newProviderIconInput.value);
-  if (emoji) {
-    newProviderIconLocked = true;
-    setNewProviderIcon(emoji, { lock: true });
-  }
+els.newProviderType.addEventListener("change", toggleNewProviderFields);
+els.newProviderAvatarFile?.addEventListener("change", async () => {
+  const dataUrl = await readAvatarFile(els.newProviderAvatarFile.files?.[0]);
+  newProviderAvatarDataUrl = dataUrl.error ? "" : dataUrl.value;
+  renderNewProviderAvatarPreview(dataUrl.error);
 });
 els.addProviderForm.addEventListener("submit", addProvider);
 els.settingTailscaleHost.addEventListener("input", updateServerFromSettings);
@@ -379,26 +418,21 @@ els.settingOpenrouterApiKey?.addEventListener("input", updateServerFromSettings)
 els.toggleSettings.addEventListener("click", () => {
   els.settingsPanel.hidden = !els.settingsPanel.hidden;
 });
-els.editFallback.addEventListener("click", openFallbackDialog);
-els.fallbackCancel.addEventListener("click", () => els.fallbackDialog.close());
-els.fallbackSave.addEventListener("click", saveFallbackDialog);
-els.fallbackAddBtn.addEventListener("click", addToFallbackDraft);
-els.defaultProvider.addEventListener("change", () => {
-  config.routing.defaultProvider = els.defaultProvider.value;
-});
-els.emojiCancel.addEventListener("click", () => els.emojiDialog.close());
-els.emojiApply.addEventListener("click", applyEmojiPick);
-els.emojiCustom.addEventListener("input", () => {
-  const emoji = firstEmoji(els.emojiCustom.value);
-  if (emoji) {
-    setEmojiDraft(emoji);
+els.avatarCancel.addEventListener("click", () => els.avatarDialog.close());
+els.avatarApply.addEventListener("click", applyAvatar);
+els.avatarReset.addEventListener("click", resetAvatarToBundled);
+els.avatarFile?.addEventListener("change", async () => {
+  const result = await readAvatarFile(els.avatarFile.files?.[0]);
+  if (result.error) {
+    avatarDraftDataUrl = "";
+    els.avatarStatus.textContent = result.error;
+    els.avatarStatus.className = "settings-save-note error";
+    return;
   }
-});
-
-initEmojiGrid(els.emojiGrid, (emoji) => setEmojiDraft(emoji));
-initEmojiGrid(els.newProviderEmojiGrid, (emoji) => {
-  newProviderIconLocked = true;
-  setNewProviderIcon(emoji, { lock: true });
+  avatarDraftDataUrl = result.value;
+  els.avatarDialogImage.src = result.value;
+  els.avatarStatus.textContent = "";
+  els.avatarStatus.className = "settings-save-note";
 });
 
 function toggleNewProviderFields() {
@@ -408,23 +442,47 @@ function toggleNewProviderFields() {
 }
 
 function openAddProviderDialog() {
-  newProviderIconLocked = false;
-  setNewProviderIcon(DEFAULT_PROVIDER_ICON.http);
+  newProviderAvatarDataUrl = "";
+  if (els.newProviderAvatarFile) {
+    els.newProviderAvatarFile.value = "";
+  }
+  renderNewProviderAvatarPreview();
   els.addProviderDialog.showModal();
 }
 
-function setNewProviderIcon(emoji, { lock = false } = {}) {
-  const value = emoji || DEFAULT_PROVIDER_ICON.default;
-  els.newProviderIconDisplay.textContent = value;
-  els.newProviderIconInput.value = value;
-  if (lock) {
-    newProviderIconLocked = true;
-  }
-  highlightEmojiGrid(els.newProviderEmojiGrid, value);
+/** Reads an image file into a data URL, enforcing the same ceiling the server does. */
+function readAvatarFile(file) {
+  return new Promise((resolve) => {
+    if (!file) {
+      resolve({ value: "" });
+      return;
+    }
+    if (file.size > MAX_AVATAR_BYTES) {
+      resolve({ error: `Image is ${Math.round(file.size / 1024)}KB; the limit is ${MAX_AVATAR_BYTES / 1024}KB.` });
+      return;
+    }
+    const reader = new FileReader();
+    reader.onerror = () => resolve({ error: "Could not read that file." });
+    reader.onload = () => resolve({ value: String(reader.result ?? "") });
+    reader.readAsDataURL(file);
+  });
 }
 
-function newProviderIconValue() {
-  return firstEmoji(els.newProviderIconInput.value || els.newProviderIconDisplay.textContent);
+function renderNewProviderAvatarPreview(error = "") {
+  if (!els.newProviderAvatarImage) {
+    return;
+  }
+  const has = Boolean(newProviderAvatarDataUrl);
+  els.newProviderAvatarImage.hidden = !has;
+  if (has) {
+    els.newProviderAvatarImage.src = newProviderAvatarDataUrl;
+  } else {
+    els.newProviderAvatarImage.removeAttribute("src");
+  }
+  if (els.newProviderAvatarPlaceholder) {
+    els.newProviderAvatarPlaceholder.hidden = has;
+    els.newProviderAvatarPlaceholder.textContent = error || "No image";
+  }
 }
 
 async function loadConfig() {
@@ -437,7 +495,6 @@ async function loadConfig() {
     const body = await flowsRes.json();
     authFlowsMeta = body.flows ?? authFlowsMeta;
   }
-  ensureFallbackChain();
 }
 
 function authFlow(provider) {
@@ -512,44 +569,17 @@ function renderHealthGauge() {
       } else if (st) {
         cls = "bad";
       }
-      return `<span class="health-dot ${cls}" title="${escapeAttr(`${providerIcon(provider, cfg)} ${providerLabel(provider, cfg)}`)}"></span>`;
+      return `<span class="health-dot ${cls}" title="${escapeAttr(providerLabel(provider, cfg))}"></span>`;
     })
     .join("");
 }
 
-function renderFallbackViz() {
-  ensureFallbackChain();
-  const chain = config.routing.fallbackChain.filter((p) => config.providers[p]);
-  if (!chain.length) {
-    els.fallbackViz.innerHTML = `<span class="fallback-empty">Configure fallback chain</span>`;
-    return;
-  }
-  els.fallbackViz.innerHTML = chain
-    .map((provider, i) => {
-      const chip = `<span class="fallback-chip">${escapeHtml(providerIcon(provider, config.providers[provider]))} ${escapeHtml(providerLabel(provider, config.providers[provider]))}</span>`;
-      return i === 0 ? chip : `<span class="fallback-arrow">→</span>${chip}`;
-    })
-    .join("");
-}
-
-function renderDefaultProviderSelect() {
-  const providers = routeProviderOptions();
-  const current = config.routing.defaultProvider;
-  els.defaultProvider.innerHTML = providers
-    .map(
-      (p) =>
-        `<option value="${escapeAttr(p)}" ${p === current ? "selected" : ""}>${escapeHtml(providerLabel(p, config.providers[p]))}</option>`
-    )
-    .join("");
-  if (!providers.includes(current) && providers[0]) {
-    config.routing.defaultProvider = providers[0];
-    els.defaultProvider.value = providers[0];
-  }
-}
-
+/**
+ * PARAGON-D-004D1: there is no longer a default-provider selector or a
+ * fallback-chain editor to render — live routing has no static default and no
+ * saved attempt order. What remains is the legacy scoring-preference rows.
+ */
 function renderRouting() {
-  renderFallbackViz();
-  renderDefaultProviderSelect();
   renderRoutes();
 }
 
@@ -598,7 +628,7 @@ function renderProviders(options = {}) {
     const http = isHttpProvider(providerConfig);
     const custom = isCustomProvider(provider);
     const auth = authUi[provider];
-    const icon = providerIcon(provider, providerConfig);
+    const avatar = providerAvatar(provider, providerConfig);
     const statusLine = status?.output ? truncateStatus(status.output) : "";
     const signInLabel = authButtonLabel(provider);
 
@@ -606,61 +636,68 @@ function renderProviders(options = {}) {
     card.className = "provider-card";
     card.dataset.providerCard = provider;
     card.innerHTML = `
-      <div class="provider-top">
-        <button type="button" class="provider-emoji" data-emoji="${provider}" title="Change icon">${icon}</button>
-        <div class="provider-meta">
-          <h3>${escapeHtml(label)}</h3>
-          <span class="provider-id">${escapeHtml(provider)}</span>
-          ${statusLine ? `<p class="provider-status-line ${status?.ok ? "ok" : "bad"}">${escapeHtml(statusLine)}</p>` : ""}
-        </div>
-        <span class="provider-status ${status?.ok ? "ok" : status ? "bad" : ""}" title="${status?.ok ? "Ready" : "Needs setup"}"></span>
-      </div>
-      <div class="toggle-row">
-        <span class="toggle-label">Enabled</span>
-        <label class="toggle">
-          <input type="checkbox" data-provider="${provider}" data-key="enabled" ${providerConfig.enabled ? "checked" : ""} />
-          <span class="toggle-slider"></span>
-        </label>
-      </div>
-      <div class="provider-fields">
+      <button type="button" class="provider-avatar" data-avatar="${escapeAttr(provider)}" title="Change avatar for ${escapeAttr(label)}">
         ${
-          http
-            ? `
-        <label class="field">
-          <span class="field-label">Base URL</span>
-          <input value="${escapeAttr(providerConfig.baseUrl ?? "")}" data-provider="${provider}" data-key="baseUrl" />
-        </label>
-        <label class="field">
-          <span class="field-label">API key</span>
-          <input type="password" value="${escapeAttr(providerConfig.apiKey ?? "")}" data-provider="${provider}" data-key="apiKey" autocomplete="off" />
-        </label>`
-            : `
-        <label class="field">
-          <span class="field-label">Command</span>
-          <input value="${escapeAttr(providerConfig.command ?? "")}" data-provider="${provider}" data-key="command" />
-        </label>
-        ${
-          providerConfig.type === "generic-cli"
-            ? `<label class="field">
-          <span class="field-label">Args</span>
-          <input value="${escapeAttr((providerConfig.runArgs ?? []).join(", "))}" data-provider="${provider}" data-key="runArgs" />
-        </label>`
-            : ""
-        }`
+          avatar
+            // Deliberately not `loading="lazy"`: these are a handful of small
+            // above-the-fold images, and deferring them only produces empty
+            // avatar columns in screenshots, print, and first paint.
+            ? `<img class="provider-avatar-image" src="${escapeAttr(avatar)}" alt="${escapeAttr(label)}" />`
+            : `<span class="provider-avatar-initials">${escapeHtml(providerInitials(label))}</span>`
         }
-        <div class="field model-row">
-          <label class="field" style="flex:1">
-            <span class="field-label">Model</span>
-            <select data-provider="${provider}" data-key="model">${modelOptions(providerConfig)}</select>
-          </label>
-          <button type="button" class="icon-button" title="Refresh models" data-refresh-models="${provider}">↻</button>
+        <span class="provider-avatar-hint">Change</span>
+      </button>
+      <div class="provider-body">
+        <div class="provider-top">
+          <div class="provider-meta">
+            <h3>${escapeHtml(label)}</h3>
+            <span class="provider-id">${escapeHtml(provider)}</span>
+            ${statusLine ? `<p class="provider-status-line ${status?.ok ? "ok" : "bad"}" title="${escapeAttr(statusLine)}">${escapeHtml(statusLine)}</p>` : ""}
+          </div>
+          <span class="provider-status ${status?.ok ? "ok" : status ? "bad" : ""}" title="${status?.ok ? "Ready" : "Needs setup"}"></span>
         </div>
+        <div class="toggle-row">
+          <span class="toggle-label">Enabled</span>
+          <label class="toggle">
+            <input type="checkbox" data-provider="${provider}" data-key="enabled" ${providerConfig.enabled ? "checked" : ""} />
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+        <div class="provider-fields">
+          ${
+            http
+              ? `
+          <label class="field">
+            <span class="field-label">Base URL</span>
+            <input value="${escapeAttr(providerConfig.baseUrl ?? "")}" data-provider="${provider}" data-key="baseUrl" />
+          </label>
+          <label class="field">
+            <span class="field-label">API key</span>
+            <input type="password" value="${escapeAttr(providerConfig.apiKey ?? "")}" data-provider="${provider}" data-key="apiKey" autocomplete="off" />
+          </label>`
+              : `
+          <label class="field">
+            <span class="field-label">Command</span>
+            <input value="${escapeAttr(providerConfig.command ?? "")}" data-provider="${provider}" data-key="command" />
+          </label>
+          ${
+            providerConfig.type === "generic-cli"
+              ? `<label class="field">
+            <span class="field-label">Args</span>
+            <input value="${escapeAttr((providerConfig.runArgs ?? []).join(", "))}" data-provider="${provider}" data-key="runArgs" />
+          </label>`
+              : ""
+          }`
+          }
+        </div>
+        <div class="provider-routing" data-provider-routing="${escapeAttr(provider)}">${providerRoutingSummaryHtml(provider)}</div>
+        <div class="provider-actions">
+          ${auth && !http ? `<button type="button" class="btn secondary sm" data-auth="${provider}">${escapeHtml(signInLabel)}</button>` : ""}
+          <button type="button" class="btn ghost sm" data-inspect-catalog="${escapeAttr(provider)}">Validate / inspect catalog</button>
+          ${custom ? `<button type="button" class="btn ghost sm danger-text" data-remove="${provider}">Remove</button>` : ""}
+        </div>
+        <div class="auth-panel" data-auth-panel="${provider}" hidden></div>
       </div>
-      <div class="provider-actions">
-        ${auth && !http ? `<button type="button" class="btn secondary sm" data-auth="${provider}">${escapeHtml(signInLabel)}</button>` : ""}
-        ${custom ? `<button type="button" class="btn ghost sm danger-text" data-remove="${provider}">Remove</button>` : ""}
-      </div>
-      <div class="auth-panel" data-auth-panel="${provider}" hidden></div>
     `;
     els.providers.append(card);
   }
@@ -671,51 +708,80 @@ function renderProviders(options = {}) {
   }
 }
 
-function initEmojiGrid(container, onPick) {
-  if (!container) {
+function openAvatarPicker(provider) {
+  avatarEditProvider = provider;
+  avatarDraftDataUrl = "";
+  if (els.avatarFile) {
+    els.avatarFile.value = "";
+  }
+  const current = providerAvatar(provider, config.providers[provider]);
+  if (current) {
+    els.avatarDialogImage.src = current;
+    els.avatarDialogImage.hidden = false;
+  } else {
+    els.avatarDialogImage.removeAttribute("src");
+    els.avatarDialogImage.hidden = true;
+  }
+  els.avatarStatus.textContent = "";
+  els.avatarStatus.className = "settings-save-note";
+  els.avatarDialog.showModal();
+}
+
+/**
+ * Uploads the chosen image; the server writes the file and returns the served
+ * path, which becomes `providers.<id>.avatar`. The config never carries base64
+ * image data.
+ */
+async function applyAvatar() {
+  if (!avatarEditProvider || !avatarDraftDataUrl) {
+    els.avatarStatus.textContent = "Choose an image first.";
+    els.avatarStatus.className = "settings-save-note error";
     return;
   }
-  container.innerHTML = EMOJI_PICKS.map(
-    (emoji) => `<button type="button" class="emoji-pick" data-emoji="${escapeAttr(emoji)}">${emoji}</button>`
-  ).join("");
-  container.querySelectorAll(".emoji-pick").forEach((btn) => {
-    btn.addEventListener("click", () => onPick(btn.dataset.emoji));
-  });
+  els.avatarApply.disabled = true;
+  try {
+    const response = await apiFetch(`/api/providers/${encodeURIComponent(avatarEditProvider)}/avatar`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ dataUrl: avatarDraftDataUrl })
+    });
+    const body = await response.json();
+    if (!response.ok) {
+      throw new Error(body.error?.message ?? "Upload failed");
+    }
+    config.providers[avatarEditProvider].avatar = body.avatar;
+    els.avatarDialog.close();
+    renderProviders({ force: true });
+    flashNotice("Avatar updated");
+  } catch (error) {
+    els.avatarStatus.textContent = error.message || "Upload failed";
+    els.avatarStatus.className = "settings-save-note error";
+  } finally {
+    els.avatarApply.disabled = false;
+  }
 }
 
-function highlightEmojiGrid(container, emoji) {
-  container?.querySelectorAll(".emoji-pick").forEach((btn) => {
-    btn.classList.toggle("selected", btn.dataset.emoji === emoji);
-  });
-}
-
-function setEmojiDraft(emoji) {
-  emojiPickDraft = emoji;
-  els.emojiPreview.textContent = emoji;
-  els.emojiCustom.value = emoji;
-  highlightEmojiGrid(els.emojiGrid, emoji);
-}
-
-function openEmojiPicker(provider) {
-  emojiEditProvider = provider;
-  const current = providerIcon(provider, config.providers[provider]);
-  setEmojiDraft(current);
-  els.emojiDialog.showModal();
-}
-
-async function applyEmojiPick() {
-  if (!emojiEditProvider) {
+/** Clears the stored override so the bundled avatar (or initials) shows again. */
+async function resetAvatarToBundled() {
+  if (!avatarEditProvider) {
     return;
   }
-  const emoji = firstEmoji(emojiPickDraft || els.emojiCustom.value);
-  if (!emoji) {
-    return;
+  els.avatarReset.disabled = true;
+  try {
+    const response = await apiFetch(`/api/providers/${encodeURIComponent(avatarEditProvider)}/avatar`, { method: "DELETE" });
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      throw new Error(body.error?.message ?? "Reset failed");
+    }
+    config.providers[avatarEditProvider].avatar = "";
+    els.avatarDialog.close();
+    renderProviders({ force: true });
+  } catch (error) {
+    els.avatarStatus.textContent = error.message || "Reset failed";
+    els.avatarStatus.className = "settings-save-note error";
+  } finally {
+    els.avatarReset.disabled = false;
   }
-  config.providers[emojiEditProvider].icon = emoji;
-  els.emojiDialog.close();
-  renderProviders();
-  renderRouting();
-  await saveConfig();
 }
 
 function bindProviderInteractionLock() {
@@ -745,8 +811,11 @@ function bindProviderInteractionLock() {
 }
 
 function bindProviderEvents() {
-  els.providers.querySelectorAll("[data-emoji]").forEach((button) => {
-    button.addEventListener("click", () => openEmojiPicker(button.dataset.emoji));
+  els.providers.querySelectorAll("[data-avatar]").forEach((button) => {
+    button.addEventListener("click", () => openAvatarPicker(button.dataset.avatar));
+  });
+  els.providers.querySelectorAll("[data-inspect-catalog]").forEach((button) => {
+    button.addEventListener("click", () => openCatalogInspector(button.dataset.inspectCatalog));
   });
   els.providers.querySelectorAll("input[data-provider], select[data-provider]").forEach((input) => {
     input.addEventListener("input", updateProviderFromInput);
@@ -759,47 +828,114 @@ function bindProviderEvents() {
       startAuth(provider, button, { force });
     });
   });
-  els.providers.querySelectorAll("[data-refresh-models]").forEach((button) => {
-    button.addEventListener("click", () => refreshProviderModels(button.dataset.refreshModels, button));
-  });
   els.providers.querySelectorAll("[data-remove]").forEach((button) => {
     button.addEventListener("click", () => removeProvider(button.dataset.remove));
   });
 }
 
-function modelOptions(providerConfig) {
-  const models = providerConfig.models ?? [];
-  if (!models.length) {
-    return `<option value="" selected>Load models (↻)</option>`;
-  }
-
-  return models
-    .map((model) => {
-      const label = model.name && model.name !== model.id ? model.name : model.id;
-      return `<option value="${escapeAttr(model.id)}" ${providerConfig.model === model.id ? "selected" : ""}>${escapeHtml(label)}</option>`;
-    })
-    .join("");
+function relativeOrNever(iso) {
+  return iso ? relativeTimeFrom(iso) : "never";
 }
 
+/**
+ * PARAGON-D-004D1 (Phase 1): the read-only routing summary that replaced the
+ * provider `Model` dropdown. Reports how many models the provider currently
+ * contributes and which one was actually used last — never a stored selection.
+ */
+function providerRoutingSummaryHtml(provider) {
+  const summary = providerSummaries[provider];
+  if (!summary) {
+    return `<p class="provider-routing-empty">Provider routing — loading…</p>`;
+  }
+  if (!summary.enabled) {
+    return `
+      <h4 class="provider-routing-head">Provider routing</h4>
+      <p class="provider-routing-empty">Disabled — contributes no models to routing.</p>`;
+  }
+
+  const c = summary.counts;
+  const live = summary.lastLiveModel;
+  const shadow = summary.lastShadowModel;
+  const rows = [
+    ["Eligible models", summary.pendingAssessment ? "0 (pending assessment)" : String(c.eligible)],
+    ["Validated / exposed", `${c.validated} / ${c.exposed}`],
+    ["Rejected or unavailable", String(c.blocked)],
+    ["Catalog refreshed", relativeOrNever(summary.lastSuccessfulRefreshAt)],
+    // Kept terse: these render into a narrow two-column card, so a sentence
+    // here wraps into an unreadable sliver.
+    ["Last live model", live ? `${live.model} (${relativeOrNever(live.at)})` : "not observed yet"],
+    ["Last shadow model", shadow ? `${shadow.model} (${relativeOrNever(shadow.at)})` : "not observed yet"],
+    ["Provider default", summary.providerDefault.validated ? "validated" : summary.providerDefault.present ? `not eligible (${summary.providerDefault.state})` : "not offered"],
+    ["Health", summary.health]
+  ];
+
+  return `
+    <h4 class="provider-routing-head">Provider routing</h4>
+    ${
+      summary.pendingAssessment
+        ? `<p class="provider-routing-warn">No completed catalog assessment yet — this provider contributes no routable models. Run a catalog refresh.</p>`
+        : ""
+    }
+    <dl class="provider-routing-facts">
+      ${rows
+        .map(
+          ([key, value]) =>
+            `<div><dt>${escapeHtml(key)}</dt><dd>${escapeHtml(String(value))}</dd></div>`
+        )
+        .join("")}
+    </dl>
+    <p class="provider-routing-selection">Selection: automatic per request</p>`;
+}
+
+function patchProviderRoutingSummaries() {
+  for (const provider of providerOrder()) {
+    const host = els.providers.querySelector(`[data-provider-routing="${provider}"]`);
+    if (host) {
+      host.innerHTML = providerRoutingSummaryHtml(provider);
+    }
+  }
+}
+
+/**
+ * PARAGON-D-004D1 (Phase 4): task-specific provider selections stay editable
+ * because the live D-004C1 scorer still reads them — but only as an additive
+ * score bonus. The wording here states the actual points and that it is not a
+ * route, so the control can no longer read as a task-to-provider mapping.
+ */
 function renderRoutes() {
   els.routes.innerHTML = "";
   const providers = routeProviderOptions();
+  const points = routingStatus?.liveRouter?.taskProviderPreferencePoints ?? null;
+  const effect = points != null ? `+${points} live-routing preference` : "live-routing preference";
+
+  if (els.legacyPreferencesNote) {
+    els.legacyPreferencesNote.textContent =
+      `These preferences affect the current PARAGON-D-004C1 live scorer only, as an additive ${effect} for a ` +
+      "matching provider. They are not forced routes: catalog eligibility, health, circuit state, context fit, " +
+      "cost ceiling and capability gates remain authoritative and can override them. They do not control the " +
+      "PARAGON-D-004D shadow expected-utility scorer.";
+  }
+
   for (const task of taskOrder) {
     const row = document.createElement("div");
-    row.className = "route-row";
+    row.className = "route-row legacy";
     row.innerHTML = `
       <div class="route-task">
         <span class="route-task-icon">${TASK_ICONS[task] ?? "•"}</span>
         <span>${task}</span>
       </div>
-      <select data-task="${task}">
-        ${providers
-          .map(
-            (p) =>
-              `<option value="${escapeAttr(p)}" ${config.routing.taskRoutes[task] === p ? "selected" : ""}>${escapeHtml(`${providerIcon(p, config.providers[p])} ${providerLabel(p, config.providers[p])}`)}</option>`
-          )
-          .join("")}
-      </select>
+      <div class="route-control">
+        <span class="field-label">Preferred provider</span>
+        <select data-task="${task}">
+          ${providers
+            .map(
+              (p) =>
+                `<option value="${escapeAttr(p)}" ${config.routing.taskRoutes[task] === p ? "selected" : ""}>${escapeHtml(providerLabel(p, config.providers[p]))}</option>`
+            )
+            .join("")}
+        </select>
+        <span class="route-effect">Effect: ${escapeHtml(effect)} · not a forced route</span>
+      </div>
     `;
     els.routes.append(row);
   }
@@ -832,79 +968,6 @@ function updateProviderFromInput(event) {
   }
 }
 
-function openFallbackDialog() {
-  ensureFallbackChain();
-  fallbackDraft = [...config.routing.fallbackChain];
-  renderFallbackDialog();
-  els.fallbackDialog.showModal();
-}
-
-function enabledProvidersForFallback() {
-  return providerOrder().filter((p) => config.providers[p]?.enabled);
-}
-
-function renderFallbackDialog() {
-  els.fallbackOrder.innerHTML = "";
-  fallbackDraft.forEach((provider, index) => {
-    const li = document.createElement("li");
-    li.className = "fallback-item";
-    li.innerHTML = `
-      <span class="fallback-item-name">${escapeHtml(providerLabel(provider, config.providers[provider]))}</span>
-      <div class="fallback-item-actions">
-        <button type="button" class="btn icon-btn sm" data-fb-up="${index}" title="Move up">↑</button>
-        <button type="button" class="btn icon-btn sm" data-fb-down="${index}" title="Move down">↓</button>
-        <button type="button" class="btn ghost sm danger-text" data-fb-remove="${index}">Remove</button>
-      </div>
-    `;
-    els.fallbackOrder.append(li);
-  });
-
-  els.fallbackOrder.querySelectorAll("[data-fb-up]").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const i = Number(btn.dataset.fbUp);
-      if (i > 0) {
-        [fallbackDraft[i - 1], fallbackDraft[i]] = [fallbackDraft[i], fallbackDraft[i - 1]];
-        renderFallbackDialog();
-      }
-    });
-  });
-  els.fallbackOrder.querySelectorAll("[data-fb-down]").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const i = Number(btn.dataset.fbDown);
-      if (i < fallbackDraft.length - 1) {
-        [fallbackDraft[i], fallbackDraft[i + 1]] = [fallbackDraft[i + 1], fallbackDraft[i]];
-        renderFallbackDialog();
-      }
-    });
-  });
-  els.fallbackOrder.querySelectorAll("[data-fb-remove]").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      fallbackDraft.splice(Number(btn.dataset.fbRemove), 1);
-      renderFallbackDialog();
-    });
-  });
-
-  const available = enabledProvidersForFallback().filter((p) => !fallbackDraft.includes(p));
-  els.fallbackAddSelect.innerHTML = available.length
-    ? available.map((p) => `<option value="${escapeAttr(p)}">${escapeHtml(providerLabel(p, config.providers[p]))}</option>`).join("")
-    : `<option value="">—</option>`;
-  els.fallbackAddBtn.disabled = !available.length;
-}
-
-function addToFallbackDraft() {
-  const provider = els.fallbackAddSelect.value;
-  if (provider && !fallbackDraft.includes(provider)) {
-    fallbackDraft.push(provider);
-    renderFallbackDialog();
-  }
-}
-
-function saveFallbackDialog() {
-  config.routing.fallbackChain = fallbackDraft.filter((p) => config.providers[p]);
-  els.fallbackDialog.close();
-  renderRouting();
-}
-
 async function saveConfig({ notify = false } = {}) {
   updateServerFromSettings();
   els.save.disabled = true;
@@ -918,8 +981,12 @@ async function saveConfig({ notify = false } = {}) {
     if (!response.ok) {
       throw new Error(body.error?.message ?? body.error ?? "Save failed");
     }
+    // PARAGON-D-004D1 (Phase 8): `config` is the full document loaded from
+    // GET /api/config and re-sent verbatim apart from the fields the UI edits,
+    // so removing the default-provider and fallback-chain controls cannot
+    // reset them — the hidden deprecated values round-trip untouched. Nothing
+    // here invents a value for a field the dashboard no longer renders.
     config = body;
-    ensureFallbackChain();
     if (config.server.apiKey) {
       setStoredApiKey(config.server.apiKey);
     }
@@ -968,17 +1035,19 @@ async function addProvider(event) {
     return;
   }
 
-  const icon = newProviderIconValue() || (type === "http" ? DEFAULT_PROVIDER_ICON.http : DEFAULT_PROVIDER_ICON.cli);
-
   if (type === "http") {
     config.providers[id] = {
       type: "http",
       label,
-      icon,
+      avatar: "",
       enabled: true,
       baseUrl: document.querySelector("#new-provider-base-url").value.trim(),
       apiKey: document.querySelector("#new-provider-api-key").value,
-      model: document.querySelector("#new-provider-model").value.trim(),
+      // Deprecated for automatic routing (PARAGON-D-004D1) — created empty so
+      // a new provider never starts life with a configured-model preference.
+      // Its models are discovered by the catalog refresh the server kicks off
+      // as soon as this provider is saved.
+      model: "",
       models: [],
       timeoutMs: 300000
     };
@@ -987,27 +1056,47 @@ async function addProvider(event) {
     config.providers[id] = {
       type: "generic-cli",
       label,
-      icon,
+      avatar: "",
       enabled: true,
       command: document.querySelector("#new-provider-command").value.trim(),
       runArgs: runArgsRaw ? runArgsRaw.split(",").map((p) => p.trim()) : ["-"],
-      model: document.querySelector("#new-provider-cli-model").value.trim(),
+      model: "",
       models: [],
       timeoutMs: 300000,
       stdinMode: "prompt"
     };
   }
 
-  ensureFallbackChain();
-  if (!config.routing.fallbackChain.includes(id)) {
-    config.routing.fallbackChain.push(id);
-  }
-
+  // The provider must exist server-side before its avatar can be attached to
+  // it, so save first and upload second.
   els.addProviderDialog.close();
-  els.addProviderForm.reset();
-  toggleNewProviderFields();
   render();
   await saveConfig();
+
+  if (newProviderAvatarDataUrl) {
+    try {
+      const response = await apiFetch(`/api/providers/${encodeURIComponent(id)}/avatar`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ dataUrl: newProviderAvatarDataUrl })
+      });
+      const body = await response.json();
+      if (response.ok) {
+        config.providers[id].avatar = body.avatar;
+        renderProviders({ force: true });
+      } else {
+        flashNotice(body.error?.message ?? "Avatar upload failed", { type: "error", ms: 4000 });
+      }
+    } catch {
+      flashNotice("Avatar upload failed", { type: "error", ms: 4000 });
+    }
+  }
+
+  newProviderAvatarDataUrl = "";
+  els.addProviderForm.reset();
+  toggleNewProviderFields();
+  renderNewProviderAvatarPreview();
+  refreshProviderSummaries();
 }
 
 function removeProvider(provider) {
@@ -1015,37 +1104,31 @@ function removeProvider(provider) {
     return;
   }
   delete config.providers[provider];
+  // taskRoutes is still an active scoring preference, so a removed provider
+  // must not be left referenced there. The deprecated defaultProvider /
+  // fallbackChain values are also cleaned of the dead id — that keeps the
+  // retained compatibility fields internally consistent without reintroducing
+  // any routing use of them.
+  const replacement = providerOrder().find((name) => config.providers[name]?.enabled) ?? providerOrder()[0];
   for (const task of taskOrder) {
-    if (config.routing.taskRoutes[task] === provider) {
-      config.routing.taskRoutes[task] = config.routing.defaultProvider;
+    if (config.routing.taskRoutes[task] === provider && replacement) {
+      config.routing.taskRoutes[task] = replacement;
     }
   }
-  config.routing.fallbackChain = (config.routing.fallbackChain ?? []).filter((name) => name !== provider);
-  if (config.routing.defaultProvider === provider) {
-    const next = providerOrder()[0];
-    if (next) {
-      config.routing.defaultProvider = next;
-    }
+  if (Array.isArray(config.routing.fallbackChain)) {
+    config.routing.fallbackChain = config.routing.fallbackChain.filter((name) => name !== provider);
+  }
+  if (config.routing.defaultProvider === provider && replacement) {
+    config.routing.defaultProvider = replacement;
   }
   render();
   saveConfig();
+  refreshProviderSummaries();
 }
 
 function truncateStatus(text) {
   const oneLine = String(text).replace(/\s+/g, " ").trim();
   return oneLine.length > 120 ? `${oneLine.slice(0, 117)}…` : oneLine;
-}
-
-function patchProviderModelSelect(provider) {
-  const card = els.providers.querySelector(`[data-provider-card="${provider}"]`);
-  const select = card?.querySelector(`select[data-provider="${provider}"][data-key="model"]`);
-  if (!select) {
-    return;
-  }
-  const providerConfig = config.providers[provider];
-  const selected = providerConfig.model ?? "";
-  select.innerHTML = modelOptions(providerConfig);
-  select.value = selected;
 }
 
 function patchProviderStatuses() {
@@ -1069,6 +1152,7 @@ function patchProviderStatuses() {
         card.querySelector(".provider-meta")?.append(line);
       }
       line.textContent = statusLine;
+      line.title = statusLine;
       line.className = `provider-status-line ${status?.ok ? "ok" : "bad"}`;
       line.hidden = false;
     } else if (line) {
@@ -1342,29 +1426,6 @@ async function submitAuthCode(provider, input, button) {
     await watchAuthAfterCodeSubmit(provider);
   } catch (error) {
     prependLog({ at: new Date().toISOString(), provider, type: "auth", level: "error", message: error.message });
-  } finally {
-    button.disabled = false;
-  }
-}
-
-async function refreshProviderModels(provider, button) {
-  button.disabled = true;
-  try {
-    await saveConfig();
-    const response = await apiFetch(`/api/providers/${provider}/models`, { method: "POST" });
-    const body = await response.json();
-    if (!response.ok) {
-      throw new Error(body.error?.message ?? "Failed");
-    }
-    config.providers[provider].models = body.models;
-    if (providerUiLock) {
-      patchProviderModelSelect(provider);
-      patchProviderStatuses();
-    } else {
-      renderProviders();
-    }
-  } catch (error) {
-    prependLog({ at: new Date().toISOString(), provider, type: "models", level: "error", message: error.message });
   } finally {
     button.disabled = false;
   }
@@ -1909,6 +1970,278 @@ function renderCatalogTable(catalog) {
   });
 }
 
+/**
+ * PARAGON-D-004D1 (Phase 1, "model testing"): the advanced administrative
+ * action that replaced the model dropdown's implicit "pick a model" gesture.
+ * Validating from here probes the model and updates its catalog state only —
+ * it deliberately does not write `providers.<id>.model`.
+ */
+function openCatalogInspector(provider) {
+  els.catalogInspectTitle.textContent = `Catalog — ${providerLabel(provider, config.providers[provider])}`;
+  els.catalogInspectDialog.dataset.provider = provider;
+  renderCatalogInspector(provider);
+  els.catalogInspectDialog.showModal();
+}
+
+function renderCatalogInspector(provider) {
+  const bucket = catalogSnapshot?.providers?.[provider];
+  const models = Object.values(bucket?.models ?? {})
+    .filter((model) => model.state !== "retired")
+    .sort((a, b) => a.modelId.localeCompare(b.modelId));
+
+  els.catalogInspectBody.innerHTML = models.length
+    ? models
+        .map(
+          (model) => `
+      <tr>
+        <td><code>${escapeHtml(model.displayName || model.modelId)}</code></td>
+        <td>${escapeHtml(STATE_LABEL[model.state] || model.state)}</td>
+        <td>${model.automaticEligibility ? '<span class="registry-badge health-healthy">yes</span>' : '<span class="registry-badge health-unhealthy">no</span>'}</td>
+        <td>${escapeHtml(relativeTimeFrom(model.validatedAt))}</td>
+        <td><button type="button" class="btn ghost sm" data-inspect-validate="${escapeAttr(model.modelId)}">Validate model</button></td>
+      </tr>`
+        )
+        .join("")
+    : `<tr><td colspan="5" class="orch-empty">No catalog assessment for this provider yet — run "Refresh all providers" in the Model Catalog panel.</td></tr>`;
+
+  els.catalogInspectBody.querySelectorAll("[data-inspect-validate]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      button.disabled = true;
+      button.textContent = "Validating…";
+      await validateCatalogModel(provider, button.dataset.inspectValidate);
+      renderCatalogInspector(provider);
+      refreshProviderSummaries();
+    });
+  });
+}
+
+async function refreshProviderSummaries() {
+  try {
+    const res = await apiFetch("/api/routing/providers");
+    if (!res.ok) {
+      return;
+    }
+    const body = await res.json();
+    providerSummaries = Object.fromEntries((body.providers ?? []).map((entry) => [entry.provider, entry]));
+    patchProviderRoutingSummaries();
+  } catch {
+    // Best-effort panel; a failed fetch must not disturb the rest of the UI.
+  }
+}
+
+function factsHtml(rows) {
+  return rows
+    .map(([key, value]) => `<div><dt>${escapeHtml(key)}</dt><dd>${escapeHtml(String(value))}</dd></div>`)
+    .join("");
+}
+
+/**
+ * PARAGON-D-004D1 (Phases 2, 5): states which engine actually decides
+ * execution and which is advisory, using each engine's own reported fields
+ * rather than restating them in prose that can drift.
+ */
+function renderRoutingStatus() {
+  if (!routingStatus) {
+    return;
+  }
+  const live = routingStatus.liveRouter;
+  const shadow = routingStatus.shadowRouter;
+
+  els.liveRouterFacts.innerHTML = factsHtml([
+    ["Engine", "PARAGON-D-004C1"],
+    ["Mode", live.mode],
+    ["Selection method", "deterministic score, per request"],
+    ["Candidate set", "eligible catalog models only"],
+    ["Task-provider preference active", live.taskProviderPreferenceActive ? `yes (+${live.taskProviderPreferencePoints})` : "no"],
+    ["Catalog eligibility enforced", live.catalogEligibilityEnforced ? "yes" : "no"],
+    ["Static default fallback", live.staticDefaultFallback ? "enabled" : "disabled"],
+    ["Empty eligible set", `${live.emptyEligibleSetBehavior.status} ${live.emptyEligibleSetBehavior.code}`]
+  ]);
+
+  const s = shadow.summary ?? {};
+  const latest = shadow.latest;
+  els.shadowRouterFacts.innerHTML = factsHtml([
+    ["Engine", "PARAGON-D-004D"],
+    ["Mode", shadow.mode],
+    ["Selection method", "expected utility"],
+    ["Affects provider execution", shadow.affectsProviderExecution ? "yes" : "no"],
+    ["Additional provider calls", shadow.additionalProviderCalls ? "yes" : "no"],
+    [
+      "Agreement",
+      s.total
+        ? `${s.agrees ?? 0} agree / ${s.disagrees ?? 0} disagree of ${s.total}${s.agreementRate != null ? ` (${(s.agreementRate * 100).toFixed(0)}%)` : ""}`
+        : "no decisions recorded yet"
+    ],
+    ["Latest live winner", latest?.live?.model ? `${latest.live.provider}/${latest.live.model}` : "not observed yet"],
+    ["Latest shadow winner", latest?.shadow?.providerModelId ? `${latest.shadow.provider}/${latest.shadow.providerModelId}` : "not observed yet"],
+    ["Latest shadow confidence", latest?.confidence?.level ?? "—"],
+    ["Telemetry buckets", String(shadow.telemetryEntryCount ?? 0)]
+  ]);
+
+  els.routerAuthorityNote.textContent =
+    "PARAGON-D-004C1 currently determines real execution. PARAGON-D-004D is advisory only: it does not alter " +
+    "provider usage, model choice, fallback order, or any response, and it issues no provider calls of its own.";
+
+  const liveMax = live.maxAttempts != null ? `${live.maxAttempts}` : "set by live-enforcement policy";
+  els.fallbackMaxNote.textContent =
+    `Maximum live attempts per request: ${liveMax}. The shadow engine plans up to ${shadow.maximumAttempts} ` +
+    "attempts independently, and executes none of them.";
+
+  renderAttemptPlans();
+  renderDeprecatedFields();
+  // The +3 wording on the legacy preference rows is read from the live
+  // engine's reported weight, so re-render once it is known.
+  renderRoutes();
+}
+
+function renderPlanList(listEl, metaEl, planRecord, emptyText) {
+  if (!listEl || !metaEl) {
+    return;
+  }
+  if (!planRecord?.plan?.length) {
+    metaEl.textContent = emptyText;
+    listEl.innerHTML = "";
+    return;
+  }
+  const profile = planRecord.taskProfile;
+  const context = profile
+    ? ` · work: ${profile.workType}, complexity: ${profile.complexity}, context band: ${profile.contextBand}, output: ${profile.outputContract}`
+    : planRecord.taskType
+      ? ` · task type: ${planRecord.taskType}`
+      : "";
+  metaEl.textContent = `Recorded ${relativeTimeFrom(planRecord.at)} (${new Date(planRecord.at).toLocaleTimeString()})${context}`;
+  listEl.innerHTML = planRecord.plan
+    .map(
+      (entry) =>
+        `<li><span class="plan-provider">${escapeHtml(providerLabel(entry.provider, config?.providers?.[entry.provider]))}</span> <code>${escapeHtml(entry.model ?? "—")}</code>${entry.alternateForProvider ? ' <span class="registry-badge health-unknown">same-provider alternate</span>' : ""}</li>`
+    )
+    .join("");
+}
+
+function renderAttemptPlans() {
+  renderPlanList(els.livePlanList, els.livePlanMeta, routingStatus?.liveRouter?.latestAttemptPlan, "No live request observed since startup.");
+  renderPlanList(
+    els.shadowPlanList,
+    els.shadowPlanMeta,
+    routingStatus?.shadowRouter?.latestAttemptPlan,
+    "No shadow decision observed since startup."
+  );
+}
+
+function renderDeprecatedFields() {
+  if (!els.deprecatedConfigList) {
+    return;
+  }
+  const fields = routingStatus?.deprecatedConfigFields ?? [];
+  const stored = {
+    "routing.defaultProvider": config?.routing?.defaultProvider ?? "(unset)",
+    "routing.fallbackChain": Array.isArray(config?.routing?.fallbackChain) ? config.routing.fallbackChain.join(" → ") || "(empty)" : "(unset)",
+    "providers.*.model": Object.entries(config?.providers ?? {})
+      .filter(([, cfg]) => cfg?.model)
+      .map(([name, cfg]) => `${name}: ${cfg.model}`)
+      .join(", ") || "(all empty)"
+  };
+
+  els.deprecatedConfigList.innerHTML = fields
+    .map(
+      (field) => `
+      <div class="deprecated-field">
+        <h3><code>${escapeHtml(field.path)}</code> <span class="registry-badge ineligible">deprecated</span></h3>
+        <p class="methodology-note">${escapeHtml(field.reason)}</p>
+        <dl class="router-facts">
+          ${factsHtml([
+            ["Stored value", stored[field.path] ?? "—"],
+            ["Retained for backward compatibility", field.retainedForBackwardCompatibility ? "yes" : "no"],
+            ["Authoritative for live routing", field.authoritativeForLiveRouting ? "yes" : "no"],
+            ["Hidden from primary dashboard", field.hiddenFromPrimaryDashboard ? "yes" : "no"],
+            ["Superseded by", field.supersededBy],
+            ["Deprecated since", field.since],
+            ["Scheduled removal", field.scheduledRemoval]
+          ])}
+        </dl>
+      </div>`
+    )
+    .join("");
+}
+
+function renderShadowSettings() {
+  const settings = routingStatus?.shadowRouter;
+  if (!settings || !els.shadowSettingMode) {
+    return;
+  }
+  const ri = config?.routingIntelligence ?? {};
+  els.shadowSettingMode.value = settings.mode ?? "shadow";
+  els.shadowSettingQuotaScarcity.value = ri.quotaScarcity ?? 0;
+  els.shadowSettingContextThreshold.value = ri.unknownLargeContextThresholdTokens ?? 50000;
+  els.shadowSettingMinSamples.value = ri.minimumSamplesForMeasuredEstimate ?? 10;
+  els.shadowSettingMaxAttempts.value = ri.maximumAttempts ?? 4;
+  els.shadowSettingRetentionDays.value = ri.telemetryRetentionDays ?? 30;
+
+  els.shadowMappingFacts.innerHTML = factsHtml([
+    ["Canonical alias mappings", `${(ri.canonicalAliasMappings ?? []).length} record(s)`],
+    ["Reasoning profile mappings", `${Object.keys(ri.reasoningProfileMappings ?? {}).length} override(s)`],
+    ["Capability mappings", `${Object.keys(ri.capabilityMappings ?? {}).length} override(s)`],
+    ["Context overrides", `${Object.keys(ri.contextOverrides ?? {}).length} override(s)`],
+    ["Shadow record limit", String(ri.shadowRecordLimit ?? 200)]
+  ]);
+}
+
+async function saveShadowSettings() {
+  els.saveShadowSettings.disabled = true;
+  els.shadowSettingsStatus.textContent = "";
+  els.shadowSettingsStatus.className = "settings-save-note";
+  try {
+    const response = await apiFetch("/api/routing-intelligence/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        quotaScarcity: Number(els.shadowSettingQuotaScarcity.value),
+        unknownLargeContextThresholdTokens: Number(els.shadowSettingContextThreshold.value),
+        minimumSamplesForMeasuredEstimate: Number(els.shadowSettingMinSamples.value),
+        maximumAttempts: Number(els.shadowSettingMaxAttempts.value),
+        telemetryRetentionDays: Number(els.shadowSettingRetentionDays.value)
+      })
+    });
+    const body = await response.json();
+    if (!response.ok) {
+      throw new Error(body.error?.details?.join("; ") ?? body.error?.message ?? "Save failed");
+    }
+    config.routingIntelligence = body;
+    els.shadowSettingsStatus.textContent = "Saved — applies to the next shadow computation. Live routing is unchanged.";
+    els.shadowSettingsStatus.className = "settings-save-note success";
+    renderShadowSettings();
+  } catch (error) {
+    els.shadowSettingsStatus.textContent = error.message || "Save failed";
+    els.shadowSettingsStatus.className = "settings-save-note error";
+  } finally {
+    els.saveShadowSettings.disabled = false;
+  }
+}
+
+async function refreshRoutingStatus() {
+  if (!els.liveRouterFacts) {
+    return;
+  }
+  if (els.refreshRoutingStatus) {
+    els.refreshRoutingStatus.disabled = true;
+  }
+  try {
+    const res = await apiFetch("/api/routing/status");
+    if (!res.ok) {
+      return;
+    }
+    routingStatus = await res.json();
+    renderRoutingStatus();
+    renderShadowSettings();
+  } catch {
+    // Best-effort panel; a failed fetch must not disturb the rest of the UI.
+  } finally {
+    if (els.refreshRoutingStatus) {
+      els.refreshRoutingStatus.disabled = false;
+    }
+  }
+}
+
 async function refreshModelCatalog() {
   if (!els.catalogTableBody) {
     return;
@@ -1919,6 +2252,7 @@ async function refreshModelCatalog() {
       return;
     }
     const catalog = await res.json();
+    catalogSnapshot = catalog;
     renderCatalogTable(catalog);
     if (els.catalogScheduleNote) {
       const s = catalog.schedule ?? {};
@@ -1927,7 +2261,7 @@ async function refreshModelCatalog() {
         : `Next automatic refresh: ${s.nextRefreshAt ? new Date(s.nextRefreshAt).toLocaleString() : "not yet scheduled"}`;
     }
     if (els.catalogUpdatedNote) {
-      els.catalogUpdatedNote.textContent = `Updated ${new Date().toLocaleTimeString()} — refreshes automatically every 30s.`;
+      els.catalogUpdatedNote.textContent = `Updated ${new Date().toLocaleTimeString()} — refreshes automatically every 24h.`;
     }
   } catch {
     // Best-effort panel; a failed fetch here must not disturb the rest of the dashboard.
@@ -1951,6 +2285,7 @@ async function refreshAllCatalogProviders() {
       els.refreshCatalog.disabled = false;
     }
     refreshModelCatalog();
+    refreshProviderSummaries();
   }
 }
 
@@ -1989,6 +2324,7 @@ async function validateAllCatalogModels() {
       els.refreshCatalog.disabled = false;
     }
     refreshModelCatalog();
+    refreshProviderSummaries();
   }
 }
 
@@ -1998,7 +2334,8 @@ async function validateCatalogModel(provider, modelId) {
       method: "POST"
     });
     if (res.ok) {
-      refreshModelCatalog();
+      await refreshModelCatalog();
+      refreshProviderSummaries();
     }
   } catch {
     // Best-effort — the table simply won't update this click.

@@ -23,6 +23,10 @@ import { createShadowStore } from "./routing/shadowStore.js";
 import { computeShadowRoute } from "./routing/shadowEngine.js";
 import { buildTaskProfile } from "./routing/taskProfile.js";
 import { providerGrammarSummary } from "./routing/executionProfile.js";
+import { createRouteActivityStore } from "./routing/routeActivity.js";
+import { buildProviderRoutingSummaries } from "./routing/providerSummary.js";
+import { ACTIVE_BUT_MISREPRESENTED_FIELDS, DEPRECATED_CONFIG_FIELDS } from "./deprecatedConfig.js";
+import { AVATAR_DIR, AVATAR_ROUTE, removeProviderAvatar, saveProviderAvatar } from "./providerAvatars.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 let cachedConfig = await readConfig();
@@ -94,10 +98,19 @@ const telemetryFlushTimer = setInterval(() => {
 }, 30_000);
 telemetryFlushTimer.unref?.();
 
+/**
+ * PARAGON-D-004D1: observed routing activity, so the dashboard can show the
+ * model each provider actually ran last (and what shadow would have picked)
+ * instead of the deprecated configured-model preference. Instrumentation
+ * only — nothing here is read by a routing decision.
+ */
+const routeActivity = createRouteActivityStore();
+
 const routingIntelligence = {
   get settings() {
     return cachedConfig.routingIntelligence ?? {};
   },
+  routeActivity,
   shadowStore: createShadowStore({ limit: cachedConfig.routingIntelligence?.shadowRecordLimit ?? 200 }),
   getTelemetry: () => cachedTelemetry,
   recordOutcome(observation) {
@@ -147,6 +160,9 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: "5mb" }));
 app.use(express.static(path.resolve(__dirname, "../public")));
+// Operator-uploaded provider avatars (PARAGON-D-004D1). Bundled avatars ship
+// under public/avatars/; these are the per-deployment overrides.
+app.use(AVATAR_ROUTE, express.static(AVATAR_DIR));
 
 const getConfig = async () => cachedConfig;
 const adminAuth = createAuthMiddleware(getConfig, { allowLocalhost: true });
@@ -307,6 +323,112 @@ app.get("/api/routing/registry", async (req, res) => {
   });
 });
 
+
+/**
+ * PARAGON-D-004D1 (Phase 1): the read-only provider routing summary that
+ * replaced the provider card's `Model` dropdown. Counts and observed usage,
+ * never a stored selection.
+ */
+app.get("/api/routing/providers", async (_req, res) => {
+  const config = await getConfig();
+  res.json({
+    providers: buildProviderRoutingSummaries(config, getStatuses(), catalogStore.get(), routeActivity),
+    selection: "automatic-per-request",
+    builtAt: new Date().toISOString()
+  });
+});
+
+/**
+ * PARAGON-D-004D1 (Phases 2, 3, 5, 7): what actually decides a live route,
+ * what shadow would decide, the latest attempt plan from each engine, and the
+ * deprecated compatibility fields — in one payload, so the dashboard cannot
+ * describe one engine using the other's wording.
+ */
+app.get("/api/routing/status", async (_req, res) => {
+  const config = await getConfig();
+  const settings = config.routingIntelligence ?? {};
+  const plans = routeActivity.plans();
+  res.json({
+    liveRouter: {
+      engine: "paragon-d-004c1",
+      mode: "live",
+      selectionMethod: "deterministic-score",
+      decidesExecution: true,
+      catalogEligibilityEnforced: true,
+      staticDefaultFallback: false,
+      taskProviderPreferenceActive: true,
+      taskProviderPreferencePoints: scoringMethodology().weights.taskRoutePreference,
+      emptyEligibleSetBehavior: { status: 503, code: "no_eligible_model" },
+      maxAttempts: config.orchestration?.fallback?.maxAttempts ?? null,
+      latestAttemptPlan: plans.live
+    },
+    shadowRouter: {
+      engine: "paragon-d-004d",
+      mode: settings.mode ?? "shadow",
+      enabled: settings.enabled !== false,
+      selectionMethod: "expected-utility",
+      maximumAttempts: settings.maximumAttempts ?? 4,
+      decidesExecution: false,
+      affectsProviderExecution: false,
+      additionalProviderCalls: false,
+      // Explicitly stated so the dashboard never has to infer it: taskRoutes
+      // is a D-004C1 input and is not consumed as an operator-policy input by
+      // the shadow expected-utility scorer's preference term.
+      consumesTaskProviderPreference: false,
+      summary: routingIntelligence.shadowStore.summary(),
+      latest: routingIntelligence.shadowStore.list({ limit: 1 })[0] ?? null,
+      latestAttemptPlan: plans.shadow,
+      telemetryEntryCount: Object.keys(routingIntelligence.getTelemetry().entries ?? {}).length
+    },
+    deprecatedConfigFields: DEPRECATED_CONFIG_FIELDS,
+    activePreferenceFields: ACTIVE_BUT_MISREPRESENTED_FIELDS,
+    builtAt: new Date().toISOString()
+  });
+});
+
+/**
+ * PARAGON-D-004D1: avatar upload for any provider, including operator-added
+ * ones. Writes the file and returns the served path; the dashboard then stores
+ * that path in `providers.<id>.avatar` through the normal config save, so the
+ * config never carries base64 image data.
+ */
+app.post("/api/providers/:provider/avatar", async (req, res) => {
+  const config = await getConfig();
+  const provider = req.params.provider;
+  if (!config.providers[provider]) {
+    res.status(404).json({ error: { message: "Unknown provider" } });
+    return;
+  }
+  const result = await saveProviderAvatar(provider, req.body?.dataUrl);
+  if (result.error) {
+    res.status(400).json({ error: { message: result.error, type: "paragon_avatar_error" } });
+    return;
+  }
+  cachedConfig = await writeConfig({
+    ...config,
+    providers: { ...config.providers, [provider]: { ...config.providers[provider], avatar: result.avatar } }
+  });
+  res.json({ provider, avatar: result.avatar, bytes: result.bytes });
+});
+
+app.delete("/api/providers/:provider/avatar", async (req, res) => {
+  const config = await getConfig();
+  const provider = req.params.provider;
+  if (!config.providers[provider]) {
+    res.status(404).json({ error: { message: "Unknown provider" } });
+    return;
+  }
+  const result = await removeProviderAvatar(provider);
+  if (result.error) {
+    res.status(400).json({ error: { message: result.error } });
+    return;
+  }
+  cachedConfig = await writeConfig({
+    ...config,
+    providers: { ...config.providers, [provider]: { ...config.providers[provider], avatar: "" } }
+  });
+  res.json({ provider, avatar: "" });
+});
 
 app.get("/api/auth/flows", (_req, res) => {
   res.json({ flows: AUTH_FLOWS });
@@ -550,6 +672,62 @@ app.get("/api/routing-intelligence", async (_req, res) => {
     telemetryEntryCount: Object.keys(routingIntelligence.getTelemetry().entries ?? {}).length,
     providerGrammars: providerGrammarSummary()
   });
+});
+
+/**
+ * PARAGON-D-004D1 (Phase 6): the D-004D shadow settings that genuinely change
+ * the shadow computation. Only these scalars are writable — the operator-
+ * reviewed mapping tables (canonical aliases, reasoning profiles, capability
+ * overrides, context overrides) are displayed read-only, because a malformed
+ * hand-typed mapping would silently change how every candidate is profiled.
+ *
+ * `mode` is deliberately NOT writable here. Promoting D-004D from shadow to
+ * live is an activation decision gated behind its own directive; a dashboard
+ * field would make it a stray click.
+ */
+const SHADOW_SETTING_BOUNDS = {
+  unknownLargeContextThresholdTokens: { min: 1000, max: 2_000_000, integer: true },
+  minimumSamplesForMeasuredEstimate: { min: 1, max: 1000, integer: true },
+  maximumAttempts: { min: 1, max: 12, integer: true },
+  telemetryRetentionDays: { min: 1, max: 365, integer: true },
+  quotaScarcity: { min: 0, max: 1, integer: false }
+};
+
+app.put("/api/routing-intelligence/settings", async (req, res) => {
+  const config = await getConfig();
+  const incoming = req.body ?? {};
+  const errors = [];
+  const next = { ...(config.routingIntelligence ?? {}) };
+
+  if (incoming.mode !== undefined && incoming.mode !== (config.routingIntelligence?.mode ?? "shadow")) {
+    errors.push("mode is not settable from the dashboard — live activation of D-004D requires its own directive");
+  }
+  if (incoming.enabled !== undefined) {
+    if (typeof incoming.enabled !== "boolean") {
+      errors.push("enabled must be a boolean");
+    } else {
+      next.enabled = incoming.enabled;
+    }
+  }
+  for (const [key, bounds] of Object.entries(SHADOW_SETTING_BOUNDS)) {
+    if (incoming[key] === undefined) {
+      continue;
+    }
+    const value = Number(incoming[key]);
+    if (!Number.isFinite(value) || value < bounds.min || value > bounds.max || (bounds.integer && !Number.isInteger(value))) {
+      errors.push(`${key} must be ${bounds.integer ? "an integer" : "a number"} between ${bounds.min} and ${bounds.max}`);
+      continue;
+    }
+    next[key] = value;
+  }
+
+  if (errors.length) {
+    res.status(400).json({ error: { message: "Invalid shadow settings", type: "paragon_routing_intelligence_error", details: errors } });
+    return;
+  }
+
+  cachedConfig = await writeConfig({ ...config, routingIntelligence: next });
+  res.json(cachedConfig.routingIntelligence);
 });
 
 app.get("/api/routing-intelligence/shadow-records", async (req, res) => {

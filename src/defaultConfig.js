@@ -8,6 +8,17 @@ export const LEGACY_EXPOSED_MODEL_ALIAS = "routerbot-local";
 /** Bump when defaultConfig's shape changes in a way existing configs must migrate for. */
 export const CONFIG_VERSION = 2;
 
+/**
+ * PARAGON-D-004D1 deprecation notice for the fields below.
+ *
+ * `providers.*.model`, `routing.defaultProvider` and `routing.fallbackChain`
+ * are DEPRECATED for automatic routing. They are retained for backward
+ * compatibility, are not authoritative for normal live routing, are hidden
+ * from the primary dashboard, and are scheduled for possible schema removal
+ * after D-004D activation plus an explicit config migration. The
+ * machine-readable version of this notice — including what supersedes each
+ * field — lives in src/deprecatedConfig.js and is what the dashboard renders.
+ */
 export const defaultConfig = {
   configVersion: CONFIG_VERSION,
   server: {
@@ -25,8 +36,13 @@ export const defaultConfig = {
       type: "builtin",
       label: "Claude Code",
       icon: "🧠",
+      // Bundled avatar shown on the provider card. Operator-replaceable via
+      // the card's avatar control (see src/providerAvatars.js).
+      avatar: "/avatars/claude.webp",
       enabled: true,
       command: "claude",
+      // DEPRECATED for automatic routing (PARAGON-D-004D1) — see the notice
+      // above defaultConfig. Kept so existing configs round-trip unchanged.
       model: "",
       models: [],
       timeoutMs: 300000
@@ -35,6 +51,7 @@ export const defaultConfig = {
       type: "builtin",
       label: "Codex",
       icon: "⚡",
+      avatar: "/avatars/codex.webp",
       enabled: true,
       command: "codex",
       model: "",
@@ -45,6 +62,7 @@ export const defaultConfig = {
       type: "builtin",
       label: "Cursor Agent",
       icon: "🖱️",
+      avatar: "/avatars/cursor.webp",
       enabled: true,
       command: "cursor-agent",
       model: "sonnet-4",
@@ -59,6 +77,7 @@ export const defaultConfig = {
       type: "builtin",
       label: "Antigravity CLI",
       icon: "🪐",
+      avatar: "/avatars/antigravity.webp",
       enabled: false,
       command: "agy",
       model: "",
@@ -68,8 +87,18 @@ export const defaultConfig = {
     }
   },
   routing: {
+    // DEPRECATED (PARAGON-D-004D1) — retained for backward compatibility,
+    // not authoritative for live routing, hidden from the primary dashboard.
+    // The static-default fallback was removed in D-004C1; an empty eligible
+    // set is a bounded 503 no_eligible_model.
     defaultProvider: "codex",
+    // DEPRECATED (PARAGON-D-004D1) — retained for backward compatibility.
+    // Live fallback order is the per-request ranked attempt plan, not this list.
     fallbackChain: ["codex", "cursor"],
+    // ACTIVE, but a preference and not a route: a matching provider receives
+    // WEIGHTS.taskRoutePreference additional points in the live D-004C1
+    // scorer. Eligibility, health, circuit, context, cost and capability
+    // gates remain authoritative. See src/deprecatedConfig.js.
     taskRoutes: {
       code: "codex",
       debug: "codex",
