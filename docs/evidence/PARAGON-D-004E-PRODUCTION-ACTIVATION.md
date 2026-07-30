@@ -1,7 +1,6 @@
 # PARAGON-D-004E — Production Router Activation and Everyday Product Simplification
 
-**Status:** implemented and merged; **production deploy pending an operator restart** (see
-[Deployment](#deployment-status) — it requires an interactive sudo password).
+**Status:** implemented, merged, **deployed and verified in production**.
 
 **Implementation commit:** `291a1f6` on `main` (PR #19, squashed from
 `paragon-d004e-production-activation`).
@@ -399,60 +398,97 @@ parallel load.
 
 ---
 
-## 11. Deployment status
+## 11. Deployment
 
-> **STOPPED, as the directive requires.** Restarting `paragon.service` needs an
-> interactive sudo password, which is an explicit STOP condition.
+Deployed as one atomic operator action on 2026-07-30. The restart required an
+interactive sudo password, so the agent stopped after preparing the backup and
+the operator performed the fast-forward and restart together — production was
+never left with a new front end against the old backend.
 
-Production has **not** been fast-forwarded, deliberately. This change rewrites
-both `public/` and `src/`; the new front end calls `/api/overview`,
-`/api/settings` and `/api/diagnostics/*`, which the running backend does not
-serve. Fast-forwarding without an immediate restart would leave the dashboard
-broken for the whole gap — precisely the atomicity failure Phase 12 forbids.
+### Restart proof
 
-**Current production state (unchanged):**
+| Fact | Before | After |
+|---|---|---|
+| Commit | `c911c58` | **`ee7379c`** |
+| MainPID | `122137` | **`324456`** |
+| Start | 2026-07-30 08:16:01 EDT | **2026-07-30 13:34:48 EDT** |
+| NRestarts | 0 | **0** |
+| Checkout | clean | **clean** |
 
-| Fact | Value |
-|---|---|
-| Checkout | `/home/sketch/Projects/paragon-production`, clean |
-| Commit | `c911c58` (pre-activation) |
-| Service | `active`, `MainPID=122137`, `NRestarts=0`, started 2026-07-30 08:16:01 EDT |
-| Ports | 4117 local, 9420 serve, 10000 funnel — unchanged by this release |
+Running binary confirmed as `/home/sketch/Projects/paragon-production/src/server.js`
+under the new PID.
 
-**Backup (complete, verified):**
-`/home/sketch/Projects/backups/paragon-d004e-20260730T132049/`
-— full `data/` copy (config, model catalog, routing telemetry, orchestration),
-`production-commit.txt`, `service-before.txt`. `config.json` md5 matches live.
+### Behavioral proof
 
-### To deploy — one atomic operator action
+The new API surface answers and the retired one is gone:
 
-```bash
-cd /home/sketch/Projects/paragon-production && \
-  git fetch origin main && git merge --ff-only origin/main && \
-  sudo systemctl restart paragon.service
+```
+/api/overview 200   /api/settings 200   /api/activity 200
+/api/diagnostics/{models,routing,system} 200
+/api/routing/status, /api/routing-intelligence, …/shadow-records
+    -> dashboard HTML, no shadow payload
 ```
 
-### Then verify behaviorally
+**Migration ran against the real config**: `configVersion: 3`, with its own
+pre-change backup at `data/config.backup.2026-07-30T17-34-49-241Z.json`.
+`routing` is now `{"priority": "balanced"}`, no provider carries `.model`,
+`routingIntelligence` is gone and `automaticRouting` is present.
 
-```bash
-systemctl show paragon.service -p MainPID -p NRestarts -p ExecMainStartTimestamp
-# MainPID must differ from 122137; NRestarts must remain 0
+A full diff of the live config against the pre-deploy backup, excluding the
+intentionally removed fields, shows **no unintended changes**. API key,
+Tailscale host and both ports, cursor base URL, all five providers and their
+enablement, avatars and discovered model lists (34/13/193/11/6) are identical.
 
-curl -s localhost:4117/api/overview -H "Authorization: Bearer routerbot" | head -c 200
-# must return the product payload (connection/providers/routing/activity);
-# a 404/HTML response means the old backend is still running
+**A real request through production**, with cursor genuinely at its monthly
+limit:
 
-curl -s localhost:4117/api/diagnostics/system -H "Authorization: Bearer routerbot" \
-  | python3 -c "import json,sys; print('configVersion', json.load(sys.stdin)['configVersion'])"
-# must print 3 — proves the migration ran against the real config
-
-ls /home/sketch/Projects/paragon-production/data/config.backup.*.json
-# the migration's own pre-change backup
-
-cd /home/sketch/Projects/paragon-production && git status --porcelain   # must be empty
 ```
+X-Paragon-Route-Reason:      automatic.expectedUtility
+X-Paragon-Routing-Priority:  balanced
+(no shadow header present)
+
+planned:  cursor / cursor-grok-4.5-medium-fast
+executed: antigravity / gemini-3.6-flash-medium   fallback: true   7.6s
+content:  "OK"
+usage:    paragon_usage_source "unknown", confidence "none"
+```
+
+The product Activity list rendered it as:
+
+> 17:36 · **antigravity / gemini-3.6-flash-medium** — succeeded in 7.6s
+> — recovered after *cursor reached its usage limit*
+
+and the exhaustion was recorded from cursor's own message:
+
+```json
+"cursor": { "resetAt": "2026-08-12T00:00:00.000Z",
+            "resetSource": "provider_calendar_date",
+            "classification": "QUOTA_EXHAUSTED", "observedFailures": 1 }
+```
+
+**Real usage capture in production** (forced to claude):
+
+```json
+{ "prompt_tokens": 50778, "completion_tokens": 6, "total_tokens": 50784,
+  "paragon_usage_source": "provider_cli_structured",
+  "paragon_usage_confidence": "high" }
+```
+
+**Public API unchanged**: `/v1/models` returns `paragon` and the
+`routerbot-local` compatibility alias. Ports 4117 / 9420 / 10000 unchanged.
+
+**Dashboard in production** (headless render of the live service): four product
+areas, 5 provider cards, onboarding correctly hidden, exactly one `Save Changes`
+button, and no occurrence of "shadow" in any rendered text.
+
+No shadow state is persisted — `data/` holds only `config.json`, the migration
+backup, `model-catalog.json`, `routing-telemetry.json`, `orchestration/` and
+`backups/`.
 
 ### Rollback
+
+Pre-deploy backup: `/home/sketch/Projects/backups/paragon-d004e-20260730T132049/`
+(full `data/` copy, `production-commit.txt`, `service-before.txt`).
 
 ```bash
 sudo systemctl stop paragon.service
@@ -461,8 +497,8 @@ cp -a /home/sketch/Projects/backups/paragon-d004e-20260730T132049/data/. data/
 sudo systemctl start paragon.service
 ```
 
-The migration's own timestamped backup in `data/` is a second, independent
-rollback point for configuration alone.
+The migration's own `data/config.backup.2026-07-30T17-34-49-241Z.json` is a
+second, independent rollback point for configuration alone.
 
 ---
 
@@ -486,3 +522,6 @@ rollback point for configuration alone.
    "maximum spending controls" setting is only meaningful once a metered
    provider is configured.
 5. **No pixel "before" screenshot**, for the SSE reason given in §7.
+6. **`lmstudio` needs attention in production** — model discovery has not
+   completed for it, so it contributes nothing routable. Pre-existing, and
+   correctly surfaced by the new provider card rather than hidden.
