@@ -20,7 +20,41 @@ export function openAiBaseUrl(baseUrl) {
   return `${normalized}/v1`;
 }
 
-export async function runHttpProvider(provider, providerConfig, prompt, onChunk) {
+const FORWARDED_REQUEST_FIELDS = [
+  "temperature",
+  "top_p",
+  "presence_penalty",
+  "frequency_penalty",
+  "stop",
+  "response_format",
+  "tools",
+  "tool_choice",
+  "parallel_tool_calls",
+  "reasoning_effort"
+];
+
+/**
+ * Preserve the OpenAI request contract when PARAGON selects a native HTTP
+ * provider. CLI providers still receive the flattened text prompt, but an
+ * HTTP provider must see the original messages, tools, and tool results so a
+ * Cursor agent can continue its normal tool loop.
+ */
+function buildHttpRequestBody(providerConfig, prompt, requestBody, streaming) {
+  const source = requestBody && typeof requestBody === "object" ? requestBody : {};
+  const body = {
+    model: providerConfig.model || undefined,
+    messages: Array.isArray(source.messages) ? source.messages : [{ role: "user", content: prompt }],
+    stream: streaming
+  };
+  for (const field of FORWARDED_REQUEST_FIELDS) {
+    if (source[field] !== undefined) {
+      body[field] = source[field];
+    }
+  }
+  return body;
+}
+
+export async function runHttpProvider(provider, providerConfig, prompt, onChunk, { requestBody } = {}) {
   const baseUrl = openAiBaseUrl(providerConfig.baseUrl);
   if (!baseUrl) {
     throw new Error(`${provider}: baseUrl is required for HTTP providers`);
@@ -31,11 +65,7 @@ export async function runHttpProvider(provider, providerConfig, prompt, onChunk)
     headers.Authorization = `Bearer ${providerConfig.apiKey}`;
   }
 
-  const body = {
-    model: providerConfig.model || undefined,
-    messages: [{ role: "user", content: prompt }],
-    stream: Boolean(onChunk)
-  };
+  const body = buildHttpRequestBody(providerConfig, prompt, requestBody, Boolean(onChunk));
   // PARAGON-D-004E (Phase 1): ask for real token accounting on the stream too.
   // Without this an OpenAI-compatible endpoint emits no usage chunk and every
   // streamed request would report usage as unknown.
@@ -66,7 +96,9 @@ export async function runHttpProvider(provider, providerConfig, prompt, onChunk)
   }
 
   const payload = await response.json();
-  const content = payload.choices?.[0]?.message?.content ?? "";
+  const choice = payload.choices?.[0] ?? {};
+  const message = choice.message ?? {};
+  const content = message.content ?? "";
   const usage = extractOpenAiUsage(payload);
   addLog({
     type: "completion",
@@ -74,7 +106,14 @@ export async function runHttpProvider(provider, providerConfig, prompt, onChunk)
     level: "info",
     message: `HTTP completion ${content.length} chars${usage.usageUnknown ? " (usage not reported)" : ` (${usage.totalBilledTokens} billed tokens)`}`
   });
-  return { stdout: content, stderr: "", code: 0, usage };
+  return {
+    stdout: content,
+    stderr: "",
+    code: 0,
+    usage,
+    toolCalls: Array.isArray(message.tool_calls) ? message.tool_calls : [],
+    finishReason: choice.finish_reason ?? (message.tool_calls?.length ? "tool_calls" : "stop")
+  };
 }
 
 async function streamHttpResponse(provider, response, onChunk) {
@@ -82,6 +121,8 @@ async function streamHttpResponse(provider, response, onChunk) {
   const decoder = new TextDecoder();
   let buffer = "";
   let stdout = "";
+  const toolCalls = [];
+  let finishReason = "stop";
   // The usage chunk arrives last (and only when include_usage was honored),
   // typically with an empty `choices` array.
   let usage = unknownUsage("streamed response reported no usage chunk");
@@ -106,16 +147,34 @@ async function streamHttpResponse(provider, response, onChunk) {
       }
       try {
         const chunk = JSON.parse(data);
+        const choice = chunk.choices?.[0];
+        if (choice?.finish_reason) {
+          finishReason = choice.finish_reason;
+        }
         if (chunk.usage) {
           const parsed = extractOpenAiUsage(chunk);
           if (!parsed.usageUnknown) {
             usage = parsed;
           }
         }
-        const text = chunk.choices?.[0]?.delta?.content;
+        const delta = choice?.delta ?? {};
+        const text = delta.content;
         if (text) {
           stdout += text;
           onChunk(text);
+        }
+        for (const deltaToolCall of delta.tool_calls ?? []) {
+          const index = Number.isInteger(deltaToolCall.index) ? deltaToolCall.index : toolCalls.length;
+          const current = toolCalls[index] ?? {
+            id: "",
+            type: "function",
+            function: { name: "", arguments: "" }
+          };
+          current.id += deltaToolCall.id ?? "";
+          current.type = deltaToolCall.type ?? current.type;
+          current.function.name += deltaToolCall.function?.name ?? "";
+          current.function.arguments += deltaToolCall.function?.arguments ?? "";
+          toolCalls[index] = current;
         }
       } catch {
         // ignore malformed SSE chunks
@@ -129,7 +188,7 @@ async function streamHttpResponse(provider, response, onChunk) {
     level: "info",
     message: `HTTP stream ${stdout.length} chars${usage.usageUnknown ? " (usage not reported)" : ` (${usage.totalBilledTokens} billed tokens)`}`
   });
-  return { stdout, stderr: "", code: 0, usage };
+  return { stdout, stderr: "", code: 0, usage, toolCalls, finishReason };
 }
 
 export async function listHttpModels(provider, providerConfig) {
@@ -161,7 +220,11 @@ export async function listHttpModels(provider, providerConfig) {
 
   const models = (payload.data ?? []).map((model) => ({
     id: model.id,
-    name: model.id
+    name: model.id,
+    // Preserve provider-advertised capabilities for catalog/routing. This is
+    // intentionally metadata-only; absence must remain unknown rather than
+    // being guessed as tool support.
+    capabilities: model.capabilities ?? undefined
   }));
   if (!models.length) {
     throw new Error(`No models returned from ${baseUrl}/models`);

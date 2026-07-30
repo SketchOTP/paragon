@@ -66,7 +66,7 @@ const PROVIDER_STRUCTURAL_CAPABILITIES = {
   claude: { streaming: true, toolCalls: false, reasoningControls: false },
   codex: { streaming: true, toolCalls: false, reasoningControls: false },
   cursor: { streaming: true, toolCalls: false, reasoningControls: true },
-  antigravity: { streaming: true, toolCalls: false, reasoningControls: false }
+  antigravity: { streaming: true, toolCalls: false, reasoningControls: false },
 };
 
 /** HTTP providers are OpenAI-compatible; capability depends on the server, not on PARAGON. */
@@ -92,6 +92,28 @@ function metadataCapability(metadata, field) {
   if (caps && typeof caps === "object" && field in caps) {
     const value = caps[field];
     if (typeof value === "boolean") return value;
+  }
+  if (field === "toolCalls") {
+    if (Array.isArray(caps)) {
+      const values = caps.map((value) => String(value).toLowerCase());
+      if (values.some((value) => ["tools", "tool_calls", "function_call", "function_calling"].includes(value))) {
+        return true;
+      }
+    }
+    for (const key of ["supports_tool_calls", "supports_tools", "tool_calls"]) {
+      if (typeof metadata[key] === "boolean") {
+        return metadata[key];
+      }
+    }
+    // Some OpenAI-compatible /models endpoints publish supported request
+    // features instead of a boolean capability map. This is positive
+    // provider evidence, not a PARAGON inference from the model name.
+    if (Array.isArray(metadata.supported_parameters)) {
+      const parameters = metadata.supported_parameters.map((value) => String(value).toLowerCase());
+      if (parameters.some((value) => ["tools", "tool_calls", "function_call", "functions"].includes(value))) {
+        return true;
+      }
+    }
   }
   return undefined;
 }

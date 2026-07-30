@@ -180,6 +180,64 @@ If port `4117` is in use, PARAGON is already running (e.g. systemd) — use `sud
 }
 ```
 
+HTTP providers are also the native tool-call path for Cursor. For a tool
+request, PARAGON forwards Cursor's original `messages`, `tools`, tool results,
+and response options to an HTTP model, then returns the model's `tool_calls`
+unchanged. Built-in CLI providers remain text-only and are deliberately not
+selected for tool-enabled requests.
+
+PARAGON accepts tool capability evidence from the provider's `/v1/models`
+metadata, for example:
+
+```json
+{
+  "id": "qwen-tool-model",
+  "capabilities": { "toolCalls": true }
+}
+```
+
+Some servers instead advertise `supported_parameters: ["tools"]` or a
+`supports_tool_calls: true` field. If the server is known to support tools but
+does not publish capability metadata, add a reviewed mapping under
+`automaticRouting.capabilityMappings` for that exact provider/model:
+
+```json
+"automaticRouting": {
+  "capabilityMappings": {
+    "ollama/llama3.2": { "chatCompletions": true, "toolCalls": true }
+  }
+}
+```
+
+Do not set that mapping unless the model has been verified with a real tool
+request; unknown capability remains intentionally ineligible.
+
+**OpenHands through PARAGON** (agent execution in a selected workspace):
+
+Install the matched SDK/tool packages in the Python environment used by the
+PARAGON service:
+
+```bash
+scripts/install-openhands.sh
+```
+
+OpenHands is not a PARAGON provider and must not be added under `providers`.
+It is the upstream agent loop: it owns terminal/file tools and the
+user-selected workspace, while PARAGON owns model/provider routing.
+
+```bash
+export PARAGON_API_KEY='the-existing-paragon-key'
+printf '%s\n' '{"prompt":"Create hello.txt containing hello.","workspace":"/absolute/path/to/the/project"}' \
+  | .openhands-venv/bin/python scripts/openhands_runner.py
+```
+
+The runner always uses `openai/paragon` and defaults to
+`http://127.0.0.1:4117/v1`; `PARAGON_BASE_URL` can override the endpoint.
+Workspace selection is mandatory and is never inferred from this checkout.
+PARAGON must have at least one HTTP model whose catalog positively advertises
+native tool-call support. CLI-only providers and HTTP models with unknown
+tool capability remain ineligible for OpenHands tool requests.
+
 **Generic CLI** (any tool that reads a prompt on stdin):
 
 ```json
