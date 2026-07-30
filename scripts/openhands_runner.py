@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -44,12 +46,45 @@ def final_agent_text(conversation) -> str:
     return "OpenHands completed the task without a final text response."
 
 
+def enter_workspace_sandbox(workspace: Path, request_json: str) -> None:
+    """Make only the selected workspace writable before starting the agent."""
+    if os.environ.get("PARAGON_OPENHANDS_SANDBOXED") == "1":
+        return
+    bwrap = shutil.which("bwrap")
+    if not bwrap:
+        raise RuntimeError("bwrap is required to run OpenHands with workspace-only write access")
+    child_env = {**os.environ, "PARAGON_OPENHANDS_SANDBOXED": "1"}
+    openhands_home = Path.home() / ".openhands"
+    result = subprocess.run(
+        [
+            bwrap,
+            "--ro-bind", "/", "/",
+            "--tmpfs", "/tmp",
+            "--tmpfs", str(openhands_home),
+            "--bind", str(workspace), str(workspace),
+            "--dev", "/dev",
+            "--proc", "/proc",
+            "--chdir", str(workspace),
+            "--",
+            sys.executable,
+            str(Path(__file__).resolve()),
+        ],
+        input=request_json,
+        text=True,
+        env=child_env,
+        check=False,
+    )
+    raise SystemExit(result.returncode)
+
+
 def main() -> int:
     try:
-        request = json.load(sys.stdin)
+        request_json = sys.stdin.read()
+        request = json.loads(request_json)
         workspace = Path(str(request.get("workspace", ""))).expanduser().resolve()
         if not workspace.is_absolute() or not workspace.is_dir():
             raise ValueError(f"workspace is not an existing directory: {workspace}")
+        enter_workspace_sandbox(workspace, request_json)
 
         # Imports are deliberately inside main: a missing SDK becomes a normal
         # provider failure rather than preventing PARAGON from starting.

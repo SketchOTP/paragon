@@ -11,6 +11,11 @@ if ! command -v uv >/dev/null 2>&1; then
   exit 1
 fi
 
+if ! command -v bwrap >/dev/null 2>&1; then
+  echo "bwrap is required for workspace-only OpenHands execution." >&2
+  exit 1
+fi
+
 uv venv "${VENV_DIR}"
 uv pip install --python "${VENV_DIR}/bin/python" \
   "openhands-sdk==1.39.1" \
