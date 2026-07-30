@@ -113,6 +113,19 @@ async function computeShadowSafely({ routingIntelligence, config, statuses, cata
     });
     const record = buildShadowRecord({ taskProfile, shadow, liveProvider, liveModel });
     routingIntelligence.shadowStore.record(record);
+    // PARAGON-D-004D1: surfaced on the dashboard as the shadow *recommendation*
+    // per provider. Recording only — shadow still executes nothing.
+    routingIntelligence.routeActivity?.recordShadow({
+      provider: shadow?.winner?.provider,
+      model: shadow?.winner?.providerModelId,
+      reasoningEffort: shadow?.winner?.reasoningEffort ?? null,
+      speedMode: shadow?.winner?.speedMode ?? null,
+      taskProfile,
+      attemptPlan: shadow?.attemptPlan ?? [],
+      agrees: record.agrees,
+      confidence: shadow?.confidence?.level ?? null,
+      at: record.at
+    });
     return { taskProfile, shadow, record };
   } catch (error) {
     routingIntelligence.shadowStore.recordError();
@@ -272,6 +285,22 @@ export function registerOpenAiRoutes(app, getConfig, orchestration, getStatuses 
       "X-Paragon-Catalog-Age": primaryEntry?.catalogAgeHours != null ? `${primaryEntry.catalogAgeHours.toFixed(2)}h` : ""
     });
     const started = Date.now();
+
+    // PARAGON-D-004D1: record what live routing actually chose, so the
+    // dashboard's provider cards can show an observed model instead of the
+    // deprecated `providerConfig.model` preference. Instrumentation only.
+    routingIntelligence?.routeActivity?.recordLive({
+      provider: primary,
+      model: usesProviderDefault ? "provider-default" : primaryModel,
+      providerDefault: usesProviderDefault,
+      taskType: task,
+      attemptPlan: attempts.map((attempt, index) => ({
+        order: index + 1,
+        provider: attempt.name,
+        model: attempt.providerDefault ? "provider-default" : attempt.registryModel,
+        providerDefault: Boolean(attempt.providerDefault)
+      }))
+    });
 
     // PARAGON-D-004D shadow pass. Computed *after* the live route is already
     // fixed and its headers sent, so it structurally cannot influence the
