@@ -187,7 +187,15 @@ async function httpCandidates(providerConfig) {
       type: m.type ?? null,
       task: m.task ?? null,
       object: m.object ?? null,
-      capability: m.capability ?? null
+      capability: m.capability ?? null,
+      // OpenAI-compatible servers use several shapes for capabilities. Keep
+      // the provider's positive declaration intact; capabilityProfile.js
+      // decides which values are strong enough for routing.
+      capabilities: m.capabilities ?? null,
+      supported_parameters: m.supported_parameters ?? null,
+      supports_tool_calls: m.supports_tool_calls ?? null,
+      supports_tools: m.supports_tools ?? null,
+      tool_calls: m.tool_calls ?? null
     }
   }));
 }

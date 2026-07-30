@@ -299,8 +299,9 @@ export function registerOpenAiRoutes(app, getConfig, orchestration, getStatuses 
       // static configured-model fallback, so an empty eligible set is a
       // bounded 503 rather than a dispatch of something unvalidated.
       if (!route?.winner || !plan.length) {
-        const message =
-          "No eligible model is currently available. Every candidate was excluded by catalog eligibility, provider health, circuit state, context limits, cost ceiling, usage limits, or chat-capability gates.";
+        const message = taskProfile.requiredCapabilities.includes("toolCalls")
+          ? "No tool-capable model is currently available. Cursor tool requests require an HTTP provider whose model advertises verified native tool-call support; text-only CLI providers are intentionally excluded."
+          : "No eligible model is currently available. Every candidate was excluded by catalog eligibility, provider health, circuit state, context limits, cost ceiling, usage limits, or chat-capability gates.";
         addLog({ type: "route", provider: "paragon", level: "error", message: `routing.noEligibleModel: ${message}` });
         res.set({ "X-Paragon-Route-Reason": "routing.noEligibleModel", "X-Paragon-Route-Model": "" });
         res.status(503).json({
@@ -414,6 +415,9 @@ export function registerOpenAiRoutes(app, getConfig, orchestration, getStatuses 
         catalogStore,
         recordOutcome: recordAttemptOutcome,
         routing,
+        // HTTP tool-capable providers receive the original OpenAI request;
+        // CLI providers continue to use the flattened prompt path.
+        requestBody: req.body,
         // Only meaningful when the caller actually asked for structured output;
         // otherwise there is no contract to check and compliance stays unrecorded.
         validateResponse: requiresJsonValidation(req.body)
@@ -428,7 +432,9 @@ export function registerOpenAiRoutes(app, getConfig, orchestration, getStatuses 
         }
 
         let outcome = await runPlan(plan, prompt, planContext);
-        let content = sanitizeAssistantContent(outcome.result.stdout);
+        let content = outcome.result.toolCalls?.length
+          ? null
+          : sanitizeAssistantContent(outcome.result.stdout);
 
         // Validation-driven escalation, kept distinct from service-failure
         // fallback: PARAGON is a completion proxy with no test-execution loop,
@@ -448,7 +454,9 @@ export function registerOpenAiRoutes(app, getConfig, orchestration, getStatuses 
             try {
               const escalated = await runPlan(remaining, prompt, planContext);
               outcome = { ...escalated, escalated: true, fallback: true, recoveredFrom: outcome.provider };
-              content = sanitizeAssistantContent(escalated.result.stdout);
+              content = escalated.result.toolCalls?.length
+                ? null
+                : sanitizeAssistantContent(escalated.result.stdout);
             } catch {
               addLog({
                 type: "escalation",
@@ -485,7 +493,9 @@ export function registerOpenAiRoutes(app, getConfig, orchestration, getStatuses 
             durationMs,
             provider: outcome.provider,
             routedProvider: primary,
-            usage: outcome.usage
+            usage: outcome.usage,
+            toolCalls: outcome.result.toolCalls,
+            finishReason: outcome.result.finishReason
           })
         );
       } catch (error) {
@@ -572,7 +582,7 @@ function recordSuccessfulRoute({ routing, outcome, durationMs, plan }) {
  * beyond its bounded retry budget, so no provider-model is ever executed twice.
  */
 async function runPlan(initialPlan, prompt, context = {}) {
-  const { onChunk, orchestration, runId, policy, isLive, cwd, catalogStore, recordOutcome, routing, validateResponse } = context;
+  const { onChunk, orchestration, runId, policy, isLive, cwd, catalogStore, recordOutcome, routing, validateResponse, requestBody } = context;
   const attemptKey = (attempt) => `${attempt.name}/${attempt.registryModel}/${attempt.executionProfile ?? "default"}`;
 
   let plan = [...initialPlan];
@@ -608,7 +618,7 @@ async function runPlan(initialPlan, prompt, context = {}) {
         providerConfig,
         prompt,
         onChunk ? (chunk) => pendingChunks.push(chunk) : undefined,
-        { onSpawn, cwd }
+        { onSpawn, cwd, requestBody }
       );
 
       if (onChunk) {
@@ -840,6 +850,29 @@ async function streamCompletion({ res, config, plan, prompt, started, orchestrat
         })
       );
     }
+    const toolCalls = outcome.result.toolCalls ?? [];
+    if (toolCalls.length) {
+      if (!roleSent) {
+        send({
+          id,
+          object: "chat.completion.chunk",
+          created: Math.floor(Date.now() / 1000),
+          model: config.server.exposedModel,
+          choices: [{ index: 0, delta: { role: "assistant" }, finish_reason: null }]
+        });
+      }
+      send({
+        id,
+        object: "chat.completion.chunk",
+        created: Math.floor(Date.now() / 1000),
+        model: config.server.exposedModel,
+        choices: [{ index: 0, delta: { tool_calls: toolCalls }, finish_reason: "tool_calls" }],
+        paragon: { provider: outcome.provider, durationMs: Date.now() - started }
+      });
+      res.write("data: [DONE]\n\n");
+      res.end();
+      return;
+    }
     send({
       id,
       object: "chat.completion.chunk",
@@ -908,7 +941,7 @@ async function streamCompletion({ res, config, plan, prompt, started, orchestrat
   }
 }
 
-function chatCompletion({ model, content, durationMs, provider, routedProvider, usage }) {
+function chatCompletion({ model, content, durationMs, provider, routedProvider, usage, toolCalls = [], finishReason }) {
   return {
     id: `chatcmpl-${Date.now()}`,
     object: "chat.completion",
@@ -925,9 +958,10 @@ function chatCompletion({ model, content, durationMs, provider, routedProvider, 
         index: 0,
         message: {
           role: "assistant",
-          content
+          content: toolCalls.length ? null : content,
+          ...(toolCalls.length ? { tool_calls: toolCalls } : {})
         },
-        finish_reason: "stop"
+        finish_reason: finishReason ?? (toolCalls.length ? "tool_calls" : "stop")
       }
     ],
     // Real provider-reported usage when available. Zeros were previously

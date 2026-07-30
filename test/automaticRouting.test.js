@@ -290,6 +290,57 @@ test("13b. builtin CLI providers report toolCalls false structurally, since PARA
   assert.equal(profile.streaming, true);
 });
 
+test("13b. HTTP model metadata can positively establish native tool-call support", () => {
+  const profile = buildCapabilityProfile({
+    provider: "lmstudio",
+    providerModelId: "qwen-tool-model",
+    isHttpProvider: true,
+    catalogEntry: {
+      state: "exposed",
+      metadata: { capabilities: { toolCalls: true } }
+    }
+  });
+  assert.equal(profile.chatCompletions, true);
+  assert.equal(profile.toolCalls, true);
+});
+
+test("13b-2. tool-enabled requests route only to a positively tool-capable HTTP model", () => {
+  const catalog = defaultCatalog();
+  replaceProviderModels(catalog, "claude", [{
+    modelId: "claude-opus-5",
+    state: "validated",
+    discoverySource: "documented_candidate"
+  }]);
+  replaceProviderModels(catalog, "lmstudio", [{
+    modelId: "qwen-tool-model",
+    state: "exposed",
+    discoverySource: "http_models_endpoint",
+    metadata: { capabilities: { toolCalls: true } }
+  }]);
+  const config = {
+    modelCatalog: { validationTtlHours: 24 },
+    providers: {
+      claude: { enabled: true, type: "builtin" },
+      lmstudio: { enabled: true, type: "http", baseUrl: "http://x" }
+    },
+    automaticRouting: { maximumAttempts: 4 }
+  };
+  const route = selectAutomaticRoute({
+    config,
+    statuses: { claude: { ok: true }, lmstudio: { ok: true } },
+    catalog,
+    telemetryStore: { entries: {} },
+    taskProfile: buildTaskProfile({
+      prompt: "inspect the project",
+      body: { tools: [{ type: "function", function: { name: "read_file" } }] }
+    }),
+    settings: config.automaticRouting
+  });
+  assert.equal(route.winner.provider, "lmstudio");
+  assert.equal(route.winner.capabilities.toolCalls, true);
+  assert.ok(route.attemptPlan.every((attempt) => attempt.name === "lmstudio"));
+});
+
 test("13c. a parsed reasoning effort is itself evidence that the provider exposes reasoning controls", () => {
   const executionProfile = parseExecutionProfile("cursor", "gpt-5.6-sol-high");
   const profile = buildCapabilityProfile({ provider: "cursor", providerModelId: "gpt-5.6-sol-high", executionProfile });

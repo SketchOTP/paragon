@@ -91,7 +91,7 @@ const providerSpecs = {
       "text",
       ...modelArg("--model", model)
     ]
-  }
+  },
 };
 
 function providerType(provider, providerConfig) {
@@ -458,11 +458,11 @@ function sortCursorModels(models) {
   });
 }
 
-export async function runProvider(provider, providerConfig, prompt, onChunk, { onSpawn, cwd } = {}) {
+export async function runProvider(provider, providerConfig, prompt, onChunk, { onSpawn, cwd, requestBody } = {}) {
   const type = providerType(provider, providerConfig);
 
   if (type === "http") {
-    return runHttpProvider(provider, providerConfig, prompt, onChunk);
+    return runHttpProvider(provider, providerConfig, prompt, onChunk, { requestBody });
   }
 
   const spec = getProviderSpec(provider, providerConfig);
