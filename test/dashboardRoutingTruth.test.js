@@ -312,9 +312,7 @@ test("routeActivity records observed live and shadow choices without carrying pr
   const store = createRouteActivityStore();
   assert.equal(store.lastLive("claude"), null);
 
-  store.recordLive({
-    provider: "claude",
-    model: "claude-sonnet-5",
+  store.recordLivePlan({
     taskType: "code",
     attemptPlan: [
       { order: 1, provider: "claude", model: "claude-sonnet-5" },
@@ -322,6 +320,7 @@ test("routeActivity records observed live and shadow choices without carrying pr
     ],
     at: "2026-07-29T12:00:00.000Z"
   });
+  store.recordExecuted({ provider: "claude", model: "claude-sonnet-5", at: "2026-07-29T12:00:00.000Z" });
   store.recordShadow({
     provider: "codex",
     model: "gpt-5.4-mini",
@@ -354,7 +353,8 @@ test("routeActivity records observed live and shadow choices without carrying pr
 test("routeActivity is bounded — one record per provider, replaced not appended", () => {
   const store = createRouteActivityStore();
   for (let i = 0; i < 500; i += 1) {
-    store.recordLive({ provider: "claude", model: `model-${i}`, attemptPlan: [{ order: 1, provider: "claude", model: `model-${i}` }] });
+    store.recordExecuted({ provider: "claude", model: `model-${i}` });
+    store.recordLivePlan({ attemptPlan: [{ order: 1, provider: "claude", model: `model-${i}` }] });
   }
   assert.equal(store.lastLive("claude").model, "model-499");
   assert.equal(store.plans().live.plan.length, 1);
@@ -362,12 +362,29 @@ test("routeActivity is bounded — one record per provider, replaced not appende
 
 test("routeActivity caps an implausibly long attempt plan", () => {
   const store = createRouteActivityStore();
-  store.recordLive({
-    provider: "p",
-    model: "m",
+  store.recordLivePlan({
     attemptPlan: Array.from({ length: 100 }, (_, i) => ({ order: i + 1, provider: "p", model: `m${i}` }))
   });
   assert.ok(store.plans().live.plan.length <= 12);
+});
+
+/**
+ * A plan is a decision; an execution is an outcome. A request can be planned
+ * and then refused by a live-enforcement gate before any provider runs, so
+ * recording a plan must never imply that a model was used.
+ */
+test("routeActivity keeps a planned route distinct from an executed one", () => {
+  const store = createRouteActivityStore();
+  store.recordLivePlan({ taskType: "code", attemptPlan: [{ order: 1, provider: "claude", model: "claude-sonnet-5" }] });
+  assert.ok(store.plans().live, "the plan should be recorded");
+  assert.equal(store.lastLive("claude"), null, "a plan alone must not claim a model was used");
+
+  // Fallback moved execution to the second attempt: the card must report the
+  // executor, not the original pick.
+  store.recordExecuted({ provider: "codex", model: "gpt-5.4" });
+  assert.equal(store.lastLive("claude"), null);
+  assert.equal(store.lastShadow("codex"), null);
+  assert.equal(store.lastLive("codex").model, "gpt-5.4");
 });
 
 test("deprecation metadata covers exactly the three retired controls and never claims authority", () => {

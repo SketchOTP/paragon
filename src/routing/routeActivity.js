@@ -46,19 +46,30 @@ export function createRouteActivityStore() {
 
   return {
     /**
-     * Records the live D-004C1 decision for a request. `model` is the
-     * registry model id actually dispatched (or the provider-default
-     * sentinel), never a configured preference.
+     * Records the live D-004C1 *decision* — the ranked attempt plan the scorer
+     * produced for this request. Deliberately separate from recordExecuted():
+     * a request can be planned and then blocked by a live-enforcement gate
+     * (context ceiling, concurrency, session limit) without any provider
+     * running, so a plan is not evidence that a model was used.
      */
-    recordLive({ provider, model, providerDefault = false, taskType = null, attemptPlan = [], at = new Date().toISOString() } = {}) {
-      if (!provider) {
-        return;
-      }
-      lastLiveByProvider.set(provider, { model: model ?? null, providerDefault: Boolean(providerDefault), at });
+    recordLivePlan({ taskType = null, attemptPlan = [], at = new Date().toISOString() } = {}) {
       const plan = normalizePlan(attemptPlan);
       if (plan.length) {
         latestLivePlan = { engine: "paragon-d-004c1", at, taskType, plan };
       }
+    },
+
+    /**
+     * Records the provider-model pair that actually produced the response.
+     * This is what the provider card reports as its last live model, so it
+     * must be the executor — which fallback and JSON-validation escalation can
+     * legitimately make different from the head of the plan above.
+     */
+    recordExecuted({ provider, model, providerDefault = false, at = new Date().toISOString() } = {}) {
+      if (!provider) {
+        return;
+      }
+      lastLiveByProvider.set(provider, { model: model ?? null, providerDefault: Boolean(providerDefault), at });
     },
 
     /**
