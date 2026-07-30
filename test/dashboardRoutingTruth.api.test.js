@@ -262,7 +262,11 @@ test("17b. after a real request, the live attempt plan and last live model are r
   assert.ok(shadowPlan.taskProfile);
   assert.ok(!JSON.stringify(shadowPlan).includes("implement a function"), "the shadow plan record retained prompt text");
 
-  // Per-provider observation lands on the summary the cards render.
+  // Per-provider observation lands on the summary the cards render. The
+  // fixture provider always succeeds, so no fallback occurs and the executor
+  // equals the plan head — in production they legitimately differ when
+  // fallback or JSON-validation escalation moves execution to a later attempt,
+  // which is why the card reads recordExecuted() and not the plan.
   const providers = await (await fetch(`${BASE}/api/routing/providers`, { headers: authHeaders() })).json();
   const observed = providers.providers.filter((p) => p.lastLiveModel);
   assert.ok(observed.length >= 1, "no provider reports a last live model after a real request");
