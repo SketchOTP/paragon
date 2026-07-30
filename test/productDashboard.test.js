@@ -386,6 +386,20 @@ test("39c. every bundled provider avatar referenced by the dashboard exists on d
   }
 });
 
+test("the hidden attribute always wins over a component's own display rule", () => {
+  // `[hidden] { display: none }` is a user-agent rule at specificity (0,1,0),
+  // so any class selector declaring its own `display` silently defeats it. That
+  // is how the first-run overlay rendered on top of a configured dashboard and
+  // how the HTTP-only fields appeared when editing a CLI provider.
+  assert.match(css, /\[hidden\]\s*\{[^}]*display:\s*none\s*!important/);
+
+  // Every element the app toggles through the attribute is covered by it.
+  const toggled = [...html.matchAll(/id="([a-z0-9-]+)"[^>]*\shidden/g)].map((m) => m[1]);
+  assert.ok(toggled.includes("onboarding"));
+  assert.ok(toggled.includes("app"));
+  assert.ok(toggled.some((id) => id.includes("api-key-field")));
+});
+
 test("39d. provider cards keep the full-height avatar column and its glow treatment", () => {
   assert.match(appJs, /provider-avatar-image/);
   assert.match(appJs, /provider-avatar-initials/, "a provider with no avatar must fall back to initials, not a broken image");

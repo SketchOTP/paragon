@@ -47,6 +47,20 @@ select {
   font: inherit;
 }
 
+/**
+ * The `hidden` attribute must always win.
+ *
+ * The user-agent rule is `[hidden] { display: none }` at specificity (0,1,0),
+ * so any class selector that declares its own `display` silently defeats it —
+ * which is how the first-run setup overlay rendered on top of an already
+ * configured dashboard, and how the HTTP-only fields showed up when editing a
+ * CLI provider. Both are toggled through the attribute from app.js, so this is
+ * declared once here rather than patched per component.
+ */
+[hidden] {
+  display: none !important;
+}
+
 .app {
   width: min(1120px, calc(100vw - 40px));
   margin: 0 auto;
@@ -1758,3 +1772,11 @@ button.danger-text {
 .onboarding-footer { margin-top: 26px; display: flex; justify-content: flex-end; }
 
 .btn.danger { color: #fca5a5; }
+
+/* The base URL is the value users copy most often; give it room so it does not
+   wrap mid-token in the four-across connection row. */
+@media (min-width: 900px) {
+  #connection .metric-card:first-child {
+    grid-column: span 2;
+  }
+}

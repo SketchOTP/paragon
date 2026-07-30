@@ -63,7 +63,6 @@ const AUTH_POLL_INTERVAL_MS = 8000;
 let config = null;
 let overview = null;
 let settings = null;
-let statuses = {};
 
 const els = {
   onboarding: document.querySelector("#onboarding"),
@@ -1517,11 +1516,10 @@ async function refreshStatus({ manual = false } = {}) {
     els.refreshStatus.textContent = "Refreshing…";
   }
   try {
-    const response = await apiFetch(`/api/status${manual ? "?force=1&quiet=0" : ""}`);
-    if (response.ok) {
-      const body = await response.json();
-      statuses = Object.fromEntries((body.statuses ?? []).map((s) => [s.provider, s]));
-    }
+    // Warms the server's status cache; the resulting health lands on the
+    // provider cards through the overview payload rather than being kept as a
+    // second copy of provider state in the client.
+    await apiFetch(`/api/status${manual ? "?force=1&quiet=0" : ""}`);
     await refreshOverview();
   } finally {
     if (manual) {
