@@ -195,13 +195,37 @@ If port `4117` is in use, PARAGON is already running (e.g. systemd) — use `sud
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) to extend built-in adapters.
 
-## Routing & fallback
+## Automatic routing
 
-1. PARAGON classifies the prompt (`code`, `debug`, `plan`, …).
-2. It uses the mapped provider from the dashboard (or `routing.defaultProvider`).
-3. On failure, it walks `routing.fallbackChain` (default: `codex` → `cursor`).
+PARAGON picks the provider **and** the model for every request. There is no
+provider mapping to maintain and no fallback list to keep in sync.
 
-Configure both in the **Routing** panel; new providers appear in dropdowns automatically.
+1. It builds a profile of the request — the kind of work, how hard it is, how
+   much context it carries, and what the response has to satisfy.
+2. It considers every model your connected providers currently expose, after
+   hard gates: catalog eligibility, capability, context capacity, provider
+   health, circuit state, spending limits and usage limits.
+3. It ranks what is left on expected quality against expected cost, latency and
+   uncertainty, and builds a short attempt plan.
+4. If an attempt fails, it recovers — moving to another model from the same
+   provider for a model-specific failure, or abandoning that provider entirely
+   for a provider-wide one such as a usage limit.
+
+The only routing setting is **Routing priority** in Settings:
+
+| Priority | Effect |
+|---|---|
+| **Balanced** (default) | Weighs quality, cost, speed and confidence evenly. |
+| **Best quality** | Favors the most capable model, and higher reasoning where justified. |
+| **Lower cost** | Favors cheaper models and conserves subscription allowance. |
+| **Faster** | Favors models that respond quickly. |
+
+A priority can only reorder models that are already eligible — it can never
+select one that fails a gate.
+
+Everything the router used to decide a route (ranked candidates, the utility
+breakdown, exclusion reasons, the attempt plan, usage evidence) is inspectable
+under **Settings → Advanced Diagnostics**.
 
 ## Public access
 

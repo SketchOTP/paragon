@@ -8,15 +8,17 @@ import { addLog } from "./logStore.js";
 import { createBoundedResponseAccumulator, estimateRequestContext } from "./orchestration/contextEstimator.js";
 import { classifyError, boundedDiagnostic } from "./orchestration/errorClassification.js";
 import { classifyModelFailure } from "./modelCatalog.js";
-import { selectRoute, buildRankedAttempts, verifyAttemptsAgainstRegistry } from "./routing/router.js";
-import { buildModelRegistry } from "./routing/modelRegistry.js";
+import { selectAutomaticRoute, verifyPlanAgainstCandidates } from "./routing/automaticRouting.js";
 import { extractRoutingHints, requiresJsonValidation, isValidJson } from "./routing/hints.js";
 import { getBenchmarkData, matchBenchmarkRow } from "./routing/benchmarks.js";
 import { buildTaskProfile } from "./routing/taskProfile.js";
-import { computeShadowRoute, buildShadowRecord } from "./routing/shadowEngine.js";
-import { parseExecutionProfile } from "./routing/executionProfile.js";
+import { unknownUsage } from "./routing/usageEvidence.js";
 import {
-  activeExecutionCount,
+  applyFailureToPlan,
+  planNextAfterFailure,
+  PROVIDER_WIDE_FAILURES
+} from "./routing/attemptPlan.js";
+import {
   applyFallbackLimit,
   beginExecution,
   checkConcurrency,
@@ -42,7 +44,7 @@ function enforcementErrorResponse(res, { reasonCode, message }, status = 429) {
   });
 }
 
-/** Records a blocking live-enforcement decision so it shows in Governor Actions, same as shadow-proposed ones. */
+/** Records a blocking live-enforcement decision so it shows in Diagnostics. */
 async function recordEnforcementDecision(orchestration, telemetry, { reasonCode, message }) {
   if (!telemetry || !orchestration) {
     return;
@@ -70,8 +72,8 @@ function logParagonRequest(message, { level = "info", provider = "paragon" } = {
 }
 
 /**
- * Shadow-only instrumentation hook. All orchestration recording is
- * best-effort — a storage failure must never affect the actual response.
+ * Instrumentation hook. All orchestration/telemetry recording is best-effort —
+ * a storage failure must never affect the actual response.
  */
 async function safely(fn, fallback = null) {
   try {
@@ -83,58 +85,37 @@ async function safely(fn, fallback = null) {
 }
 
 /**
- * PARAGON-D-004D (Phase 12): computes the shadow ranking alongside the live
- * decision. Pure computation over already-loaded state — it never executes a
- * provider, never mutates the attempt chain, and never sees the response.
- * Wrapped so that any failure inside the shadow engine is recorded and
- * discarded rather than affecting the real request.
+ * Plain-language failure reason for the product's Recent Activity list.
+ * Diagnostics keeps the raw classification and bounded diagnostic; this is
+ * what an ordinary user reads, so it must not leak reason codes or stderr.
  */
-async function computeShadowSafely({ routingIntelligence, config, statuses, catalogStore, telemetryStore, benchmarkRows, prompt, body, contextEstimate, hints, liveProvider, liveModel }) {
-  if (!routingIntelligence?.shadowStore || routingIntelligence.settings?.enabled === false) {
-    return null;
-  }
-  try {
-    const taskProfile = buildTaskProfile({
-      prompt,
-      body,
-      estimatedInputTokens: contextEstimate?.estimatedInputTokens ?? null,
-      hints,
-      options: { largeThreshold: routingIntelligence.settings?.unknownLargeContextThresholdTokens ?? 50000 }
-    });
-    const shadow = computeShadowRoute({
-      config,
-      statuses,
-      catalog: catalogStore?.get() ?? null,
-      telemetryStore,
-      benchmarkRows,
-      taskProfile,
-      hints,
-      settings: routingIntelligence.settings ?? {}
-    });
-    const record = buildShadowRecord({ taskProfile, shadow, liveProvider, liveModel });
-    routingIntelligence.shadowStore.record(record);
-    // PARAGON-D-004D1: surfaced on the dashboard as the shadow *recommendation*
-    // per provider. Recording only — shadow still executes nothing.
-    routingIntelligence.routeActivity?.recordShadow({
-      provider: shadow?.winner?.provider,
-      model: shadow?.winner?.providerModelId,
-      reasoningEffort: shadow?.winner?.reasoningEffort ?? null,
-      speedMode: shadow?.winner?.speedMode ?? null,
-      taskProfile,
-      attemptPlan: shadow?.attemptPlan ?? [],
-      agrees: record.agrees,
-      confidence: shadow?.confidence?.level ?? null,
-      at: record.at
-    });
-    return { taskProfile, shadow, record };
-  } catch (error) {
-    routingIntelligence.shadowStore.recordError();
-    console.warn(`routing intelligence: shadow computation failed (non-fatal, live route unaffected): ${error.message}`);
-    return null;
+function friendlyFailureReason(classification, provider) {
+  const label = provider ?? "the provider";
+  switch (classification) {
+    case "QUOTA_EXHAUSTED":
+      return `${label} reached its usage limit`;
+    case "ENTITLEMENT_REQUIRED":
+      return `${label} requires a plan upgrade for this model`;
+    case "AUTHENTICATION_FAILED":
+      return `${label} needs to be signed in again`;
+    case "RATE_LIMITED":
+      return `${label} was rate limited`;
+    case "TIMEOUT":
+      return `${label} took too long to respond`;
+    case "MODEL_NOT_FOUND":
+    case "MODEL_REJECTED":
+    case "MODEL_UNAVAILABLE":
+      return `the selected model was unavailable on ${label}`;
+    case "PROVIDER_OFFLINE":
+      return `${label} was unreachable`;
+    case "CONFIGURATION_ERROR":
+      return `${label} is misconfigured`;
+    default:
+      return `${label} did not return a response`;
   }
 }
 
-export function registerOpenAiRoutes(app, getConfig, orchestration, getStatuses = () => ({}), catalogStore = null, routingIntelligence = null) {
+export function registerOpenAiRoutes(app, getConfig, orchestration, getStatuses = () => ({}), catalogStore = null, routing = null) {
   app.use("/v1", createAuthMiddleware(getConfig, { allowLocalhost: false }));
 
   app.get("/v1/models", async (req, res) => {
@@ -165,33 +146,84 @@ export function registerOpenAiRoutes(app, getConfig, orchestration, getStatuses 
     const config = await getConfig();
     const policy = config.orchestration;
     const prompt = messagesToPrompt(req.body.messages);
+    // Retained only as a coarse label for logs and the activity feed. It is
+    // not a routing input — the multidimensional request profile below is.
     const task = classifyTask(prompt);
 
-    // PARAGON-D-004: deterministic candidate scoring over the model
-    // registry is the real live routing decision — provider AND model,
-    // not just provider from a fixed task->provider table. taskRoutes is
-    // still read (inside selectRoute) as a strong preference signal, not
-    // an absolute override. See src/routing/router.js.
     const hints = extractRoutingHints(req.headers);
     const contextEstimate = estimateRequestContext(req.body);
 
-    // PARAGON-D-004B-R: PARAGON is a transparent OpenAI-compatible model
-    // gateway. Clients such as Cursor supply only messages — no workspace
-    // id, path, or mode is ever required or read from the request. Every
-    // provider invocation instead runs inside its own throwaway directory
-    // (never process.cwd(), never a client-supplied path) so it cannot
-    // affect PARAGON's own checkout or any real project.
+    // PARAGON is a transparent OpenAI-compatible model gateway. Clients such
+    // as Cursor supply only messages — no workspace id, path, or mode is ever
+    // required or read. Every provider invocation runs inside its own
+    // throwaway directory (never process.cwd(), never a client-supplied path)
+    // so it cannot affect PARAGON's own checkout or any real project.
     const runtimeDir = createIsolatedRuntimeDir();
     let primary;
     let primaryModel;
 
     try {
+      /**
+       * Live-enforcement policy gates run BEFORE routing.
+       *
+       * They are decisions about the *request* (session budget, absolute
+       * context ceiling, concurrency), not about candidates, so they do not
+       * depend on routing succeeding. Evaluating them after routing meant an
+       * oversized request was reported as `no_eligible_model` — every candidate
+       * had been excluded by the context gate — instead of the specific,
+       * actionable ceiling error the operator configured.
+       */
+      const orchestrationActive = Boolean(orchestration && policy?.enabled);
+      const telemetry = orchestrationActive
+        ? await safely(() => orchestration.beginRequest(req.headers, req.body))
+        : null;
+      if (telemetry) {
+        res.set(telemetry.responseHeaders);
+      }
+      const isLive = policy?.mode === "live";
+
+      if (isLive && telemetry?.enforcement) {
+        const { reasonCode, message, rolloverRequired } = telemetry.enforcement;
+        addLog({ type: "enforcement", provider: "paragon", level: "warn", message: `${reasonCode}: ${message}` });
+        await safely(() =>
+          orchestration.finishRequest(telemetry, { success: false, errorClassification: "CANCELLED", errorDiagnostic: message })
+        );
+        enforcementErrorResponse(res, { reasonCode, message: rolloverRequired ? `${message} A new session is required.` : message });
+        return;
+      }
+
+      if (isLive) {
+        const contextCheck = checkContextCeiling(policy, telemetry?.contextEstimate?.estimatedInputTokens ?? contextEstimate?.estimatedInputTokens ?? 0);
+        if (contextCheck.blocked) {
+          addLog({ type: "enforcement", provider: "paragon", level: "warn", message: `${contextCheck.reasonCode}: ${contextCheck.message}` });
+          await recordEnforcementDecision(orchestration, telemetry, contextCheck);
+          if (telemetry) {
+            await safely(() =>
+              orchestration.finishRequest(telemetry, { success: false, errorClassification: "CANCELLED", errorDiagnostic: contextCheck.message })
+            );
+          }
+          enforcementErrorResponse(res, contextCheck, 400);
+          return;
+        }
+
+        const concurrencyCheck = checkConcurrency(policy);
+        if (concurrencyCheck.blocked) {
+          addLog({ type: "enforcement", provider: "paragon", level: "warn", message: `${concurrencyCheck.reasonCode}: ${concurrencyCheck.message}` });
+          await recordEnforcementDecision(orchestration, telemetry, concurrencyCheck);
+          if (telemetry) {
+            await safely(() =>
+              orchestration.finishRequest(telemetry, { success: false, errorClassification: "CANCELLED", errorDiagnostic: concurrencyCheck.message })
+            );
+          }
+          enforcementErrorResponse(res, concurrencyCheck, 429);
+          return;
+        }
+      }
+
       // Attempt-cached — almost never a real network call on the hot request
-      // path. Empty rows when no OpenRouter key is configured, which
-      // selectRoute treats as "internal-only scoring". PARAGON-D-004C1
-      // (P0-7): stale data (past MAX_USABLE_AGE_MS since the last
-      // *successful* fetch) is withheld from scoring entirely rather than
-      // silently applied.
+      // path. Empty rows when no OpenRouter key is configured. Stale data
+      // (past MAX_USABLE_AGE_MS since the last *successful* fetch) is withheld
+      // from scoring entirely rather than silently applied.
       const benchmarks = await safely(() => getBenchmarkData(config.integrations?.openrouterApiKey), { rows: [], stale: true });
       const benchmarkRows = benchmarks?.stale ? [] : (benchmarks?.rows ?? []);
       if (benchmarks?.enabled && benchmarks?.stale) {
@@ -205,21 +237,37 @@ export function registerOpenAiRoutes(app, getConfig, orchestration, getStatuses 
 
       const catalog = catalogStore?.get() ?? null;
       const statuses = getStatuses();
-      const route = selectRoute({
-        config,
-        statuses,
-        taskProfile: {
-          taskType: task,
-          estimatedInputTokens: contextEstimate.estimatedInputTokens
-        },
+
+      // The request profile. Multidimensional and deterministic — no LLM call,
+      // no network, no randomness — so a decision is reproducible.
+      const taskProfile = buildTaskProfile({
+        prompt,
+        body: req.body,
+        estimatedInputTokens: contextEstimate?.estimatedInputTokens ?? null,
         hints,
-        benchmarkRows,
-        catalog
+        options: { largeThreshold: routing?.settings?.unknownLargeContextThresholdTokens ?? 50000 }
       });
 
-      // PARAGON-D-004C1 (P0-2): a forced route that failed an eligibility
-      // gate is a client error, never a silent downgrade to automatic
-      // routing and never a fallback to providerConfig.model.
+      /**
+       * THE routing decision. Exactly one computation per request: there is no
+       * second engine, no comparison pass, and no mode switch. What this
+       * returns is what executes.
+       */
+      const route = selectAutomaticRoute({
+        config,
+        statuses,
+        catalog,
+        telemetryStore: routing?.getTelemetry?.() ?? { entries: {} },
+        benchmarkRows,
+        taskProfile,
+        hints,
+        settings: routing?.settings ?? {},
+        quotaState: routing?.quotaState ?? null,
+        priority: config.routing?.priority
+      });
+
+      // A forced route that failed an eligibility gate is a client error,
+      // never a silent downgrade to automatic routing.
       if (route?.rejected) {
         addLog({ type: "route", provider: hints.forceProvider ?? "paragon", level: "warn", message: `${route.reasonCode}: ${route.message}` });
         res.set({ "X-Paragon-Route-Reason": route.reasonCode, "X-Paragon-Route-Model": "" });
@@ -229,19 +277,14 @@ export function registerOpenAiRoutes(app, getConfig, orchestration, getStatuses 
         return;
       }
 
-      // Reassigned below by the live-enforcement circuit/fallback filters.
-      let attempts = route ? buildRankedAttempts(route.ranking, config) : [];
+      let plan = route?.attemptPlan ?? [];
 
-      // PARAGON-D-004C1 (P0-1): the previous `fallback.staticDefault` path
-      // rebuilt attempts from routing.taskRoutes/defaultProvider/
-      // fallbackChain + providerConfig.model when scoring produced nothing.
-      // That bypassed catalog eligibility, the cost ceiling, and the
-      // capability gate, and could dispatch a configured model the catalog
-      // had already rejected. Availability is no longer preserved by
-      // weakening a constraint — an empty eligible set is a bounded 503.
-      if (!route || !attempts.length) {
+      // Availability is never preserved by weakening a constraint: there is no
+      // static configured-model fallback, so an empty eligible set is a
+      // bounded 503 rather than a dispatch of something unvalidated.
+      if (!route?.winner || !plan.length) {
         const message =
-          "No eligible model is currently available. Every candidate was excluded by catalog eligibility, provider health, circuit state, context limits, cost ceiling, or chat-capability gates.";
+          "No eligible model is currently available. Every candidate was excluded by catalog eligibility, provider health, circuit state, context limits, cost ceiling, usage limits, or chat-capability gates.";
         addLog({ type: "route", provider: "paragon", level: "error", message: `routing.noEligibleModel: ${message}` });
         res.set({ "X-Paragon-Route-Reason": "routing.noEligibleModel", "X-Paragon-Route-Model": "" });
         res.status(503).json({
@@ -250,11 +293,10 @@ export function registerOpenAiRoutes(app, getConfig, orchestration, getStatuses 
         return;
       }
 
-      // PARAGON-D-004C1 (P0-8): re-derive the chain against the registry
-      // immediately before dispatch. Nothing may execute that isn't a
-      // currently-eligible registry row.
-      const registryNow = buildModelRegistry(config, statuses, catalog);
-      const violations = verifyAttemptsAgainstRegistry(attempts, registryNow, config);
+      // Integrity assertion immediately before dispatch: nothing may execute
+      // that is not a currently-eligible candidate from the same computation
+      // that produced the plan.
+      const violations = verifyPlanAgainstCandidates(plan, route.ranked, config);
       if (violations.length) {
         const message = "Internal routing integrity check failed: a planned attempt is not a currently eligible model.";
         addLog({
@@ -269,337 +311,270 @@ export function registerOpenAiRoutes(app, getConfig, orchestration, getStatuses 
         return;
       }
 
-      primary = route.provider;
-    primaryModel = attempts[0]?.registryModel ?? route.model;
-    const routeReasonCode = route.reasonCode;
-    const primaryEntry = registryNow.find((e) => e.provider === primary && e.model === primaryModel);
-    const usesProviderDefault = Boolean(attempts[0]?.providerDefault);
-    // Matched for just the selected model rather than re-annotating the
-    // whole registry — one lookup instead of one per registry entry.
-    const primaryBenchmark = benchmarkRows.length ? matchBenchmarkRow(primaryModel, benchmarkRows) : null;
-    res.set({
-      "X-Paragon-Route-Reason": routeReasonCode,
-      "X-Paragon-Route-Model": usesProviderDefault ? "provider-default" : primaryModel || "",
-      "X-Paragon-Model-State": usesProviderDefault ? "exposed-default" : primaryEntry?.modelState ?? "unknown",
-      "X-Paragon-Benchmark-Match": primaryBenchmark?.matchMethod ?? "none",
-      "X-Paragon-Catalog-Age": primaryEntry?.catalogAgeHours != null ? `${primaryEntry.catalogAgeHours.toFixed(2)}h` : ""
-    });
-    const started = Date.now();
-
-    // PARAGON-D-004D1: record the ranked plan this request produced, so the
-    // dashboard can show a real attempt plan instead of a saved provider list.
-    // The plan is a decision, not an execution — the model each provider
-    // actually ran is recorded separately, after a response exists (see
-    // recordExecutedRoute below). Instrumentation only.
-    routingIntelligence?.routeActivity?.recordLivePlan({
-      taskType: task,
-      attemptPlan: attempts.map((attempt, index) => ({
-        order: index + 1,
-        provider: attempt.name,
-        model: attempt.providerDefault ? "provider-default" : attempt.registryModel,
-        providerDefault: Boolean(attempt.providerDefault)
-      }))
-    });
-
-    /**
-     * Called once a provider has actually produced the response. `provider` may
-     * differ from the plan head: service-failure fallback and JSON-validation
-     * escalation both legitimately move execution to a later attempt, and the
-     * card must report the executor rather than the original pick.
-     */
-    const recordExecutedRoute = (executedProvider) => {
-      const attempt = attempts.find((a) => a.name === executedProvider);
-      routingIntelligence?.routeActivity?.recordExecuted({
-        provider: executedProvider,
-        model: attempt?.providerDefault ? "provider-default" : attempt?.registryModel ?? null,
-        providerDefault: Boolean(attempt?.providerDefault)
-      });
-    };
-
-    // PARAGON-D-004D shadow pass. Computed *after* the live route is already
-    // fixed and its headers sent, so it structurally cannot influence the
-    // decision. Awaited only because the engine is async-shaped; it performs
-    // no I/O and no provider call.
-    const shadowOutcome = await computeShadowSafely({
-      routingIntelligence,
-      config,
-      statuses,
-      catalogStore,
-      telemetryStore: routingIntelligence?.getTelemetry?.() ?? { entries: {} },
-      benchmarkRows,
-      prompt,
-      body: req.body,
-      contextEstimate,
-      hints,
-      liveProvider: primary,
-      liveModel: primaryModel
-    });
-    // Bound to this request's task profile so telemetry accumulates per
-    // (provider, model, execution profile, task shape) — see Phase 6.
-    const recordAttemptOutcome = routingIntelligence?.recordOutcome
-      ? (observation) => {
-          const profile = parseExecutionProfile(observation.provider, observation.providerModelId);
-          routingIntelligence.recordOutcome({
-            ...observation,
-            executionProfile: profile.executionProfile,
-            taskProfile: shadowOutcome?.taskProfile ?? null,
-            structuredOutputRequired: requiresJsonValidation(req.body)
-          });
-        }
-      : undefined;
-
-    if (shadowOutcome?.shadow?.winner) {
-      const w = shadowOutcome.shadow.winner;
+      primary = route.winner.provider;
+      primaryModel = plan[0]?.registryModel ?? route.winner.providerModelId;
+      const routeReasonCode = route.reasonCode;
+      const usesProviderDefault = Boolean(plan[0]?.providerDefault);
+      // Matched for just the selected model rather than re-annotating the
+      // whole registry — one lookup instead of one per candidate.
+      const primaryBenchmark = benchmarkRows.length ? matchBenchmarkRow(primaryModel, benchmarkRows) : null;
       res.set({
-        // Advisory only — clients must not route on these, and PARAGON does
-        // not either while mode is "shadow".
-        "X-Paragon-Shadow-Provider": w.provider,
-        "X-Paragon-Shadow-Model": w.providerModelId,
-        "X-Paragon-Shadow-Reasoning-Effort": w.reasoningEffort,
-        "X-Paragon-Shadow-Agrees": String(Boolean(shadowOutcome.record?.agrees))
+        "X-Paragon-Route-Reason": routeReasonCode,
+        "X-Paragon-Route-Model": usesProviderDefault ? "provider-default" : primaryModel || "",
+        "X-Paragon-Model-State": usesProviderDefault ? "exposed-default" : route.winner.modelState ?? "unknown",
+        "X-Paragon-Routing-Priority": route.priority,
+        "X-Paragon-Benchmark-Match": primaryBenchmark?.matchMethod ?? "none"
       });
-    }
+      const started = Date.now();
 
-    // Master switch: orchestration.enabled === false means no telemetry at
-    // all, not even correlation headers — distinct from mode:"off", which
-    // still records correlation/run/session state but suppresses governor
-    // decisions and live enforcement (see evaluateShadowGovernor and
-    // liveEnforcement.js). See docs/operations/ORCHESTRATION_OBSERVABILITY.md
-    // for the full enabled/off/live semantics (PARAGON-D-002A, PARAGON-D-003R).
-    const orchestrationActive = Boolean(orchestration && policy?.enabled);
-    const telemetry = orchestrationActive
-      ? await safely(() => orchestration.beginRequest(req.headers, req.body))
-      : null;
-    if (telemetry) {
-      res.set(telemetry.responseHeaders);
-      await safely(() =>
-        orchestration.recordRoute(telemetry.run.id, { provider: primary, model: primaryModel, routeClassification: task, fallbackPosition: 0 })
+      // The plan is a decision, not an execution. The provider-model that
+      // actually ran is recorded separately, after a response exists.
+      routing?.routeActivity?.recordPlanned({
+        taskType: task,
+        priority: route.priority,
+        attemptPlan: route.attemptPlanSummary
+      });
+
+      // Bound to this request's profile so telemetry accumulates per
+      // (provider, model, execution profile, task shape).
+      const recordAttemptOutcome = routing?.recordOutcome
+        ? (observation) => {
+            routing.recordOutcome({
+              ...observation,
+              taskProfile,
+              structuredOutputRequired: requiresJsonValidation(req.body)
+            });
+          }
+        : undefined;
+
+      if (telemetry) {
+        await safely(() =>
+          orchestration.recordRoute(telemetry.run.id, { provider: primary, model: primaryModel, routeClassification: task, fallbackPosition: 0 })
+        );
+      }
+
+      // --- Candidate-dependent enforcement, checked before any dispatch.
+      if (isLive) {
+        plan = applyFallbackLimit(policy, filterOpenCircuits(plan));
+        if (!plan.length) {
+          const message = "No providers available: all candidates are past the fallback limit or circuit-open.";
+          const circuitAllOpen = { reasonCode: "circuitBreaker.allOpen", message };
+          addLog({ type: "enforcement", provider: primary, level: "error", message });
+          await recordEnforcementDecision(orchestration, telemetry, circuitAllOpen);
+          if (telemetry) {
+            await safely(() =>
+              orchestration.finishRequest(telemetry, { success: false, provider: primary, errorClassification: "UNKNOWN", errorDiagnostic: message })
+            );
+          }
+          enforcementErrorResponse(res, circuitAllOpen, 503);
+          return;
+        }
+      }
+
+      logParagonRequest(
+        req.body.stream
+          ? `POST /v1/chat/completions (stream) · task ${task} → ${primary}`
+          : `POST /v1/chat/completions · task ${task} → ${primary}`,
+        { provider: primary }
       );
-    }
 
-    const isLive = policy?.mode === "live";
+      addLog({
+        type: "route",
+        provider: primary,
+        level: "info",
+        message: `Task ${task} -> ${primary} (${primaryModel || "default"}) [${routeReasonCode}, priority ${route.priority}]`
+      });
 
-    // --- Live enforcement gates, checked before any provider is dispatched.
-    // Each blocking condition finishes the telemetry run as a bounded
-    // failure (so it's visible in Activity/Governor Actions) and returns an
-    // OpenAI-compatible structured error — nothing here is a proposal.
-    if (isLive && telemetry?.enforcement) {
-      const { reasonCode, message, rolloverRequired } = telemetry.enforcement;
-      addLog({ type: "enforcement", provider: primary, level: "warn", message: `${reasonCode}: ${message}` });
-      await safely(() =>
-        orchestration.finishRequest(telemetry, { success: false, provider: primary, errorClassification: "CANCELLED", errorDiagnostic: message })
-      );
-      enforcementErrorResponse(res, { reasonCode, message: rolloverRequired ? `${message} A new session is required.` : message });
-      return;
-    }
-
-    if (isLive) {
-      const contextCheck = checkContextCeiling(policy, telemetry?.contextEstimate?.estimatedInputTokens ?? 0);
-      if (contextCheck.blocked) {
-        addLog({ type: "enforcement", provider: primary, level: "warn", message: `${contextCheck.reasonCode}: ${contextCheck.message}` });
-        await recordEnforcementDecision(orchestration, telemetry, contextCheck);
-        if (telemetry) {
-          await safely(() =>
-            orchestration.finishRequest(telemetry, { success: false, provider: primary, errorClassification: "CANCELLED", errorDiagnostic: contextCheck.message })
-          );
-        }
-        enforcementErrorResponse(res, contextCheck, 400);
-        return;
+      if (isLive) {
+        beginExecution();
       }
 
-      const concurrencyCheck = checkConcurrency(policy);
-      if (concurrencyCheck.blocked) {
-        addLog({ type: "enforcement", provider: primary, level: "warn", message: `${concurrencyCheck.reasonCode}: ${concurrencyCheck.message}` });
-        await recordEnforcementDecision(orchestration, telemetry, concurrencyCheck);
-        if (telemetry) {
-          await safely(() =>
-            orchestration.finishRequest(telemetry, { success: false, provider: primary, errorClassification: "CANCELLED", errorDiagnostic: concurrencyCheck.message })
-          );
-        }
-        enforcementErrorResponse(res, concurrencyCheck, 429);
-        return;
-      }
-
-      attempts = applyFallbackLimit(policy, filterOpenCircuits(attempts));
-      if (!attempts.length) {
-        const message = "No providers available: all candidates are past the fallback limit or circuit-open.";
-        const circuitAllOpen = { reasonCode: "circuitBreaker.allOpen", message };
-        addLog({ type: "enforcement", provider: primary, level: "error", message });
-        await recordEnforcementDecision(orchestration, telemetry, circuitAllOpen);
-        if (telemetry) {
-          await safely(() =>
-            orchestration.finishRequest(telemetry, { success: false, provider: primary, errorClassification: "UNKNOWN", errorDiagnostic: message })
-          );
-        }
-        enforcementErrorResponse(res, circuitAllOpen, 503);
-        return;
-      }
-    }
-
-    logParagonRequest(
-      req.body.stream
-        ? `POST /v1/chat/completions (stream) · task ${task} → ${primary}`
-        : `POST /v1/chat/completions · task ${task} → ${primary}`,
-      { provider: primary }
-    );
-
-    addLog({
-      type: "route",
-      provider: primary,
-      level: "info",
-      message: `Task ${task} -> ${primary} (${primaryModel || "default"}) [${routeReasonCode}]`
-    });
-
-    if (isLive) {
-      beginExecution();
-    }
-
-    try {
-      if (req.body.stream) {
-        await streamCompletion({ res, config, policy, isLive, attempts, prompt, started, orchestration, telemetry, cwd: runtimeDir, catalogStore, recordOutcome: recordAttemptOutcome, onExecuted: recordExecutedRoute });
-        return;
-      }
-
-      let { provider, result } = await runWithFallback(attempts, prompt, {
+      const planContext = {
         orchestration,
         runId: telemetry?.run.id,
         policy,
         isLive,
         cwd: runtimeDir,
         catalogStore,
-        recordOutcome: recordAttemptOutcome
-      });
-      let content = sanitizeAssistantContent(result.stdout);
+        recordOutcome: recordAttemptOutcome,
+        routing,
+        // Only meaningful when the caller actually asked for structured output;
+        // otherwise there is no contract to check and compliance stays unrecorded.
+        validateResponse: requiresJsonValidation(req.body)
+          ? (stdout) => isValidJson(sanitizeAssistantContent(stdout))
+          : undefined
+      };
 
-      // Validation-driven escalation (PARAGON-D-004), kept distinct from
-      // service-failure fallback above: PARAGON is a completion proxy with
-      // no test-execution loop, so this is the one output contract it can
-      // honestly check today — did the response satisfy the structured-
-      // output format the caller actually asked for. Streaming responses
-      // are not covered (can't validate before the stream is already
-      // delivered to the caller).
-      if (requiresJsonValidation(req.body) && !hints.disableEscalation && !isValidJson(content)) {
-        const triedIndex = attempts.findIndex((a) => a.name === provider);
-        const remaining = attempts.slice(triedIndex + 1);
-        if (remaining.length) {
-          addLog({
-            type: "escalation",
-            provider,
-            level: "warn",
-            message: `${provider} response failed json validation — escalating to ${remaining[0].name} (distinct from service-failure fallback)`
-          });
-          try {
-            const escalated = await runWithFallback(remaining, prompt, {
-              orchestration,
-              runId: telemetry?.run.id,
-              policy,
-              isLive,
-              cwd: runtimeDir,
-              catalogStore,
-              recordOutcome: recordAttemptOutcome
-            });
-            provider = escalated.provider;
-            result = escalated.result;
-            content = sanitizeAssistantContent(result.stdout);
-          } catch {
+      try {
+        if (req.body.stream) {
+          await streamCompletion({ res, config, plan, prompt, started, orchestration, telemetry, planContext, routing, task });
+          return;
+        }
+
+        let outcome = await runPlan(plan, prompt, planContext);
+        let content = sanitizeAssistantContent(outcome.result.stdout);
+
+        // Validation-driven escalation, kept distinct from service-failure
+        // fallback: PARAGON is a completion proxy with no test-execution loop,
+        // so this is the one output contract it can honestly check — did the
+        // response satisfy the structured-output format the caller asked for.
+        // Streaming responses are not covered (can't validate before the
+        // stream is already delivered).
+        if (requiresJsonValidation(req.body) && !hints.disableEscalation && !isValidJson(content)) {
+          const remaining = outcome.remainingPlan;
+          if (remaining.length) {
             addLog({
               type: "escalation",
-              provider,
-              level: "error",
-              message: "Escalation candidates exhausted — returning the original response despite failed json validation."
+              provider: outcome.provider,
+              level: "warn",
+              message: `${outcome.provider} response failed json validation — escalating to ${remaining[0].name} (distinct from service-failure fallback)`
             });
+            try {
+              const escalated = await runPlan(remaining, prompt, planContext);
+              outcome = { ...escalated, escalated: true, fallback: true, recoveredFrom: outcome.provider };
+              content = sanitizeAssistantContent(escalated.result.stdout);
+            } catch {
+              addLog({
+                type: "escalation",
+                provider: outcome.provider,
+                level: "error",
+                message: "Escalation candidates exhausted — returning the original response despite failed json validation."
+              });
+            }
           }
         }
-      }
 
-      const durationMs = Date.now() - started;
-      recordExecutedRoute(provider);
-      logParagonRequest(
-        `POST /v1/chat/completions → 200 (${durationMs}ms) via ${provider}${provider !== primary ? ` (routed ${primary})` : ""}`,
-        { provider }
-      );
-      if (telemetry) {
-        await safely(() =>
-          orchestration.finishRequest(telemetry, {
-            success: true,
-            provider,
-            model: attempts.find((a) => a.name === provider)?.config?.model ?? config.providers[provider]?.model,
-            fallbackPosition: attempts.findIndex((a) => a.name === provider),
-            responseText: content,
-            contextEstimate: telemetry.contextEstimate
-          })
+        const durationMs = Date.now() - started;
+        recordSuccessfulRoute({ routing, outcome, durationMs, plan });
+        logParagonRequest(
+          `POST /v1/chat/completions → 200 (${durationMs}ms) via ${outcome.provider}${outcome.provider !== primary ? ` (routed ${primary})` : ""}`,
+          { provider: outcome.provider }
         );
-      }
-      res.json(
-        chatCompletion({
-          model: config.server.exposedModel,
-          content,
-          durationMs,
-          provider,
-          routedProvider: primary
-        })
-      );
-    } catch (error) {
-      logParagonRequest(`POST /v1/chat/completions → ${res.statusCode ?? 500}`, {
-        level: "error",
-        provider: primary
-      });
-      addLog({
-        type: "error",
-        provider: primary,
-        level: "error",
-        message: error.message
-      });
-      if (telemetry) {
-        await safely(() =>
-          orchestration.finishRequest(telemetry, {
-            success: false,
-            provider: primary,
-            errorClassification: classifyError(error),
-            errorDiagnostic: boundedDiagnostic(error),
-            timeout: classifyError(error) === "TIMEOUT"
-          })
-        );
-      }
-      res.status(500).json({
-        error: {
-          message: CLIENT_ERROR_MESSAGE,
-          type: "paragon_provider_error",
-          provider: primary
+        if (telemetry) {
+          await safely(() =>
+            orchestration.finishRequest(telemetry, {
+              success: true,
+              provider: outcome.provider,
+              model: outcome.attempt.registryModel,
+              fallbackPosition: outcome.fallbackPosition,
+              responseText: content,
+              contextEstimate: telemetry.contextEstimate
+            })
+          );
         }
-      });
-    } finally {
-      if (isLive) {
-        endExecution();
+        res.json(
+          chatCompletion({
+            model: config.server.exposedModel,
+            content,
+            durationMs,
+            provider: outcome.provider,
+            routedProvider: primary,
+            usage: outcome.usage
+          })
+        );
+      } catch (error) {
+        logParagonRequest(`POST /v1/chat/completions → ${res.statusCode ?? 500}`, {
+          level: "error",
+          provider: primary
+        });
+        addLog({
+          type: "error",
+          provider: primary,
+          level: "error",
+          message: error.message
+        });
+        routing?.routeActivity?.recordRequest({
+          success: false,
+          provider: error.lastProvider ?? primary,
+          model: error.lastModel ?? primaryModel,
+          durationMs: Date.now() - started,
+          failureReason: error.friendlyReason ?? friendlyFailureReason(error.lastClassification, error.lastProvider ?? primary)
+        });
+        if (telemetry) {
+          await safely(() =>
+            orchestration.finishRequest(telemetry, {
+              success: false,
+              provider: primary,
+              errorClassification: classifyError(error),
+              errorDiagnostic: boundedDiagnostic(error),
+              timeout: classifyError(error) === "TIMEOUT"
+            })
+          );
+        }
+        res.status(500).json({
+          error: {
+            message: CLIENT_ERROR_MESSAGE,
+            type: "paragon_provider_error",
+            provider: primary
+          }
+        });
+      } finally {
+        if (isLive) {
+          endExecution();
+        }
       }
-    }
     } finally {
       releaseIsolatedRuntimeDir(runtimeDir);
     }
   });
 }
 
-/**
- * RUN vs ATTEMPT: one call to this function serves one PARAGON request
- * (`run`). Each provider it tries within the configured fallback chain is
- * a separate `attempt`, individually timed and classified — this is what
- * lets orchestration telemetry answer "which specific provider failed,
- * when, and why" rather than only "which provider eventually succeeded"
- * (PARAGON-D-002A). Provider order, selection, and retry policy are
- * unchanged from before this instrumentation existed.
- */
-async function runWithFallback(attempts, prompt, { onChunk, orchestration, runId, policy, isLive, cwd, catalogStore, recordOutcome } = {}) {
-  let lastError;
+/** Records the executed route plus the product-facing activity event. */
+function recordSuccessfulRoute({ routing, outcome, durationMs, plan }) {
+  routing?.routeActivity?.recordExecuted({
+    provider: outcome.provider,
+    model: outcome.attempt.providerDefault ? "provider-default" : outcome.attempt.registryModel,
+    providerDefault: Boolean(outcome.attempt.providerDefault)
+  });
+  const firstFailure = outcome.failures[0] ?? null;
+  routing?.routeActivity?.recordRequest({
+    success: true,
+    provider: outcome.provider,
+    model: outcome.attempt.providerDefault ? "provider-default" : outcome.attempt.registryModel,
+    durationMs,
+    // Fallback is measured against what actually happened, not against the
+    // plan head, so a request that succeeded first try is never reported as a
+    // recovery and vice versa.
+    fallback: outcome.failures.length > 0,
+    recoveredFrom: firstFailure?.provider ?? null,
+    recoveredFromReason: firstFailure ? friendlyFailureReason(firstFailure.classification, firstFailure.provider) : null
+  });
+}
 
-  for (let index = 0; index < attempts.length; index += 1) {
-    const { name, config: providerConfig } = attempts[index];
+/**
+ * Executes a bounded attempt plan.
+ *
+ * RUN vs ATTEMPT: one call serves one PARAGON request (`run`). Each
+ * provider-model-profile it tries is a separate `attempt`, individually timed
+ * and classified.
+ *
+ * Failure handling is **classified**, which is what makes same-provider
+ * fallback possible: a model-specific rejection advances to the next eligible
+ * model from the same provider, while a provider-wide failure (auth, quota,
+ * entitlement, offline, misconfigured) abandons that provider's remaining
+ * attempts entirely. A failed attempt is never retried within one request
+ * beyond its bounded retry budget, so no provider-model is ever executed twice.
+ */
+async function runPlan(initialPlan, prompt, context = {}) {
+  const { onChunk, orchestration, runId, policy, isLive, cwd, catalogStore, recordOutcome, routing, validateResponse } = context;
+  const attemptKey = (attempt) => `${attempt.name}/${attempt.registryModel}/${attempt.executionProfile ?? "default"}`;
+
+  let plan = [...initialPlan];
+  const retries = new Map();
+  const failures = [];
+  let lastError;
+  let attemptIndex = 0;
+
+  while (plan.length) {
+    const attempt = plan[0];
+    const { name, config: providerConfig } = attempt;
+    const key = attemptKey(attempt);
     const pendingChunks = [];
-    const hasNext = index < attempts.length - 1;
 
     const attemptRecord =
       orchestration && runId
         ? await safely(() =>
-            orchestration.beginAttempt(runId, { provider: name, model: providerConfig.model, fallbackPosition: index })
+            orchestration.beginAttempt(runId, { provider: name, model: providerConfig.model, fallbackPosition: attemptIndex })
           )
         : null;
     const onSpawn = attemptRecord
@@ -609,7 +584,8 @@ async function runWithFallback(attempts, prompt, { onChunk, orchestration, runId
       : undefined;
 
     const attemptStartedAt = Date.now();
-    let firstChunkAt = null;
+    attemptIndex += 1;
+
     try {
       const result = await runProvider(
         name,
@@ -625,12 +601,12 @@ async function runWithFallback(attempts, prompt, { onChunk, orchestration, runId
         }
       }
 
-      if (index > 0) {
+      if (failures.length) {
         addLog({
           type: "fallback",
           provider: name,
           level: "info",
-          message: `Recovered using ${name} after ${attempts[index - 1].name} failed`
+          message: `Recovered using ${name}/${attempt.registryModel} after ${failures[failures.length - 1].provider} failed`
         });
       }
       if (attemptRecord) {
@@ -639,26 +615,45 @@ async function runWithFallback(attempts, prompt, { onChunk, orchestration, runId
       if (isLive) {
         recordProviderResult(policy, name, true);
       }
-      // PARAGON-D-004C: only an explicit model id can be attributed to a
-      // catalog entry — a request that ran on the provider's own default
-      // (empty providerConfig.model) has no specific model to validate.
+      // A success is authoritative recovery evidence for quota state — it
+      // outranks any parsed reset time, because the provider just served.
+      routing?.quotaState?.recordSuccess(name);
+      // Only an explicit model id can be attributed to a catalog entry — a
+      // request that ran on the provider's own default has no specific model.
       if (catalogStore && providerConfig.model) {
         await safely(() => catalogStore.recordResult(name, providerConfig.model, { success: true }));
       }
-      // PARAGON-D-004D (Phase 6): bounded outcome observation. Counts,
-      // latencies and token estimates only — never prompt or response text.
+
+      // Real usage evidence from the provider itself, when it reported any.
+      const usage = result.usage ?? unknownUsage("provider returned no usage block");
       recordOutcome?.({
         provider: name,
-        providerModelId: providerConfig.model || attempts[index].registryModel || "",
+        providerModelId: providerConfig.model || attempt.registryModel || "",
+        executionProfile: attempt.executionProfile ?? "default",
         success: true,
         completionLatencyMs: Date.now() - attemptStartedAt,
-        firstTokenLatencyMs: firstChunkAt ? firstChunkAt - attemptStartedAt : null,
-        responseChars: typeof result?.stdout === "string" ? result.stdout.length : null
+        responseChars: typeof result?.stdout === "string" ? result.stdout.length : null,
+        usage,
+        // The *real* validation outcome, not an assumption. Hardcoding `true`
+        // here would have recorded a provider that returned prose to a
+        // json_object request as fully JSON-compliant, inverting the one
+        // quality signal PARAGON can actually measure.
+        structuredOutputValid: validateResponse ? validateResponse(result?.stdout) : undefined
       });
-      return { provider: name, result };
+
+      return {
+        provider: name,
+        attempt,
+        result,
+        usage,
+        failures,
+        fallbackPosition: failures.length,
+        remainingPlan: plan.slice(1)
+      };
     } catch (error) {
       pendingChunks.length = 0;
       lastError = error;
+      const classification = classifyModelFailure(error);
       addLog({
         type: "error",
         provider: name,
@@ -668,50 +663,106 @@ async function runWithFallback(attempts, prompt, { onChunk, orchestration, runId
       if (isLive) {
         recordProviderResult(policy, name, false);
       }
+
+      // Quota/entitlement exhaustion is provider-wide and durable: record it
+      // so this provider is excluded from *subsequent* requests until its
+      // known reset, not just skipped for the rest of this one.
+      if (PROVIDER_WIDE_FAILURES.has(classification)) {
+        routing?.quotaState?.recordQuotaFailure(name, {
+          classification,
+          detail: `${error.message ?? ""} ${error.stdout ?? ""} ${error.stderr ?? ""}`
+        });
+      }
+
+      routing?.routeActivity?.recordFailed({
+        provider: name,
+        model: attempt.registryModel,
+        reason: friendlyFailureReason(classification, name)
+      });
+
       if (catalogStore && providerConfig.model) {
         await safely(() =>
           catalogStore.recordResult(name, providerConfig.model, {
             success: false,
-            classification: classifyModelFailure(error)
+            classification
           })
         );
       }
       recordOutcome?.({
         provider: name,
-        providerModelId: providerConfig.model || attempts[index].registryModel || "",
+        providerModelId: providerConfig.model || attempt.registryModel || "",
+        executionProfile: attempt.executionProfile ?? "default",
         success: false,
-        failureClassification: classifyModelFailure(error),
-        completionLatencyMs: Date.now() - attemptStartedAt
+        failureClassification: classification,
+        completionLatencyMs: Date.now() - attemptStartedAt,
+        // A failed attempt reports no usage. Deliberately not zero — the
+        // telemetry store ignores null fields rather than averaging in a zero.
+        usage: error.usage ?? unknownUsage("attempt failed before reporting usage")
       });
+
+      const retriesUsed = retries.get(key) ?? 0;
+      const decision = planNextAfterFailure({
+        classification,
+        attempt,
+        remainingPlan: plan.slice(1),
+        retriesUsed
+      });
+
+      failures.push({ provider: name, model: attempt.registryModel, classification, action: decision.action });
+
       if (attemptRecord) {
+        const hasNext = decision.action === "retry" || plan.length > 1;
         await safely(() =>
           orchestration.finishAttempt(attemptRecord.id, {
             success: false,
             timeout: classifyError(error) === "TIMEOUT",
             errorClassification: classifyError(error),
             errorDiagnostic: boundedDiagnostic(error),
-            fallbackReason: hasNext ? `failed, falling back to ${attempts[index + 1].name}` : "all attempts exhausted",
+            fallbackReason: decision.reason,
             followedByAnotherAttempt: hasNext
           })
         );
       }
-      if (hasNext) {
+
+      if (decision.action === "retry") {
+        retries.set(key, retriesUsed + 1);
+        addLog({ type: "fallback", provider: name, level: "info", message: decision.reason });
+        continue;
+      }
+
+      // The classification decision is always recorded, even when it empties
+      // the plan. Logging it only when another attempt remained meant a
+      // provider-wide skip — the case most worth being able to audit — left no
+      // trace at all.
+      addLog({ type: "fallback", provider: name, level: "info", message: decision.reason });
+
+      // Always removes at least the failed attempt, so the loop makes progress
+      // and the same provider-model is never dispatched twice.
+      plan = applyFailureToPlan(plan, { attempt, classification });
+
+      if (plan.length) {
         addLog({
           type: "fallback",
-          provider: attempts[index + 1].name,
+          provider: plan[0].name,
           level: "info",
-          message: `Trying ${attempts[index + 1].name} after ${name} failed`
+          message: `Trying ${plan[0].name}/${plan[0].registryModel} after ${name} failed`
         });
       }
     }
   }
 
-  const detail = allProvidersFailedMessage(attempts, lastError);
-  addLog({ type: "error", provider: attempts[0]?.name, level: "error", message: detail });
-  throw new Error(CLIENT_ERROR_MESSAGE);
+  const detail = allProvidersFailedMessage(initialPlan, lastError);
+  addLog({ type: "error", provider: initialPlan[0]?.name, level: "error", message: detail });
+  const exhausted = new Error(CLIENT_ERROR_MESSAGE);
+  const last = failures[failures.length - 1];
+  exhausted.lastProvider = last?.provider ?? initialPlan[0]?.name ?? null;
+  exhausted.lastModel = last?.model ?? null;
+  exhausted.lastClassification = last?.classification ?? null;
+  exhausted.friendlyReason = last ? friendlyFailureReason(last.classification, last.provider) : null;
+  throw exhausted;
 }
 
-async function streamCompletion({ res, config, policy, isLive, attempts, prompt, started, orchestration, telemetry, cwd, catalogStore, recordOutcome, onExecuted }) {
+async function streamCompletion({ res, config, plan, prompt, started, orchestration, telemetry, planContext, routing, task }) {
   const id = `chatcmpl-${Date.now()}`;
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache, no-transform");
@@ -723,9 +774,9 @@ async function streamCompletion({ res, config, policy, isLive, attempts, prompt,
   };
 
   let roleSent = false;
-  // Bounded counters instead of `streamedText += chunk` — a multi-hundred-KB
-  // streamed response no longer means a second full copy held in memory
-  // purely for telemetry (PARAGON-D-002A).
+  // Bounded counters instead of accumulating the full text — a
+  // multi-hundred-KB streamed response no longer means a second full copy
+  // held in memory purely for telemetry.
   const responseAccumulator = createBoundedResponseAccumulator();
   const onChunk = (chunk) => {
     responseAccumulator.push(chunk);
@@ -749,21 +800,21 @@ async function streamCompletion({ res, config, policy, isLive, attempts, prompt,
   };
 
   try {
-    const { provider } = await runWithFallback(attempts, prompt, { onChunk, orchestration, runId: telemetry?.run.id, policy, isLive, cwd, catalogStore, recordOutcome });
+    const outcome = await runPlan(plan, prompt, { ...planContext, onChunk });
     const durationMs = Date.now() - started;
-    logParagonRequest(`POST /v1/chat/completions (stream) → 200 (${durationMs}ms) via ${provider}`, {
-      provider
+    logParagonRequest(`POST /v1/chat/completions (stream) → 200 (${durationMs}ms) via ${outcome.provider}`, {
+      provider: outcome.provider
     });
-    // PARAGON-D-004D1: the streaming path has its own fallback call, so the
-    // executed provider is only known here.
-    onExecuted?.(provider);
+    // The streaming path has its own plan execution, so the executed
+    // provider-model is only known here.
+    recordSuccessfulRoute({ routing, outcome, durationMs, plan });
     if (telemetry) {
       await safely(() =>
         orchestration.finishRequest(telemetry, {
           success: true,
-          provider,
-          model: attempts.find((a) => a.name === provider)?.config?.model ?? config.providers[provider]?.model,
-          fallbackPosition: attempts.findIndex((a) => a.name === provider),
+          provider: outcome.provider,
+          model: outcome.attempt.registryModel,
+          fallbackPosition: outcome.fallbackPosition,
           responseEstimate: responseAccumulator.finish()
         })
       );
@@ -774,20 +825,27 @@ async function streamCompletion({ res, config, policy, isLive, attempts, prompt,
       created: Math.floor(Date.now() / 1000),
       model: config.server.exposedModel,
       choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
-      paragon: { provider, durationMs: Date.now() - started }
+      paragon: { provider: outcome.provider, durationMs: Date.now() - started }
     });
     res.write("data: [DONE]\n\n");
     res.end();
   } catch (error) {
     logParagonRequest(`POST /v1/chat/completions (stream) → error`, {
       level: "error",
-      provider: attempts[0]?.name ?? "paragon"
+      provider: plan[0]?.name ?? "paragon"
+    });
+    routing?.routeActivity?.recordRequest({
+      success: false,
+      provider: error.lastProvider ?? plan[0]?.name ?? null,
+      model: error.lastModel ?? null,
+      durationMs: Date.now() - started,
+      failureReason: error.friendlyReason ?? friendlyFailureReason(error.lastClassification, error.lastProvider)
     });
     if (telemetry) {
       await safely(() =>
         orchestration.finishRequest(telemetry, {
           success: false,
-          provider: attempts[0]?.name ?? null,
+          provider: plan[0]?.name ?? null,
           errorClassification: classifyError(error),
           errorDiagnostic: boundedDiagnostic(error),
           timeout: classifyError(error) === "TIMEOUT",
@@ -829,7 +887,7 @@ async function streamCompletion({ res, config, policy, isLive, attempts, prompt,
   }
 }
 
-function chatCompletion({ model, content, durationMs, provider, routedProvider }) {
+function chatCompletion({ model, content, durationMs, provider, routedProvider, usage }) {
   return {
     id: `chatcmpl-${Date.now()}`,
     object: "chat.completion",
@@ -851,10 +909,19 @@ function chatCompletion({ model, content, durationMs, provider, routedProvider }
         finish_reason: "stop"
       }
     ],
+    // Real provider-reported usage when available. Zeros were previously
+    // hardcoded here; they are now only used when the provider genuinely
+    // reported nothing, and the honest `null`s are reported alongside so a
+    // client can tell "no reasoning" from "not reported".
     usage: {
-      prompt_tokens: 0,
-      completion_tokens: 0,
-      total_tokens: 0
+      prompt_tokens: usage?.inputTokens ?? 0,
+      completion_tokens: usage?.visibleOutputTokens ?? 0,
+      total_tokens: usage?.totalBilledTokens ?? 0,
+      ...(usage?.reasoningTokens != null
+        ? { completion_tokens_details: { reasoning_tokens: usage.reasoningTokens } }
+        : {}),
+      paragon_usage_source: usage?.usageSource ?? "unknown",
+      paragon_usage_confidence: usage?.usageConfidence ?? "none"
     }
   };
 }

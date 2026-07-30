@@ -90,13 +90,20 @@ test("every chat completion response reports which route/model was actually chos
 });
 
 test("x-paragon-force-provider hint is honored and visible in telemetry, even in a fresh unauthenticated sandbox", async () => {
+  // Forces the local fixture provider rather than a real CLI. A forced route is
+  // health-gated, and provider health here comes from actually probing the
+  // installed CLI — under parallel test load that probe can legitimately
+  // report unhealthy, which made this assertion flaky for reasons unrelated to
+  // the hint being honored.
   const res = await fetch(`${BASE}/v1/chat/completions`, {
     method: "POST",
-    headers: authHeaders({ "X-Paragon-Force-Provider": "codex" }),
+    headers: authHeaders({ "X-Paragon-Force-Provider": "forceme" }),
     body: JSON.stringify({ model: "paragon", messages: [{ role: "user", content: "hello" }] })
   });
   assert.equal(res.headers.get("x-paragon-route-reason"), "hint.forceProvider");
-  await res.json().catch(() => {});
+  assert.equal(res.headers.get("x-paragon-route-model"), "fixture-model");
+  const body = await res.json();
+  assert.equal(body.paragon.provider, "forceme", "the forced provider must be the one that executed");
 });
 
 test("antigravity can be chosen by automatic routing once it has a real candidate model, and forcing it still works too", async () => {
@@ -110,9 +117,8 @@ test("antigravity can be chosen by automatic routing once it has a real candidat
   config.providers.antigravity.models = [{ id: "antigravity-test-model", name: "antigravity-test-model" }];
   config.providers.antigravity.model = "antigravity-test-model";
   // Bias every task route toward antigravity.
-  for (const task of Object.keys(config.routing.taskRoutes)) {
-    config.routing.taskRoutes[task] = "antigravity";
-  }
+  // Automatic routing consumes no provider preference; eligibility comes from
+  // the seeded catalog alone.
   await fetch(`${BASE}/api/config`, { method: "PUT", headers: authHeaders(), body: JSON.stringify(config) });
 
   const res = await fetch(`${BASE}/v1/chat/completions`, {
@@ -120,7 +126,7 @@ test("antigravity can be chosen by automatic routing once it has a real candidat
     headers: authHeaders(),
     body: JSON.stringify({ model: "paragon", messages: [{ role: "user", content: "implement a function" }] })
   });
-  assert.equal(res.headers.get("x-paragon-route-reason"), "scored.deterministic");
+  assert.equal(res.headers.get("x-paragon-route-reason"), "automatic.expectedUtility");
   // Asserts the *routing decision*, not the provider that ultimately
   // answered: the real antigravity CLI is not usable in a hermetic sandbox,
   // so execution correctly falls back to another eligible provider and

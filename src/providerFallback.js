@@ -1,14 +1,12 @@
-// PARAGON-D-004C1 (P0-1) removed buildProviderAttempts(). It constructed a
-// fallback chain from routing.fallbackChain + providerConfig.model, which
-// bypassed catalog eligibility, the cost ceiling, and the chat-capability
-// gate — it could dispatch a configured model the catalog had already
-// rejected. Every attempt chain now comes from buildRankedAttempts() over
-// the eligible registry (src/routing/router.js); an empty eligible set is a
-// bounded 503 rather than a silently weakened constraint.
+// There is no static fallback chain. Every attempt comes from the per-request
+// ranked attempt plan built over the eligible catalog
+// (src/routing/automaticRouting.js), and an empty eligible set is a bounded
+// 503 rather than a silently weakened constraint.
 //
-// routing.fallbackChain / routing.defaultProvider remain in config as
-// operator preference inputs to scoring (routing.taskRoutes is scored in
-// scoreCandidate); they are no longer an independent dispatch path.
+// PARAGON-D-004E removed the last remnants of the old dispatch path from the
+// schema entirely: routing.defaultProvider, routing.fallbackChain,
+// routing.taskRoutes and providers.*.model no longer exist, so there is no
+// configured value left that could reintroduce an unvalidated route.
 
 export const CLIENT_ERROR_MESSAGE =
   "I couldn't complete that request right now. Please try again in a moment.";

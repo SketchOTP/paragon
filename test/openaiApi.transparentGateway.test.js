@@ -73,11 +73,9 @@ test.before(async () => {
     models: [{ id: "fixture-model", name: "fixture-model" }],
     timeoutMs: 10000
   };
-  for (const t of Object.keys(config.routing.taskRoutes)) {
-    config.routing.taskRoutes[t] = "echocwd";
-  }
-  config.routing.defaultProvider = "echocwd";
-  config.routing.fallbackChain = ["echocwd"];
+  // No routing coercion needed: the seeded catalog contains only this fixture
+  // provider, so automatic routing has exactly one eligible candidate. The
+  // legacy taskRoutes/defaultProvider/fallbackChain fields no longer exist.
   await fetch(`${BASE}/api/config`, { method: "PUT", headers: authHeaders(), body: JSON.stringify(config) });
 });
 

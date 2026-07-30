@@ -46,7 +46,13 @@ function healthOf(statuses, provider) {
  * the card can say "disabled" rather than silently showing zeros that look
  * like a failure.
  */
-export function buildProviderRoutingSummaries(config, statuses = {}, catalog = null, activity = null, { ttlHours: ttlOverride, now = Date.now() } = {}) {
+export function buildProviderRoutingSummaries(
+  config,
+  statuses = {},
+  catalog = null,
+  activity = null,
+  { ttlHours: ttlOverride, now = Date.now(), quotaState = null } = {}
+) {
   const ttlHours = ttlOverride ?? config?.modelCatalog?.validationTtlHours ?? 24;
   const summaries = [];
 
@@ -121,15 +127,16 @@ export function buildProviderRoutingSummaries(config, statuses = {}, catalog = n
         validated: providerDefaultValidated,
         eligible: defaultEntry ? isEligibleNow(defaultEntry, { ttlHours, now }) : false
       },
-      lastLiveModel: activity?.lastLive?.(provider) ?? null,
-      lastShadowModel: activity?.lastShadow?.(provider) ?? null,
+      /** The provider-model that actually returned a response most recently. */
+      lastExecutedModel: activity?.lastExecuted?.(provider) ?? null,
+      /** The most recent failure, kept distinct so a failure is never shown as usage. */
+      lastFailure: activity?.lastFailure?.(provider) ?? null,
       /**
-       * Retained for transparency about the deprecated field's stored value —
-       * explicitly labeled so the dashboard can show it as compatibility
-       * state rather than an active selection. Never presented as the model
-       * the provider will use.
+       * Present only while the provider's allowance is observably spent, with
+       * the reset instant when the provider told us one. This is what turns a
+       * card from "Ready" into "Needs attention" for a quota condition.
        */
-      deprecatedConfiguredModel: providerConfig?.model || null,
+      usageLimit: quotaState?.state?.(provider) ?? null,
       selection: "automatic-per-request"
     });
   }

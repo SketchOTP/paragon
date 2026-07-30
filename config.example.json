@@ -1,4 +1,5 @@
 {
+  "configVersion": 3,
   "server": {
     "host": "127.0.0.1",
     "port": 4117,
@@ -16,7 +17,6 @@
       "icon": "🧠",
       "enabled": true,
       "command": "claude",
-      "model": "sonnet",
       "models": [],
       "timeoutMs": 300000
     },
@@ -26,7 +26,6 @@
       "icon": "⚡",
       "enabled": true,
       "command": "codex",
-      "model": "",
       "models": [],
       "timeoutMs": 300000
     },
@@ -36,7 +35,6 @@
       "icon": "🖱️",
       "enabled": false,
       "command": "cursor-agent",
-      "model": "sonnet-4",
       "models": [],
       "timeoutMs": 300000
     },
@@ -46,7 +44,6 @@
       "icon": "✨",
       "enabled": false,
       "command": "gemini",
-      "model": "auto",
       "models": [],
       "timeoutMs": 300000
     },
@@ -57,22 +54,11 @@
       "enabled": false,
       "baseUrl": "http://127.0.0.1:11434/v1",
       "apiKey": "",
-      "model": "llama3.2",
       "models": [],
       "timeoutMs": 300000
     }
   },
   "routing": {
-    "defaultProvider": "codex",
-    "fallbackChain": ["codex", "ollama-local"],
-    "taskRoutes": {
-      "code": "codex",
-      "debug": "codex",
-      "review": "codex",
-      "plan": "claude",
-      "explain": "codex",
-      "docs": "claude",
-      "quick": "codex"
-    }
+    "priority": "balanced"
   }
 }

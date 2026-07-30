@@ -62,17 +62,37 @@ function emptyEntry() {
     observedVisibleOutputTokens: null,
     observedReasoningTokens: null,
     observedTotalBilledTokens: null,
+    observedMonetaryCost: null,
     averageQuotaBurn: null,
+    // Usage-evidence provenance (PARAGON-D-004E, Phase 1).
+    usageSource: null,
+    usageConfidence: null,
+    usageObservationCount: 0,
+    usageUnknownCount: 0,
     lastSuccessAt: null,
     lastFailureAt: null,
     sampleCount: 0
   };
 }
 
+/**
+ * PARAGON-D-004E: `next` must be pre-filtered through numberOrNull(). Passing
+ * a raw `Number(undefined_field)` here was a real defect — `Number(null)` is
+ * `0`, which is finite, so a provider that reported no usage had zeros averaged
+ * into its observed-token means. That made unknown usage look like free usage,
+ * which is exactly what the activation gate forbids.
+ */
 function ewma(previous, next) {
-  if (!Number.isFinite(next)) return previous;
+  if (next == null || !Number.isFinite(next)) return previous;
   if (previous == null || !Number.isFinite(previous)) return next;
   return previous * (1 - EWMA_ALPHA) + next * EWMA_ALPHA;
+}
+
+/** null for absent/non-numeric, so absence is never coerced to zero. */
+function numberOrNull(value) {
+  if (value == null) return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
 }
 
 function bucketIndex(ms) {
@@ -166,12 +186,22 @@ export function recordOutcome(store, observation) {
     if (cl != null) entry.completionLatencyBuckets[cl] += 1;
 
     const usage = observation.usage ?? {};
-    entry.observedInputTokens = ewma(entry.observedInputTokens, Number(usage.inputTokens));
-    entry.observedVisibleOutputTokens = ewma(entry.observedVisibleOutputTokens, Number(usage.visibleOutputTokens));
-    entry.observedReasoningTokens = ewma(entry.observedReasoningTokens, Number(usage.reasoningTokens));
-    entry.observedTotalBilledTokens = ewma(entry.observedTotalBilledTokens, Number(usage.totalBilledTokens));
-    if (Number.isFinite(Number(observation.quotaBurn))) {
-      entry.averageQuotaBurn = ewma(entry.averageQuotaBurn, Number(observation.quotaBurn));
+    entry.observedInputTokens = ewma(entry.observedInputTokens, numberOrNull(usage.inputTokens));
+    entry.observedVisibleOutputTokens = ewma(entry.observedVisibleOutputTokens, numberOrNull(usage.visibleOutputTokens));
+    entry.observedReasoningTokens = ewma(entry.observedReasoningTokens, numberOrNull(usage.reasoningTokens));
+    entry.observedTotalBilledTokens = ewma(entry.observedTotalBilledTokens, numberOrNull(usage.totalBilledTokens));
+    entry.observedMonetaryCost = ewma(entry.observedMonetaryCost, numberOrNull(usage.monetaryCost));
+    entry.averageQuotaBurn = ewma(entry.averageQuotaBurn, numberOrNull(observation.quotaBurn));
+
+    // Provenance of the token accounting above, so the scorer and Diagnostics
+    // can distinguish "measured" from "never reported" instead of inferring it
+    // from a zero.
+    if (usage.usageSource && usage.usageSource !== "unknown") {
+      entry.usageSource = usage.usageSource;
+      entry.usageConfidence = usage.usageConfidence ?? null;
+      entry.usageObservationCount = (entry.usageObservationCount ?? 0) + 1;
+    } else {
+      entry.usageUnknownCount = (entry.usageUnknownCount ?? 0) + 1;
     }
 
     store.entries[key] = entry;
@@ -239,7 +269,12 @@ export function readTelemetry(store, selector, { minimumSamplesForMeasuredEstima
     observedVisibleOutputTokens: chosen.observedVisibleOutputTokens,
     observedReasoningTokens: chosen.observedReasoningTokens,
     observedTotalBilledTokens: chosen.observedTotalBilledTokens,
+    observedMonetaryCost: chosen.observedMonetaryCost ?? null,
     averageQuotaBurn: chosen.averageQuotaBurn,
+    usageSource: chosen.usageSource ?? null,
+    usageConfidence: chosen.usageConfidence ?? null,
+    usageObservationCount: chosen.usageObservationCount ?? 0,
+    usageUnknownCount: chosen.usageUnknownCount ?? 0,
     lastSuccessAt: chosen.lastSuccessAt,
     lastFailureAt: chosen.lastFailureAt,
     source: chosen === specific ? "task_specific" : "model_wide"

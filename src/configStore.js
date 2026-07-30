@@ -1,7 +1,12 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { generateApiKey } from "./auth.js";
-import { migrateToParagon, migrateOrchestrationMode } from "./configMigrate.js";
+import {
+  migrateOrchestrationMode,
+  migrateRoutingSchema,
+  migrateToParagon,
+  needsRoutingSchemaMigration
+} from "./configMigrate.js";
 import { BUILTIN_PROVIDERS, defaultConfig } from "./defaultConfig.js";
 import { getEnv } from "./env.js";
 import { mergeOrchestrationConfig } from "./orchestration/governorPolicy.js";
@@ -28,12 +33,8 @@ export function mergeConfig(base, incoming) {
     ...incoming,
     server: { ...base.server, ...incoming?.server },
     providers: mergeProviders(base.providers, incoming?.providers),
-    routing: {
-      ...base.routing,
-      ...incoming?.routing,
-      taskRoutes: { ...base.routing.taskRoutes, ...incoming?.routing?.taskRoutes },
-      fallbackChain: incoming?.routing?.fallbackChain ?? base.routing.fallbackChain
-    },
+    routing: { ...base.routing, ...incoming?.routing },
+    automaticRouting: { ...base.automaticRouting, ...incoming?.automaticRouting },
     orchestration: mergeOrchestrationConfig(base.orchestration, incoming?.orchestration),
     integrations: { ...base.integrations, ...incoming?.integrations }
   };
@@ -79,12 +80,68 @@ async function ensureApiKey(config, persist) {
   return next;
 }
 
+/**
+ * Writes a timestamped, full copy of the config exactly as it exists on disk,
+ * before anything rewrites it. This is the rollback artifact the activation
+ * gate requires: Git covers code, this covers the operator's own state.
+ *
+ * Returns the backup path, or null when there was nothing to back up. A
+ * backup failure is fatal to the migration by design — migrating without a
+ * rollback point is the one thing the directive forbids outright.
+ */
+export async function backupConfigFile(rawContents, { now = new Date() } = {}) {
+  if (!rawContents) {
+    return null;
+  }
+  const stamp = now.toISOString().replace(/[:.]/g, "-");
+  const backupPath = path.join(dataDir, `config.backup.${stamp}.json`);
+  await fs.mkdir(dataDir, { recursive: true });
+  await fs.writeFile(backupPath, rawContents, "utf8");
+  return backupPath;
+}
+
+/**
+ * Runs the v3 routing-schema migration atomically: back up the original file,
+ * log every removed field and its previous value, then write the migrated
+ * config through the normal atomic path. Nothing is removed before the backup
+ * exists on disk.
+ */
+async function applyRoutingSchemaMigration(config, rawContents) {
+  const { config: migrated, removed, changed } = migrateRoutingSchema(config);
+  if (!changed) {
+    return config;
+  }
+
+  const backupPath = await backupConfigFile(rawContents);
+  if (backupPath) {
+    console.log(`PARAGON config migration: backed up previous config to ${backupPath}`);
+  }
+  for (const entry of removed) {
+    console.log(
+      `PARAGON config migration: removed ${entry.path} (was ${JSON.stringify(entry.previousValue)}) — superseded by automatic routing`
+    );
+  }
+
+  await fs.mkdir(dataDir, { recursive: true });
+  const tmp = `${configPath}.${process.pid}.tmp`;
+  await fs.writeFile(tmp, `${JSON.stringify(migrated, null, 2)}\n`, "utf8");
+  await fs.rename(tmp, configPath);
+  console.log(`PARAGON config migration: schema now at version ${migrated.configVersion}`);
+  return migrated;
+}
+
 export async function readConfig() {
   let config;
   try {
     const raw = await fs.readFile(configPath, "utf8");
-    config = mergeConfig(defaultConfig, JSON.parse(raw));
+    const parsed = JSON.parse(raw);
+    config = mergeConfig(defaultConfig, parsed);
     config = migrateToParagon(migrateOrchestrationMode(config));
+    // Migrate against the *parsed file*, not the default-merged view: merging
+    // would have already supplied v3 defaults and hidden the legacy fields.
+    if (needsRoutingSchemaMigration(parsed)) {
+      config = await applyRoutingSchemaMigration(config, raw);
+    }
     config = await ensureApiKey(config, false);
   } catch (error) {
     if (error.code !== "ENOENT") {
@@ -99,9 +156,15 @@ export async function readConfig() {
 
 export async function writeConfig(nextConfig) {
   const merged = migrateToParagon(migrateOrchestrationMode(mergeConfig(defaultConfig, nextConfig)));
+  // A dashboard save must not be able to reintroduce a removed field, whatever
+  // the client posted.
+  const { config: sanitized } = migrateRoutingSchema(merged);
   await fs.mkdir(dataDir, { recursive: true });
-  await fs.writeFile(configPath, `${JSON.stringify(merged, null, 2)}\n`, "utf8");
-  return applyEnvOverrides(merged);
+  // Atomic: a crash mid-write must never truncate the operator's config.
+  const tmp = `${configPath}.${process.pid}.tmp`;
+  await fs.writeFile(tmp, `${JSON.stringify(sanitized, null, 2)}\n`, "utf8");
+  await fs.rename(tmp, configPath);
+  return applyEnvOverrides(sanitized);
 }
 
 export { BUILTIN_PROVIDERS, configPath, dataDir };

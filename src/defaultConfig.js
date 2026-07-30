@@ -6,18 +6,24 @@ export const BUILTIN_PROVIDERS = ["claude", "codex", "cursor", "antigravity"];
 export const LEGACY_EXPOSED_MODEL_ALIAS = "routerbot-local";
 
 /** Bump when defaultConfig's shape changes in a way existing configs must migrate for. */
-export const CONFIG_VERSION = 2;
+export const CONFIG_VERSION = 3;
 
 /**
- * PARAGON-D-004D1 deprecation notice for the fields below.
+ * Config schema, version 3 (PARAGON-D-004E).
  *
- * `providers.*.model`, `routing.defaultProvider` and `routing.fallbackChain`
- * are DEPRECATED for automatic routing. They are retained for backward
- * compatibility, are not authoritative for normal live routing, are hidden
- * from the primary dashboard, and are scheduled for possible schema removal
- * after D-004D activation plus an explicit config migration. The
- * machine-readable version of this notice — including what supersedes each
- * field — lives in src/deprecatedConfig.js and is what the dashboard renders.
+ * Removed in this version — see migrateRoutingSchema() in configMigrate.js,
+ * which backs up and rewrites existing configs:
+ *
+ *   providers.*.model        the model is chosen per request from the ranked
+ *                            eligible catalog; a stored preference could only
+ *                            ever disagree with what actually runs
+ *   routing.defaultProvider  no static fallback exists; an empty eligible set
+ *                            is a bounded 503
+ *   routing.fallbackChain    fallback order is the per-request attempt plan
+ *   routing.taskRoutes       replaced by the single routing.priority control
+ *
+ * Nothing that carries credentials, endpoints, provider enablement, avatars,
+ * or Tailscale settings is touched by that migration.
  */
 export const defaultConfig = {
   configVersion: CONFIG_VERSION,
@@ -41,9 +47,6 @@ export const defaultConfig = {
       avatar: "/avatars/claude.webp",
       enabled: true,
       command: "claude",
-      // DEPRECATED for automatic routing (PARAGON-D-004D1) — see the notice
-      // above defaultConfig. Kept so existing configs round-trip unchanged.
-      model: "",
       models: [],
       timeoutMs: 300000
     },
@@ -54,7 +57,6 @@ export const defaultConfig = {
       avatar: "/avatars/codex.webp",
       enabled: true,
       command: "codex",
-      model: "",
       models: [],
       timeoutMs: 300000
     },
@@ -65,7 +67,6 @@ export const defaultConfig = {
       avatar: "/avatars/cursor.webp",
       enabled: true,
       command: "cursor-agent",
-      model: "sonnet-4",
       models: [],
       timeoutMs: 300000
     },
@@ -80,34 +81,20 @@ export const defaultConfig = {
       avatar: "/avatars/antigravity.webp",
       enabled: false,
       command: "agy",
-      model: "",
       models: [],
       stdinMode: "none",
       timeoutMs: 300000
     }
   },
   routing: {
-    // DEPRECATED (PARAGON-D-004D1) — retained for backward compatibility,
-    // not authoritative for live routing, hidden from the primary dashboard.
-    // The static-default fallback was removed in D-004C1; an empty eligible
-    // set is a bounded 503 no_eligible_model.
-    defaultProvider: "codex",
-    // DEPRECATED (PARAGON-D-004D1) — retained for backward compatibility.
-    // Live fallback order is the per-request ranked attempt plan, not this list.
-    fallbackChain: ["codex", "cursor"],
-    // ACTIVE, but a preference and not a route: a matching provider receives
-    // WEIGHTS.taskRoutePreference additional points in the live D-004C1
-    // scorer. Eligibility, health, circuit, context, cost and capability
-    // gates remain authoritative. See src/deprecatedConfig.js.
-    taskRoutes: {
-      code: "codex",
-      debug: "codex",
-      review: "codex",
-      plan: "claude",
-      explain: "cursor",
-      docs: "claude",
-      quick: "cursor"
-    }
+    /**
+     * The only routing preference in the product. One of balanced | quality |
+     * cost | speed; resolves transparently to expected-utility weights (see
+     * src/routing/routingPriority.js). It can reorder admissible candidates
+     * but can never admit an inadmissible one — capability, context, health,
+     * circuit, quota, cost-ceiling and catalog gates are decided first.
+     */
+    priority: "balanced"
   },
   orchestration: DEFAULT_ORCHESTRATION_CONFIG,
   // PARAGON-D-004C: automatic provider model-catalog refresh/validation.
@@ -121,22 +108,20 @@ export const defaultConfig = {
     maxValidationProbesPerProvider: 10,
     retryBackoffMinutes: 60
   },
-  // PARAGON-D-004D: capability-aware, reasoning-cost-aware,
-  // outcome-calibrated routing. `mode: "shadow"` computes the new ranking
-  // alongside the live PARAGON-D-004C1 decision without ever changing
-  // provider/model selection, fallback order, or the response. Live
-  // activation is gated behind a separate directive — these defaults
-  // preserve current live behavior exactly.
-  routingIntelligence: {
+  /**
+   * Tuning for the single automatic routing engine — capability-aware,
+   * reasoning-cost-aware, outcome-calibrated. These are engineering bounds,
+   * not everyday product settings: the dashboard exposes them read-only in
+   * Diagnostics and never as a normal control. There is deliberately no mode
+   * switch here; PARAGON has one routing engine and it is always the one that
+   * executes.
+   */
+  automaticRouting: {
     enabled: true,
-    mode: "shadow",
     unknownLargeContextThresholdTokens: 50000,
     telemetryRetentionDays: 30,
     minimumSamplesForMeasuredEstimate: 10,
     maximumAttempts: 4,
-    // 0..1 — how scarce the subscription allowance currently is. Scales the
-    // quota-scarcity penalty; 0 means "not scarce", not "free".
-    quotaScarcity: 0,
     /** Reviewed alias records (see benchmarkCanonical.js normalizeAliasRecord). */
     canonicalAliasMappings: [],
     /** Operator-reviewed execution-profile overrides, keyed "provider/providerModelId". */
@@ -144,15 +129,13 @@ export const defaultConfig = {
     /** Operator-reviewed capability overrides, keyed "provider/providerModelId". */
     capabilityMappings: {},
     /** Operator-reviewed context overrides, keyed "provider/providerModelId". */
-    contextOverrides: {},
-    /** Bounded ring buffer of shadow decisions retained for comparison. */
-    shadowRecordLimit: 200
+    contextOverrides: {}
   },
   integrations: {
     // Optional — enables real external benchmark citations (Artificial
     // Analysis / Design Arena, via OpenRouter's benchmarks API) in the
     // Model Routing panel. Without it, task-fit ranking stays
-    // internal-only (see src/routing/router.js scoringMethodology()).
+    // internal-only (see src/routing/expectedUtility.js).
     openrouterApiKey: ""
   }
 };

@@ -101,7 +101,16 @@ export function classifyModelFailure(error) {
   if (/unauthorized|authentication|not logged in|please (sign|log) in|401/.test(text)) {
     return "AUTHENTICATION_FAILED";
   }
-  if (/quota|insufficient credit|out of credit|out of extra usage|billing/.test(text)) {
+  // "usage limit" / "spend limit" are how cursor-agent actually reports an
+  // exhausted monthly allowance ("You've hit your usage limit ... Your usage
+  // limits will reset when your monthly cycle ends on 8/12/2026"). Without
+  // these patterns that error fell through to TRANSIENT_FAILURE and the
+  // provider was retried against an allowance that is definitively spent.
+  if (
+    /quota|insufficient credit|out of credit|out of extra usage|billing|usage limit|spend limit|usage cap|monthly cycle ends/.test(
+      text
+    )
+  ) {
     return "QUOTA_EXHAUSTED";
   }
   if (/entitlement|not entitled|requires (a )?subscription|plan does not include|upgrade your plan/.test(text)) {
@@ -319,54 +328,6 @@ export function applyExecutionResult(catalog, provider, modelId, { success, clas
   return catalog;
 }
 
-/**
- * PARAGON-D-004C1 (P0-3): completes a PARAGON-D-004C CATALOG CLEANUP
- * requirement that was specified but never implemented — "clear
- * provider.model when it references a removed model". The catalog refresh
- * only ever wrote the catalog, so `config.providers[p].model` could keep
- * naming a model the catalog had rejected or retired, which the (now
- * removed) static-fallback path would happily dispatch.
- *
- * Pure function: returns the cleanup plan plus a new config object, leaving
- * the caller to persist. Only providers the catalog has actually assessed
- * are considered — an unassessed provider's configured model is untrusted
- * for routing (see buildModelRegistry) but must not be destroyed, since no
- * authoritative refresh has contradicted it yet.
- *
- * An empty configured model is left alone: it means "use the provider
- * default", which is gated separately by requiring a validated
- * provider-default catalog entry.
- */
-export function reconcileConfiguredModels(config, catalog, { ttlHours = 24, now = Date.now() } = {}) {
-  const cleared = [];
-  const providers = {};
-
-  for (const [provider, providerConfig] of Object.entries(config.providers ?? {})) {
-    providers[provider] = providerConfig;
-    const configured = providerConfig?.model;
-    if (!configured) {
-      continue;
-    }
-    const bucket = catalog?.providers?.[provider];
-    if (!bucket) {
-      continue;
-    }
-    const entry = bucket.models?.[configured];
-    if (isEligibleNow(entry, { ttlHours, now })) {
-      continue;
-    }
-    cleared.push({
-      provider,
-      model: configured,
-      previousState: entry?.state ?? "absent_from_catalog"
-    });
-    // Cleared, never substituted: picking a replacement model on the
-    // operator's behalf would be inventing a routing decision.
-    providers[provider] = { ...providerConfig, model: "" };
-  }
-
-  return { config: cleared.length ? { ...config, providers } : config, cleared };
-}
 
 /** Flattened, eligibility-annotated view used by routing/modelRegistry.js and the dashboard. */
 export function listCatalogEntries(catalog, provider, { ttlHours = 24, now = Date.now() } = {}) {

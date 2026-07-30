@@ -158,13 +158,32 @@ export function buildTaskProfile({ prompt = "", body = {}, estimatedInputTokens 
 
   const outputContract = outputContractFor(body) ?? (workType === "code" || workType === "debug" ? "code" : "prose");
 
+  /**
+   * HARD requirements: capabilities PARAGON cannot emulate or verify after the
+   * fact, so a candidate lacking positive evidence must be excluded outright.
+   */
   const requiredCapabilities = ["chatCompletions"];
   if (body?.stream) requiredCapabilities.push("streaming");
   if (Array.isArray(body?.tools) && body.tools.length) requiredCapabilities.push("toolCalls");
-  if (outputContract === "json") requiredCapabilities.push("structuredOutput");
-  if (outputContract === "json_schema") requiredCapabilities.push("structuredOutput", "jsonSchema");
   if (hasImageContent(body)) requiredCapabilities.push("visionInput");
   if (hasAudioContent(body)) requiredCapabilities.push("audioInput");
+
+  /**
+   * POST-VERIFIED capabilities (PARAGON-D-004E): structured output is the one
+   * output contract PARAGON can check itself — it parses the response and
+   * escalates to the next attempt when the JSON is invalid (see
+   * openaiApi.js). It is therefore deliberately **not** a hard gate.
+   *
+   * Making it one was a live-activation defect: no text-completion provider
+   * can *prove* structured-output support, `unknown` never satisfies a
+   * requirement, and the result was that every `response_format` request
+   * excluded every candidate and returned 503 no_eligible_model. A capability
+   * PARAGON can verify after the fact must be verified, not guessed at
+   * up front.
+   */
+  const postVerifiedCapabilities = [];
+  if (outputContract === "json") postVerifiedCapabilities.push("structuredOutput");
+  if (outputContract === "json_schema") postVerifiedCapabilities.push("structuredOutput", "jsonSchema");
 
   let latencyPreference = "normal";
   if (LATENCY_SIGNALS.batch.test(text)) latencyPreference = "batch";
@@ -190,6 +209,7 @@ export function buildTaskProfile({ prompt = "", body = {}, estimatedInputTokens 
     contextBand,
     outputContract,
     requiredCapabilities,
+    postVerifiedCapabilities,
     latencyPreference,
     qualityPreference,
     costSensitivity,

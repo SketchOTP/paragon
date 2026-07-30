@@ -72,6 +72,18 @@ const PROVIDER_STRUCTURAL_CAPABILITIES = {
 /** HTTP providers are OpenAI-compatible; capability depends on the server, not on PARAGON. */
 const HTTP_STRUCTURAL_CAPABILITIES = { streaming: true, toolCalls: "unknown", reasoningControls: "unknown" };
 
+/**
+ * Any other command-line provider (an operator-added `generic-cli`). PARAGON
+ * drives it exactly like a builtin — single-shot text completion, streamed
+ * through runProcess/onChunk — so the same structural facts hold.
+ *
+ * PARAGON-D-004E: without this default, an operator-added CLI provider had
+ * `streaming: "unknown"`, and because `unknown` never satisfies a requirement
+ * it was excluded from *every* streaming request. Streaming is implemented by
+ * the gateway, not the provider, so leaving it unknown was wrong.
+ */
+const GENERIC_CLI_STRUCTURAL_CAPABILITIES = { streaming: true, toolCalls: false, reasoningControls: "unknown" };
+
 function metadataCapability(metadata, field) {
   if (!metadata || typeof metadata !== "object") {
     return undefined;
@@ -121,7 +133,9 @@ export function buildCapabilityProfile({
   profile.providerDefault = isProviderDefaultId(providerModelId);
 
   // Structural integration facts.
-  const structural = isHttpProvider ? HTTP_STRUCTURAL_CAPABILITIES : PROVIDER_STRUCTURAL_CAPABILITIES[provider];
+  const structural = isHttpProvider
+    ? HTTP_STRUCTURAL_CAPABILITIES
+    : (PROVIDER_STRUCTURAL_CAPABILITIES[provider] ?? GENERIC_CLI_STRUCTURAL_CAPABILITIES);
   if (structural) {
     for (const [field, value] of Object.entries(structural)) {
       profile[field] = value;

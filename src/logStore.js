@@ -20,6 +20,11 @@ export function getLogs() {
   return entries;
 }
 
+/** Backs the product's "Clear activity history" action (Phase 7, Data). */
+export function clearLogs() {
+  entries.length = 0;
+}
+
 export function subscribeLogs(listener) {
   listeners.add(listener);
   return () => listeners.delete(listener);

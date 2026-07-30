@@ -1,9 +1,13 @@
 /**
- * PARAGON-D-004D unit coverage (directive tests 1-22, 26, 27, 29, 30).
+ * Automatic-routing unit coverage.
  *
  * Each test names the design rule it pins. The central rule under test is:
  *
  *   model identity  ≠  reasoning profile  ≠  speed profile
+ *
+ * This suite covers the one production routing engine. It carried over from
+ * the engine's shadow-mode era (PARAGON-D-004D) unchanged in substance —
+ * every invariant here is now an invariant of the *live* selector.
  */
 
 import assert from "node:assert/strict";
@@ -18,8 +22,8 @@ import { resolveBenchmark, buildAliasIndex, normalizeAliasRecord } from "../src/
 import { defaultTelemetryStore, recordOutcome, readTelemetry, pruneTelemetry, telemetryKey } from "../src/routing/outcomeTelemetry.js";
 import { rankCandidates, compareCandidates, routingConfidence, UTILITY_WEIGHTS } from "../src/routing/expectedUtility.js";
 import { buildAttemptPlan, planNextAfterFailure, applyFailureToPlan } from "../src/routing/attemptPlan.js";
-import { computeShadowRoute, buildShadowRecord } from "../src/routing/shadowEngine.js";
-import { createShadowStore } from "../src/routing/shadowStore.js";
+import { selectAutomaticRoute, verifyPlanAgainstCandidates } from "../src/routing/automaticRouting.js";
+import { createRouteActivityStore } from "../src/routing/routeActivity.js";
 import { defaultCatalog, replaceProviderModels } from "../src/modelCatalog.js";
 import { resetForTests } from "../src/orchestration/liveEnforcement.js";
 
@@ -370,8 +374,15 @@ test("17c. required capabilities are derived from the actual request shape", () 
   });
   assert.ok(profile.requiredCapabilities.includes("streaming"));
   assert.ok(profile.requiredCapabilities.includes("toolCalls"));
-  assert.ok(profile.requiredCapabilities.includes("jsonSchema"));
   assert.equal(profile.outputContract, "json_schema");
+  // PARAGON-D-004E: structured output is verified after the fact (parse the
+  // response, escalate if invalid), so it is a scoring preference rather than
+  // a hard gate. Gating on it excluded every text provider from every
+  // response_format request.
+  assert.ok(!profile.requiredCapabilities.includes("structuredOutput"));
+  assert.ok(!profile.requiredCapabilities.includes("jsonSchema"));
+  assert.ok(profile.postVerifiedCapabilities.includes("structuredOutput"));
+  assert.ok(profile.postVerifiedCapabilities.includes("jsonSchema"));
 });
 
 // ---------------------------------------------------------------- Phase 9
@@ -542,12 +553,12 @@ test("27c. pruning drops entries outside the retention window", () => {
   assert.ok(!Object.keys(store.entries).some((k) => k.includes("old")));
 });
 
-// ---------------------------------------------------------------- Phase 12
+// ------------------------------------------------- the one production engine
 
-test("24/25. the shadow engine is pure — it produces a ranking without executing any provider", () => {
+test("24/25. the engine produces a ranking and a plan without executing any provider", () => {
   const config = {
-    routing: { taskRoutes: {} },
-    providers: { cursor: { enabled: true, type: "builtin", model: "", models: [] } },
+    routing: { priority: "balanced" },
+    providers: { cursor: { enabled: true, type: "builtin", models: [] } },
     modelCatalog: { validationTtlHours: 24 }
   };
   const catalog = defaultCatalog();
@@ -557,53 +568,66 @@ test("24/25. the shadow engine is pure — it produces a ranking without executi
   ]);
   const taskProfile = buildTaskProfile({ prompt: "implement a function", estimatedInputTokens: 1000 });
 
-  const shadow = computeShadowRoute({ config, statuses: {}, catalog, telemetryStore: defaultTelemetryStore(), benchmarkRows: [], taskProfile, settings: {} });
-  assert.ok(shadow.winner, "shadow must produce a winner");
-  assert.equal(shadow.eligibleCount, 2);
+  const route = selectAutomaticRoute({ config, statuses: {}, catalog, telemetryStore: defaultTelemetryStore(), benchmarkRows: [], taskProfile, settings: {} });
+  assert.ok(route.winner, "the engine must produce a winner");
+  assert.equal(route.eligibleCount, 2);
   // Both execution profiles are represented separately.
-  const efforts = shadow.ranked.filter((c) => !c.excluded).map((c) => c.reasoningEffort).sort();
+  const efforts = route.ranked.filter((c) => !c.excluded).map((c) => c.reasoningEffort).sort();
   assert.deepEqual(efforts, ["low", "max"]);
-  assert.ok(shadow.attemptPlan.length >= 1);
+  assert.ok(route.attemptPlan.length >= 1);
+  // Selection is pure computation: the plan carries the provider config it
+  // would dispatch with, but nothing here spawns or calls a provider.
+  assert.ok(route.attemptPlan.every((a) => a.config && typeof a.config === "object"));
 });
 
-test("24b. a shadow record contains no prompt or response and reports agreement explicitly", () => {
-  const taskProfile = buildTaskProfile({ prompt: "some secret internal prompt text", estimatedInputTokens: 100 });
-  const record = buildShadowRecord({
-    taskProfile,
-    shadow: {
-      winner: { provider: "cursor", providerModelId: "m-low", canonicalModelId: "m", reasoningEffort: "low", speedMode: "standard", expectedUtility: 5, components: {}, cost: {}, benchmark: {}, measuredEvidenceShare: 0 },
-      confidence: { level: "medium" },
-      eligibleCount: 2,
-      attemptPlan: []
-    },
-    liveProvider: "codex",
-    liveModel: "gpt-5.4"
-  });
-  assert.ok(!JSON.stringify(record).includes("secret internal prompt"));
-  assert.equal(record.disagrees, true);
-  assert.equal(record.live.provider, "codex");
-  assert.equal(record.shadow.provider, "cursor");
-});
+test("24b. the engine reports exactly one decision per call, with no second ranking to compare against", () => {
+  const config = {
+    routing: { priority: "balanced" },
+    providers: { cursor: { enabled: true, type: "builtin", models: [] } },
+    modelCatalog: { validationTtlHours: 24 }
+  };
+  const catalog = defaultCatalog();
+  replaceProviderModels(catalog, "cursor", [
+    { modelId: "gpt-5.6-sol-low", displayName: "sol low", state: "validated", discoverySource: "cli_command" }
+  ]);
+  const taskProfile = buildTaskProfile({ prompt: "implement a function", estimatedInputTokens: 100 });
+  const route = selectAutomaticRoute({ config, statuses: {}, catalog, telemetryStore: defaultTelemetryStore(), benchmarkRows: [], taskProfile, settings: {} });
 
-test("25b. the shadow store is a bounded ring buffer and summarizes disagreement", () => {
-  const store = createShadowStore({ limit: 10 });
-  for (let i = 0; i < 50; i += 1) {
-    store.record({ shadow: { provider: "cursor", providerModelId: "m" }, live: { provider: i % 2 ? "cursor" : "codex", model: "m" }, agrees: i % 2 === 1 });
+  // No comparison surface exists on the result: there is no alternative
+  // engine's winner, no agreement flag, and no advisory ranking.
+  for (const key of ["shadow", "agrees", "disagrees", "live", "liveRouteSelector", "shadowWinner"]) {
+    assert.equal(key in route, false, `${key} must not exist on a routing decision`);
   }
-  const summary = store.summary();
-  assert.equal(summary.retained, 10, "the buffer must not grow with traffic");
-  assert.equal(summary.total, 50);
-  assert.ok(summary.agreementRate > 0 && summary.agreementRate < 1);
+  assert.equal(route.reasonCode, "automatic.expectedUtility");
+});
+
+test("25b. routeActivity keeps planned, executed and failed provider-models distinct and stays bounded", () => {
+  const activity = createRouteActivityStore({ activityLimit: 10 });
+  activity.recordPlanned({ taskType: "code", attemptPlan: [{ order: 1, provider: "cursor", model: "m1" }] });
+  activity.recordFailed({ provider: "cursor", model: "m1", reason: "cursor reached its usage limit" });
+  activity.recordExecuted({ provider: "codex", model: "gpt-5.4" });
+
+  // A failure must never be reported as the provider's last used model.
+  assert.equal(activity.lastExecuted("cursor"), null);
+  assert.equal(activity.lastFailure("cursor").model, "m1");
+  assert.equal(activity.lastExecuted("codex").model, "gpt-5.4");
+  // A plan is a decision, not evidence of execution.
+  assert.equal(activity.plan().plan[0].provider, "cursor");
+
+  for (let i = 0; i < 50; i += 1) {
+    activity.recordRequest({ success: true, provider: "codex", model: "gpt-5.4", durationMs: 10 });
+  }
+  assert.equal(activity.recent({ limit: 50 }).length, 10, "the activity buffer must not grow with traffic");
 });
 
 // ---------------------------------------------------------------- invariants
 
-test("28/29. D-004C1 integrity invariants hold in the new engine", () => {
+test("28/29. every routing-integrity invariant holds in the production engine", () => {
   const config = {
-    routing: { taskRoutes: {} },
+    routing: { priority: "balanced" },
     providers: {
-      cursor: { enabled: true, type: "builtin", model: "stale-configured-model", models: [{ id: "stale-configured-model" }] },
-      unassessed: { enabled: true, type: "builtin", model: "config-only", models: [{ id: "config-only" }] }
+      cursor: { enabled: true, type: "builtin", models: [{ id: "stale-configured-model" }] },
+      unassessed: { enabled: true, type: "builtin", models: [{ id: "config-only" }] }
     },
     modelCatalog: { validationTtlHours: 24 }
   };
@@ -614,20 +638,23 @@ test("28/29. D-004C1 integrity invariants hold in the new engine", () => {
     { modelId: "text-embedding-thing", displayName: "emb", state: "exposed", discoverySource: "http_models_endpoint" }
   ]);
   const taskProfile = buildTaskProfile({ prompt: "implement a function", estimatedInputTokens: 100 });
-  const shadow = computeShadowRoute({ config, statuses: {}, catalog, telemetryStore: defaultTelemetryStore(), benchmarkRows: [], taskProfile, settings: {} });
+  const route = selectAutomaticRoute({ config, statuses: {}, catalog, telemetryStore: defaultTelemetryStore(), benchmarkRows: [], taskProfile, settings: {} });
 
-  const eligibleIds = shadow.ranked.filter((c) => !c.excluded).map((c) => c.providerModelId);
+  const eligibleIds = route.ranked.filter((c) => !c.excluded).map((c) => c.providerModelId);
   assert.ok(eligibleIds.includes("good-model"));
   assert.ok(!eligibleIds.includes("stale-configured-model"), "a catalog-rejected model must stay excluded");
   assert.ok(!eligibleIds.includes("text-embedding-thing"), "a non-chat model must stay excluded");
   assert.ok(!eligibleIds.includes("config-only"), "an unassessed provider must not gain config trust");
-  const pending = shadow.ranked.find((c) => c.provider === "unassessed");
+  const pending = route.ranked.find((c) => c.provider === "unassessed");
   assert.equal(pending.reasonCode, "routing.providerPendingAssessment");
 
-  // Every attempt is traceable to an eligible ranked row.
-  for (const attempt of shadow.attemptPlan) {
-    assert.ok(eligibleIds.includes(attempt.providerModelId));
+  // Every attempt is traceable to an eligible ranked row. The executable plan
+  // carries `registryModel` — the row it was derived from — which is exactly
+  // what makes this check meaningful rather than circular.
+  for (const attempt of route.attemptPlan) {
+    assert.ok(eligibleIds.includes(attempt.registryModel), `${attempt.registryModel} is not an eligible candidate`);
   }
+  assert.deepEqual(verifyPlanAgainstCandidates(route.attemptPlan, route.ranked, config), []);
 });
 
 test("29b. utility weights are exported for inspection rather than hidden in the formula", () => {
