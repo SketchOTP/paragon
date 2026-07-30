@@ -234,6 +234,8 @@ printf '%s\n' '{"prompt":"Create hello.txt containing hello.","workspace":"/abso
 The runner always uses `openai/paragon` and defaults to
 `http://127.0.0.1:4117/v1`; `PARAGON_BASE_URL` can override the endpoint.
 Workspace selection is mandatory and is never inferred from this checkout.
+On Linux, the runner requires `bwrap` and makes only the selected workspace
+writable; the rest of the filesystem is mounted read-only for the agent.
 PARAGON must have at least one HTTP model whose catalog positively advertises
 native tool-call support. CLI-only providers and HTTP models with unknown
 tool capability remain ineligible for OpenHands tool requests.
