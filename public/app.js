@@ -115,6 +115,8 @@ const els = {
   priorityPicker: document.querySelector("#priority-picker"),
   providerPreferencePoints: document.querySelector("#provider-preference-points"),
   settingArtificialAnalysisKey: document.querySelector("#setting-artificial-analysis-key"),
+  settingOpenRouterKey: document.querySelector("#setting-openrouter-key"),
+  removeOpenRouter: document.querySelector("#remove-openrouter"),
   artificialAnalysisStatus: document.querySelector("#artificial-analysis-status"),
   testArtificialAnalysis: document.querySelector("#test-artificial-analysis"),
   refreshArtificialAnalysis: document.querySelector("#refresh-artificial-analysis"),
@@ -943,6 +945,8 @@ function renderSettings() {
   }
   els.settingArtificialAnalysisKey.value = "";
   els.settingArtificialAnalysisKey.placeholder = settings.integrations?.artificialAnalysisApiKeyConfigured ? "unchanged" : "not set";
+  els.settingOpenRouterKey.value = "";
+  els.settingOpenRouterKey.placeholder = settings.integrations?.openrouterApiKeyConfigured ? "unchanged" : "not set";
   const aa = settings.integrations?.artificialAnalysis ?? {};
   els.artificialAnalysisStatus.textContent = `Status: ${aa.connected ? "Connected" : aa.configured ? "Not connected" : "not configured"}${aa.tier ? ` · Tier: ${aa.tier}` : ""}${aa.modelsLoaded != null ? ` · Models imported: ${aa.modelsLoaded}` : ""}`;
 }
@@ -983,7 +987,8 @@ async function saveSettings() {
     payload.server.apiKey = apiKey;
   }
   const artificialAnalysisApiKey = els.settingArtificialAnalysisKey.value.trim();
-  if (artificialAnalysisApiKey) payload.integrations = { artificialAnalysisApiKey };
+  const openRouterApiKey = els.settingOpenRouterKey.value.trim();
+  if (artificialAnalysisApiKey || openRouterApiKey) payload.integrations = { ...(openRouterApiKey ? { openrouterApiKey: openRouterApiKey } : {}), ...(artificialAnalysisApiKey ? { artificialAnalysisApiKey } : {}) };
 
   try {
     const response = await apiFetch("/api/settings", {
@@ -1916,6 +1921,16 @@ function wire() {
   els.testArtificialAnalysis.addEventListener("click", () => artificialAnalysisAction("test").catch((e) => { els.artificialAnalysisStatus.textContent = `Status: ${e.message}`; }));
   els.refreshArtificialAnalysis.addEventListener("click", () => artificialAnalysisAction("refresh").catch((e) => { els.artificialAnalysisStatus.textContent = `Status: ${e.message}`; }));
   els.removeArtificialAnalysis.addEventListener("click", () => artificialAnalysisAction("remove").catch((e) => { els.artificialAnalysisStatus.textContent = `Status: ${e.message}`; }));
+  els.removeOpenRouter.addEventListener("click", async () => {
+    try {
+      const response = await apiFetch("/api/integrations/openrouter/remove", { method: "POST" });
+      if (!response.ok) throw new Error("Could not remove OpenRouter key");
+      await loadSettings();
+      renderSettings();
+    } catch (error) {
+      els.settingsStatus.textContent = error.message;
+    }
+  });
   els.openDiagnostics.addEventListener("click", openDiagnostics);
 
   els.diagnosticsClose.addEventListener("click", () => els.diagnosticsDialog.close());

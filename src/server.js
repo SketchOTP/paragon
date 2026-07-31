@@ -373,7 +373,8 @@ app.put("/api/settings", async (req, res) => {
 
   if (incoming.integrations && typeof incoming.integrations === "object") {
     if (incoming.integrations.openrouterApiKey !== undefined) {
-      integrations.openrouterApiKey = String(incoming.integrations.openrouterApiKey).trim();
+      const value = String(incoming.integrations.openrouterApiKey).trim();
+      if (value) integrations.openrouterApiKey = value;
     }
     if (incoming.integrations.artificialAnalysisApiKey !== undefined) {
       const value = String(incoming.integrations.artificialAnalysisApiKey).trim();
@@ -425,6 +426,12 @@ function productSettings(config) {
 
 app.get("/api/settings", async (_req, res) => {
   res.json(productSettings(await getConfig()));
+});
+
+app.post("/api/integrations/openrouter/remove", async (_req, res) => {
+  const config = await getConfig();
+  cachedConfig = await writeConfig({ ...config, integrations: { ...config.integrations, openrouterApiKey: "" } });
+  res.json({ ok: true, configured: Boolean(getEnv("OPENROUTER_API_KEY")) });
 });
 
 app.get("/api/integrations/artificial-analysis/status", async (_req, res) => {
