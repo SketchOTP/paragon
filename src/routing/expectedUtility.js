@@ -278,7 +278,14 @@ export function scoreCandidate(candidate, { taskProfile, weights = UTILITY_WEIGH
   const providerPreferenceTerm = configuredProviderPreference * preferenceScale;
   const successThreshold = sufficiencyThreshold(taskProfile);
   const confidenceAdjustedSuccessProbability = Math.max(0, Math.min(1, probabilityOfSuccessfulCompletion + fit.alignment * 0.1));
-  const sufficient = confidenceAdjustedSuccessProbability >= successThreshold;
+  // Sparse outcomes are useful evidence, but not reliable enough to be a
+  // hard admission gate. A small sample can lower expected success and add an
+  // uncertainty penalty, while still allowing a cheaper/higher-quality model
+  // into the comparison pool. Dense evidence and zero-evidence priors retain
+  // the normal sufficiency threshold.
+  const sparseEvidence = successSource === "measured_sparse";
+  const sufficient = sparseEvidence || confidenceAdjustedSuccessProbability >= successThreshold;
+  const sufficiencySource = sparseEvidence ? "sparse_evidence_non_blocking" : "confidence_adjusted_probability";
 
   const utilityBeforePreference =
     qualityTerm - costTerm - latencyTerm - quotaTerm - uncertaintyTerm + reasoningFitTerm + contextFitTerm + postVerifiedBonus;
@@ -313,6 +320,7 @@ export function scoreCandidate(candidate, { taskProfile, weights = UTILITY_WEIGH
       confidenceAdjustedSuccessProbability,
       sufficiencyThreshold: successThreshold,
       sufficient,
+      sufficiencySource,
       expectedCostPerSuccessfulTask,
       finalDecisionValue: decisionValue,
       successSource,
