@@ -72,6 +72,25 @@ test("optimizer can select strong-first when cheap-first has excessive failure r
   assert.deepEqual(result.plan.map((x) => x.provider), ["strong", "cheap"]);
 });
 
+test("optimizer search is bounded for a large production catalog", () => {
+  const candidates = Array.from({ length: 100 }, (_, index) => ({ provider: `p${index}`, providerModelId: `m${index}`, cost: index + 1, successProbability: 0.9 }));
+  const started = Date.now();
+  const result = optimizeFallbackPlan(candidates, { maximumAttempts: 4, minimumAttempts: 2, searchBudget: 250, attemptCost: (x) => x.cost, failureProbability: (x) => 1 - x.successProbability });
+  assert.ok(Date.now() - started < 1000);
+  assert.ok(result.visited <= 250);
+});
+
+test("production optimizer can pin the ranked winner as the first attempt", () => {
+  const result = optimizeFallbackPlan(
+    [
+      { provider: "ranked", providerModelId: "winner", cost: 100, successProbability: 0.5 },
+      { provider: "cheap", providerModelId: "alternate", cost: 1, successProbability: 0.99 }
+    ],
+    { maximumAttempts: 2, minimumAttempts: 2, pinFirst: true, successTarget: 0.999, attemptCost: (x) => x.cost, failureProbability: (x) => 1 - x.successProbability }
+  );
+  assert.deepEqual(result.plan.map((x) => x.provider), ["ranked", "cheap"]);
+});
+
 test("provider-wide failure is represented as correlated failure", () => {
   const result = evaluatePlan([{ provider: "broken", providerModelId: "a", cost: 1, successProbability: 0.9 }, { provider: "broken", providerModelId: "b", cost: 1, successProbability: 0.9 }, { provider: "other", providerModelId: "c", cost: 2, successProbability: 0.9 }], { providerFailureProbability: (x) => x.provider === "broken" ? 1 : 0, attemptCost: (x) => x.cost });
   assert.deepEqual(result.providersWithCorrelatedFailure, ["broken"]);
