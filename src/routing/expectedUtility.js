@@ -42,14 +42,8 @@ export const UTILITY_WEIGHTS = {
   quotaScarcityScale: 1.0,
   uncertaintyScale: 20,
   reasoningFitScale: 15,
-  /**
-   * PARAGON-D-004E (Phase 4): pinned to 0. The legacy `routing.taskRoutes`
-   * provider preference is removed from the schema and must not be reachable
-   * through any routing-priority preset. The key stays present so callers
-   * reading the weights see an explicit "no operator provider preference is
-   * applied" rather than `undefined`.
-   */
-  taskRoutePreferenceBonus: 0
+  /** Provider preference is configured separately from evidence weights. */
+  providerPreferenceScale: 3
 };
 
 /** Neutral prior when there is no measured success history at all. */
@@ -171,7 +165,7 @@ export function checkHardEligibility(candidate, { taskProfile, unknownLargeConte
 /**
  * Scores one admissible candidate. Returns the full component breakdown.
  */
-export function scoreCandidate(candidate, { taskProfile, weights = UTILITY_WEIGHTS, minimumSamplesForMeasuredEstimate = 10, quotaScarcity = 0, unknownContext = false, providerPreferencePoints = {} }) {
+export function scoreCandidate(candidate, { taskProfile, weights = UTILITY_WEIGHTS, minimumSamplesForMeasuredEstimate = 10, quotaScarcity = 0, unknownContext = false, providerPreferencePoints = {}, providerPreferenceScale = 3 }) {
   const telemetry = candidate.telemetry ?? null;
   // Routing priority resolves to a weight set (see routingPriority.js). It can
   // only reorder admissible candidates — hard eligibility was already decided.
@@ -207,7 +201,9 @@ export function scoreCandidate(candidate, { taskProfile, weights = UTILITY_WEIGH
     isHttpProvider: candidate.isHttpProvider,
     executionProfile: candidate.executionProfile,
     taskProfile,
-    benchmarkPricing: candidate.benchmark?.row?.pricing ?? null,
+    // Benchmark rows are quality evidence. Their pricing is provider-owned
+    // and may only price an OpenRouter tuple.
+    benchmarkPricing: candidate.provider === "openrouter" ? candidate.benchmark?.row?.pricing ?? null : null,
     publishedPricing: candidate.publishedPricing ?? null,
     telemetry,
     estimatedInputTokens: taskProfile?.estimatedInputTokens ?? 0,
@@ -252,10 +248,12 @@ export function scoreCandidate(candidate, { taskProfile, weights = UTILITY_WEIGH
   const quotaTerm = cost.quotaScarcityPenalty * W.quotaScarcityScale;
   const uncertaintyTerm = uncertainty.penalty * W.uncertaintyScale;
   const reasoningFitTerm = fit.alignment * W.reasoningFitScale;
-  const providerPreferenceBonus = Number(providerPreferencePoints?.[candidate.provider] ?? 0) || 0;
+  const configuredProviderPreference = Number(providerPreferencePoints?.[candidate.provider] ?? 0) || 0;
+  const preferenceScale = Number(providerPreferenceScale ?? W.providerPreferenceScale ?? 3) || 0;
+  const providerPreferenceTerm = configuredProviderPreference * preferenceScale;
 
   const expectedUtility =
-    qualityTerm - costTerm - latencyTerm - quotaTerm - uncertaintyTerm + reasoningFitTerm + postVerifiedBonus + providerPreferenceBonus;
+    qualityTerm - costTerm - latencyTerm - quotaTerm - uncertaintyTerm + reasoningFitTerm + postVerifiedBonus + providerPreferenceTerm;
 
   return {
     provider: candidate.provider,
@@ -297,7 +295,12 @@ export function scoreCandidate(candidate, { taskProfile, weights = UTILITY_WEIGH
       reasoningFitTerm,
       postVerifiedBonus,
       postVerifiedReasons,
-      providerPreferenceBonus,
+      configuredProviderPreference,
+      providerPreferenceScale: preferenceScale,
+      providerPreferenceTerm,
+      // Backward-compatible diagnostic alias; both values come from the same
+      // term and cannot diverge.
+      providerPreferenceBonus: providerPreferenceTerm,
       // The weight set this candidate was scored with, so Diagnostics can
       // prove which routing priority produced a given ordering.
       appliedWeights: W

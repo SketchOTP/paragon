@@ -107,13 +107,12 @@ test("6. the request path computes a route exactly once", () => {
   assert.ok(!/computeShadowRoute|scoreCandidate\(/.test(api));
 });
 
-test("16. no provider preference input reaches the scorer", () => {
-  // The weight exists only as an explicit zero, so a stale caller sees "no
-  // preference applied" rather than undefined.
-  assert.equal(UTILITY_WEIGHTS.taskRoutePreferenceBonus, 0);
+test("16. provider preference is an explicit scorer input", () => {
+  assert.equal(UTILITY_WEIGHTS.providerPreferenceScale, 3);
   const expectedUtility = fs.readFileSync(path.join(repoRoot, "src/routing/expectedUtility.js"), "utf8");
   assert.ok(!/taskRoutes\s*\[/.test(expectedUtility), "the scorer must not read a task-provider mapping");
   assert.ok(!/taskRoutes\s*=/.test(expectedUtility));
+  assert.match(expectedUtility, /providerPreferenceTerm/);
 });
 
 // ============================================================ 8-12. usage
@@ -527,20 +526,19 @@ test("17. a routing priority alters only documented utility weights", () => {
     "quotaScarcityScale",
     "uncertaintyScale",
     "reasoningFitScale",
-    "taskRoutePreferenceBonus"
+    "providerPreferenceScale"
   ]);
   for (const priority of ROUTING_PRIORITIES) {
     const weights = resolveUtilityWeights(priority);
     for (const key of Object.keys(weights)) {
       assert.ok(documented.has(key), `${priority} must not introduce an undocumented weight (${key})`);
     }
-    // No preset may reintroduce a provider preference.
-    assert.equal(weights.taskRoutePreferenceBonus, 0);
+    assert.equal(weights.providerPreferenceScale, 3);
   }
   // Balanced is the baseline, unchanged from the exported weights.
   const balanced = resolveUtilityWeights("balanced");
   for (const key of Object.keys(balanced)) {
-    if (key === "taskRoutePreferenceBonus") continue;
+    if (key === "providerPreferenceScale") continue;
     assert.equal(balanced[key], UTILITY_WEIGHTS[key], `balanced must not change ${key}`);
   }
 });

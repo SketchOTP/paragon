@@ -381,14 +381,16 @@ test("17/18. the routing priority is settable through the one settings surface a
     openrouter: 0,
     lmstudio: 0
   });
+  assert.equal(before.routing.providerPreferenceScale, 3);
 
   const pointsSaved = await fetch(`${BASE}/api/settings`, {
     method: "PUT",
     headers: authHeaders(),
-    body: JSON.stringify({ routing: { providerPreferencePoints: { codex: 4.5, claude: 1.5 } } })
+    body: JSON.stringify({ routing: { providerPreferencePoints: { codex: 4.5, claude: 1.5 }, providerPreferenceScale: 4 } })
   });
   assert.equal(pointsSaved.status, 200);
   assert.equal((await pointsSaved.json()).settings.routing.providerPreferencePoints.codex, 4.5);
+  assert.equal((await (await fetch(`${BASE}/api/settings`, { headers: authHeaders() })).json()).routing.providerPreferenceScale, 4);
 
   const saved = await fetch(`${BASE}/api/settings`, {
     method: "PUT",
@@ -422,7 +424,7 @@ test("17/18. the routing priority is settable through the one settings surface a
   await fetch(`${BASE}/api/settings`, {
     method: "PUT",
     headers: authHeaders(),
-    body: JSON.stringify({ routing: { providerPreferencePoints: { codex: 3, claude: 2 } } })
+    body: JSON.stringify({ routing: { providerPreferencePoints: { codex: 3, claude: 2 }, providerPreferenceScale: 3 } })
   });
 });
 

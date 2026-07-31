@@ -133,6 +133,8 @@ export const defaultConfig = {
       openrouter: 0,
       lmstudio: 0
     },
+    /** Utility units contributed by each configured provider-preference point. */
+    providerPreferenceScale: 3,
     /** Reviewed alias records (see benchmarkCanonical.js normalizeAliasRecord). */
     canonicalAliasMappings: [],
     /** Operator-reviewed execution-profile overrides, keyed "provider/providerModelId". */

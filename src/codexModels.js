@@ -43,7 +43,8 @@ function runCodex(command, args, timeoutMs = 60000) {
   });
 }
 
-function resolveCodexBinary(command = "codex") {
+/** Resolve the same native Codex ELF used by CLI execution, not a snap launcher. */
+export function resolveCodexBinary(command = "codex") {
   if (command.includes("/")) {
     return realpathSync(command);
   }
@@ -83,9 +84,16 @@ export function loadCodexBundledCatalog(command = "codex") {
 
 /** Uses `codex debug models` when the installed CLI supports it. */
 export async function discoverCodexModels(command = "codex") {
+  let executable = command;
+  try {
+    executable = resolveCodexBinary(command);
+  } catch {
+    // Preserve the configured command so the authoritative discovery error is
+    // still handled by the normal fallback path.
+  }
   for (const args of DISCOVERY_ARG_SETS) {
     try {
-      const result = await runCodex(command, args);
+      const result = await runCodex(executable, args);
       const models = parseCodexModelsCatalog(result.stdout);
       if (models.length) {
         return models;
@@ -94,5 +102,5 @@ export async function discoverCodexModels(command = "codex") {
       // Try the next discovery command shape.
     }
   }
-  return loadCodexBundledCatalog(command);
+  return loadCodexBundledCatalog(executable);
 }

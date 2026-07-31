@@ -34,13 +34,14 @@ test.beforeEach(() => {
 
 test("published pricing uses the current Codex Luna rate and never labels it subscription", () => {
   const price = publishedModelPricing({ provider: "codex", modelId: "gpt-5.6-luna" });
-  assert.equal(price.inputPerMillion, 25);
-  assert.equal(price.completionPerMillion, 150);
+  assert.equal(price.inputPerMillion, 5);
+  assert.equal(price.completionPerMillion, 30);
+  assert.equal(price.cacheReadPerMillion, 0.5);
   assert.equal(price.billingUnit, "Codex credits per 1M tokens");
   assert.equal(price.asOf, "2026-07-30");
 });
 
-test("provider preference points are configurable and additive", () => {
+test("provider preference points are configurable, scaled, and additive", () => {
   const candidate = (provider) => ({
     provider,
     providerModelId: `${provider}-model`,
@@ -58,11 +59,35 @@ test("provider preference points are configurable and additive", () => {
   const result = rankCandidates([candidate("claude"), candidate("codex")], {
     taskProfile,
     unknownLargeContextThresholdTokens: 50000,
-    providerPreferencePoints: { claude: 2, codex: 3 }
+    providerPreferencePoints: { claude: 2, codex: 3 },
+    providerPreferenceScale: 3
   });
   assert.equal(result.winner.provider, "codex");
-  assert.equal(result.winner.components.providerPreferenceBonus, 3);
-  assert.equal(result.ranked.find((row) => row.provider === "claude").components.providerPreferenceBonus, 2);
+  assert.equal(result.winner.components.providerPreferenceTerm, 9);
+  assert.equal(result.winner.components.providerPreferenceBonus, 9);
+  assert.equal(result.ranked.find((row) => row.provider === "claude").components.providerPreferenceTerm, 6);
+});
+
+test("benchmark pricing never crosses provider identity", () => {
+  const benchmarkPricing = { prompt: 0.000001, completion: 0.000006 };
+  assert.equal(publishedModelPricing({ provider: "codex", modelId: "gpt-5.1-codex-mini", benchmarkPricing }), null);
+  assert.equal(publishedModelPricing({ provider: "claude", modelId: "unknown-model", benchmarkPricing }), null);
+  assert.equal(publishedModelPricing({ provider: "openrouter", modelId: "openai/gpt-5.6-luna", benchmarkPricing }).source, "OpenRouter benchmark pricing");
+});
+
+test("Codex credits are estimated separately from monetary cost", () => {
+  const cost = estimateEffectiveCost({
+    provider: "codex",
+    isHttpProvider: false,
+    executionProfile: { reasoningEffort: "low", speedMode: "standard" },
+    taskProfile: { workType: "code", complexity: "normal" },
+    publishedPricing: publishedModelPricing({ provider: "codex", modelId: "gpt-5.6-luna" }),
+    benchmarkPricing: { prompt: 0.000001, completion: 0.000006 },
+    estimatedInputTokens: 1000
+  });
+  assert.ok(cost.estimatedCreditsConsumed > 0);
+  assert.equal(cost.estimatedMonetaryCost, null);
+  assert.equal(cost.pricingSource, "OpenAI Codex rate card");
 });
 
 // ---------------------------------------------------------------- Phase 1

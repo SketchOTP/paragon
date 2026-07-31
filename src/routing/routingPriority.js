@@ -100,16 +100,14 @@ export function normalizeRoutingPriority(value) {
 /**
  * Resolves a preset to concrete utility weights.
  *
- * `taskRoutePreferenceBonus` is pinned to 0: the legacy task-provider
- * preference was removed in Phase 4 and must not be reachable through any
- * preset. Keeping the key present (at zero) rather than deleting it means a
- * stale caller reading the weights sees an explicit "no preference applied"
- * instead of `undefined`.
+ * Provider preference is an explicit scoring term, not a routing-priority
+ * multiplier. The configured scale is passed alongside these evidence
+ * weights so the dashboard and scorer use one calculation.
  */
 export function resolveUtilityWeights(priority) {
   const preset = normalizeRoutingPriority(priority);
   const multipliers = PRIORITY_MULTIPLIERS[preset];
-  const weights = { taskRoutePreferenceBonus: 0 };
+  const weights = { providerPreferenceScale: UTILITY_WEIGHTS.providerPreferenceScale };
   for (const [key, multiplier] of Object.entries(multipliers)) {
     weights[key] = UTILITY_WEIGHTS[key] * multiplier;
   }

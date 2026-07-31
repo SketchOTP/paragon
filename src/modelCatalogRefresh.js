@@ -15,7 +15,7 @@
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { CLAUDE_DOCUMENTED_MODELS, loadClaudeBundledCatalog } from "./claudeModels.js";
-import { loadCodexBundledCatalog } from "./codexModels.js";
+import { loadCodexBundledCatalog, resolveCodexBinary } from "./codexModels.js";
 import { parseCodexModelsCatalog } from "./modelList.js";
 import { parseModels, runProvider } from "./cli.js";
 import { getNeutralExecutionDir } from "./executionSandbox.js";
@@ -132,14 +132,21 @@ async function claudeCandidates(command) {
  * embedded catalog. `--bundled` output is candidate-only.
  */
 async function codexCandidates(command) {
+  let executable = command;
+  try {
+    executable = resolveCodexBinary(command);
+  } catch {
+    // Let the authoritative command fail visibly, then retain the existing
+    // bounded bundled-catalog fallback behavior.
+  }
   let live = [];
   try {
-    const stdout = await runCliCommand(command, ["debug", "models"], 60000);
+    const stdout = await runCliCommand(executable, ["debug", "models"], 60000);
     live = parseCodexModelsCatalog(stdout);
   } catch {
     live = [];
   }
-  const bundled = loadCodexBundledCatalog(command);
+  const bundled = loadCodexBundledCatalog(executable);
   const liveIds = new Set(live.map((m) => m.id));
   return [
     ...live.map((m) => ({ ...m, isAlias: false, discoverySource: "cli_command" })),

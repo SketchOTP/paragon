@@ -334,6 +334,14 @@ app.put("/api/settings", async (req, res) => {
         automaticRouting.providerPreferencePoints = nextPoints;
       }
     }
+    if (incoming.routing.providerPreferenceScale !== undefined) {
+      const value = Number(incoming.routing.providerPreferenceScale);
+      if (!Number.isFinite(value) || value < 0 || value > 100) {
+        errors.push("routing.providerPreferenceScale must be between 0 and 100");
+      } else {
+        automaticRouting.providerPreferenceScale = value;
+      }
+    }
   }
 
   if (incoming.integrations && typeof incoming.integrations === "object") {
@@ -376,7 +384,8 @@ function productSettings(config) {
     routing: {
       priority: normalizeRoutingPriority(config.routing?.priority),
       options: routingPriorityOptions(),
-      providerPreferencePoints: { ...(config.automaticRouting?.providerPreferencePoints ?? {}) }
+      providerPreferencePoints: { ...(config.automaticRouting?.providerPreferencePoints ?? {}) },
+      providerPreferenceScale: config.automaticRouting?.providerPreferenceScale ?? 3
     },
     integrations: { openrouterApiKeyConfigured: Boolean(config.integrations?.openrouterApiKey) },
     data: { activityRetentionDays: config.automaticRouting?.telemetryRetentionDays ?? 30 }
