@@ -143,10 +143,12 @@ export function checkContextFit({
   contextModel,
   estimatedInputTokens,
   requiredOutputTokens = 0,
+  requiredContextTokens = null,
   unknownLargeContextThresholdTokens = 50000
 }) {
   const input = Number(estimatedInputTokens ?? 0);
-  const required = input + Math.max(0, Number(requiredOutputTokens ?? 0));
+  const literalRequest = input + Math.max(0, Number(requiredOutputTokens ?? 0));
+  const required = Math.max(literalRequest, Math.max(0, Number(requiredContextTokens) || 0));
 
   if (contextModel?.effectiveUsableContextWindow == null) {
     if (input >= unknownLargeContextThresholdTokens) {
@@ -163,7 +165,7 @@ export function checkContextFit({
     return {
       ok: false,
       reasonCode: "routing.contextWindowExceeded",
-      detail: `needs ${required} (input ${input} + output reserve ${Math.max(0, Number(requiredOutputTokens ?? 0))}) > usable ${contextModel.effectiveUsableContextWindow}`
+      detail: `needs ${required} (task context demand ${Math.max(0, Number(requiredContextTokens) || literalRequest)}; input ${input} + output reserve ${Math.max(0, Number(requiredOutputTokens ?? 0))}) > usable ${contextModel.effectiveUsableContextWindow}`
     };
   }
   return { ok: true, unknownContext: false };

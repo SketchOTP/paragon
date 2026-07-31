@@ -44,6 +44,35 @@ test("published pricing uses the current Codex Luna rate and never labels it sub
   assert.equal(price.apiPricing.sourceUrl, "https://developers.openai.com/api/docs/models/compare");
 });
 
+test("task context demand reflects the work being ranked", () => {
+  const code = buildTaskProfile({ prompt: "implement a feature in the repository", estimatedInputTokens: 4000 });
+  const quick = buildTaskProfile({ prompt: "quick answer: what is two plus two?", estimatedInputTokens: 4000 });
+  assert.equal(code.estimatedRequiredContextTokens, 150000);
+  assert.equal(quick.estimatedRequiredContextTokens, 4000);
+});
+
+test("context capacity changes eligibility and rank according to task demand", () => {
+  const code = buildTaskProfile({ prompt: "implement a feature in the repository", estimatedInputTokens: 4000 });
+  const candidate = (providerModelId, contextWindow) => ({
+    provider: "codex",
+    providerModelId,
+    catalogEligible: true,
+    health: "healthy",
+    executionProfile: parseExecutionProfile("codex", providerModelId),
+    capabilities: { chatCompletions: true, streaming: true, toolCalls: true },
+    contextModel: { effectiveUsableContextWindow: contextWindow, contextConfidence: "high", outputTokenReserve: 4096 },
+    publishedPricing: publishedModelPricing({ provider: "codex", modelId: providerModelId })
+  });
+  const result = rankCandidates([candidate("gpt-5.4", 120000), candidate("gpt-5.6-terra", 400000)], {
+    taskProfile: code,
+    unknownLargeContextThresholdTokens: 50000
+  });
+  assert.equal(result.ranked.find((row) => row.providerModelId === "gpt-5.4").excluded, true);
+  assert.equal(result.winner.providerModelId, "gpt-5.6-terra");
+  assert.equal(result.winner.components.contextRequirementTokens, 150000);
+  assert.ok(result.winner.components.contextFitTerm > 0);
+});
+
 test("provider preference points are configurable, scaled, and additive", () => {
   const candidate = (provider) => ({
     provider,

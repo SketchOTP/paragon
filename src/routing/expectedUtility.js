@@ -43,6 +43,7 @@ export const UTILITY_WEIGHTS = {
   quotaScarcityScale: 1.0,
   uncertaintyScale: 20,
   reasoningFitScale: 15,
+  contextFitScale: 12,
   /** Provider preference is configured separately from evidence weights. */
   providerPreferenceScale: 3
 };
@@ -104,6 +105,23 @@ function latencyPenalty({ telemetry, taskProfile, executionProfile, minimumSampl
   return { penalty: weight * base * speedFactor, source: "effort_prior", measuredP95Ms: null };
 }
 
+function contextCapacityFit(contextModel, requiredContextTokens) {
+  const required = Math.max(1, Number(requiredContextTokens) || 0);
+  const usable = Number(contextModel?.effectiveUsableContextWindow);
+  if (!Number.isFinite(usable) || usable <= 0) {
+    return { alignment: 0, surplusRatio: null, source: "unknown" };
+  }
+  const surplusRatio = usable / required;
+  return {
+    // 0 at the minimum viable capacity, 1 at 2x the task demand. This makes
+    // context a meaningful tie-break without allowing enormous windows to
+    // dominate quality, reliability, or cost for short tasks.
+    alignment: Math.max(0, Math.min(1, surplusRatio - 1)),
+    surplusRatio,
+    source: "context_capacity_vs_task_demand"
+  };
+}
+
 /**
  * Hard eligibility. Every D-004C1 gate is preserved, plus the new capability
  * and practical-context gates. Returns the first failure so the dashboard
@@ -147,6 +165,7 @@ export function checkHardEligibility(candidate, { taskProfile, unknownLargeConte
     contextModel: candidate.contextModel,
     estimatedInputTokens: taskProfile?.estimatedInputTokens ?? 0,
     requiredOutputTokens: candidate.contextModel?.outputTokenReserve ?? 0,
+    requiredContextTokens: taskProfile?.estimatedRequiredContextTokens ?? null,
     unknownLargeContextThresholdTokens
   });
   if (!contextFit.ok) {
@@ -215,6 +234,9 @@ export function scoreCandidate(candidate, { taskProfile, weights = UTILITY_WEIGH
 
   // --- latency
   const latency = latencyPenalty({ telemetry, taskProfile, executionProfile: candidate.executionProfile, minimumSamples: minimumSamplesForMeasuredEstimate });
+  const requiredContextTokens = taskProfile?.estimatedRequiredContextTokens
+    ?? Math.max(Number(taskProfile?.estimatedInputTokens ?? 0), Number(candidate.contextModel?.outputTokenReserve ?? 0));
+  const contextFit = contextCapacityFit(candidate.contextModel, requiredContextTokens);
 
   // --- reasoning fit (two-sided: over- and under-reasoning both penalized)
   const fit = reasoningFit({
@@ -250,6 +272,7 @@ export function scoreCandidate(candidate, { taskProfile, weights = UTILITY_WEIGH
   const quotaTerm = cost.quotaScarcityPenalty * W.quotaScarcityScale;
   const uncertaintyTerm = uncertainty.penalty * W.uncertaintyScale;
   const reasoningFitTerm = fit.alignment * W.reasoningFitScale;
+  const contextFitTerm = contextFit.alignment * W.contextFitScale;
   const configuredProviderPreference = Number(providerPreferencePoints?.[candidate.provider] ?? 0) || 0;
   const preferenceScale = Number(providerPreferenceScale ?? W.providerPreferenceScale ?? 3) || 0;
   const providerPreferenceTerm = configuredProviderPreference * preferenceScale;
@@ -258,7 +281,7 @@ export function scoreCandidate(candidate, { taskProfile, weights = UTILITY_WEIGH
   const sufficient = confidenceAdjustedSuccessProbability >= successThreshold;
 
   const utilityBeforePreference =
-    qualityTerm - costTerm - latencyTerm - quotaTerm - uncertaintyTerm + reasoningFitTerm + postVerifiedBonus;
+    qualityTerm - costTerm - latencyTerm - quotaTerm - uncertaintyTerm + reasoningFitTerm + contextFitTerm + postVerifiedBonus;
   // Satisfactory candidates are compared by expected cost per successful task;
   // the legacy utility remains visible for backwards-compatible diagnostics.
   const expectedCostPerSuccessfulTask = cost.estimatedTotalResourceCost / Math.max(0.000001, confidenceAdjustedSuccessProbability);
@@ -310,6 +333,11 @@ export function scoreCandidate(candidate, { taskProfile, weights = UTILITY_WEIGH
       reasoningFitAlignment: fit.alignment,
       reasoningFitReason: fit.reason,
       reasoningFitTerm,
+      contextRequirementTokens: requiredContextTokens,
+      contextFitAlignment: contextFit.alignment,
+      contextFitSurplusRatio: contextFit.surplusRatio,
+      contextFitSource: contextFit.source,
+      contextFitTerm,
       postVerifiedBonus,
       postVerifiedReasons,
       configuredProviderPreference,

@@ -235,7 +235,7 @@ test("11c. the uncertainty penalty reaches the utility score for an unmeasured c
     costClass: "standard",
     executionProfile: { reasoningEffort: "unknown", speedMode: "unknown", canonicalModelId: "some-model", executionProfile: "default" },
     capabilities: { chatCompletions: true },
-    contextModel: { effectiveUsableContextWindow: 32000, contextConfidence: "low", outputTokenReserve: 1000 },
+    contextModel: { effectiveUsableContextWindow: 200000, contextConfidence: "low", outputTokenReserve: 1000 },
     benchmark: null,
     telemetry: { sampleCount: 0, measurementConfidence: "none" }
   };
