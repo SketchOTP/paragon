@@ -614,6 +614,10 @@ function emptyRankingRow() {
     reasoningFit: null,
     reasoningFitReason: null,
     expectedUtility: null,
+    utilityBeforePreference: null,
+    configuredProviderPreference: 0,
+    providerPreferenceScale: 3,
+    providerPreferenceTerm: 0,
     providerPreferenceBonus: 0,
     quality: null,
     successProbability: null,
@@ -786,6 +790,10 @@ app.get("/api/models/ranking", async (req, res) => {
 
         // --- the score and every factor behind it
         expectedUtility: candidate?.expectedUtility ?? null,
+        utilityBeforePreference: components?.utilityBeforePreference ?? null,
+        configuredProviderPreference: components?.configuredProviderPreference ?? 0,
+        providerPreferenceScale: components?.providerPreferenceScale ?? 3,
+        providerPreferenceTerm: components?.providerPreferenceTerm ?? 0,
         providerPreferenceBonus: components?.providerPreferenceBonus ?? 0,
         quality: components
           ? { value: components.expectedTaskQuality, source: components.qualitySource, term: components.qualityTerm }
