@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import test from "node:test";
 import { buildTaskProfileV2 } from "../src/routing/taskProfileV2.js";
 import { sufficiencyThreshold, applySufficiencyPolicy } from "../src/routing/sufficiencyPolicy.js";
@@ -138,4 +139,37 @@ test("zero provider preference has exactly zero term", () => {
 
 test("sufficiency policy labels degraded routing", () => {
   assert.deepEqual(applySufficiencyPolicy(0.7, { risk: "production" }), { threshold: 0.94, probability: 0.7, sufficient: false, route: "degraded_sufficiency" });
+});
+
+test("settings UI exposes both evidence keys as password inputs", () => {
+  const html = fs.readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
+  assert.match(html, /id="setting-openrouter-key" type="password"/);
+  assert.match(html, /id="setting-artificial-analysis-key" type="password"/);
+  assert.equal((html.match(/id="save-settings"/g) ?? []).length, 1);
+});
+
+test("settings UI preserves masked keys and provides explicit OpenRouter removal", () => {
+  const app = fs.readFileSync(new URL("../public/app.js", import.meta.url), "utf8");
+  assert.match(app, /openrouterApiKeyConfigured/);
+  assert.match(app, /\/api\/integrations\/openrouter\/remove/);
+  assert.match(app, /if \(artificialAnalysisApiKey \|\| openRouterApiKey\)/);
+});
+
+test("server settings update ignores empty OpenRouter submissions", () => {
+  const server = fs.readFileSync(new URL("../src/server.js", import.meta.url), "utf8");
+  assert.match(server, /if \(value\) integrations\.openrouterApiKey = value/);
+  assert.match(server, /app\.post\("\/api\/integrations\/openrouter\/remove"/);
+});
+
+test("product settings never serializes the raw OpenRouter key", () => {
+  const server = fs.readFileSync(new URL("../src/server.js", import.meta.url), "utf8");
+  const productSettingsSection = server.slice(server.indexOf("function productSettings"), server.indexOf('app.get("/api/settings"'));
+  assert.doesNotMatch(productSettingsSection, /openrouterApiKey:/);
+  assert.match(productSettingsSection, /openrouterApiKeyConfigured/);
+});
+
+test("integration key removal is explicit for both evidence sources", () => {
+  const server = fs.readFileSync(new URL("../src/server.js", import.meta.url), "utf8");
+  assert.match(server, /\/api\/integrations\/openrouter\/remove/);
+  assert.match(server, /\/api\/integrations\/artificial-analysis\/remove/);
 });
