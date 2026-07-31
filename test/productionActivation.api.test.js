@@ -373,6 +373,22 @@ test("17/18. the routing priority is settable through the one settings surface a
   const before = await (await fetch(`${BASE}/api/settings`, { headers: authHeaders() })).json();
   assert.equal(before.routing.priority, "balanced", "Balanced is the default");
   assert.equal(before.routing.options.length, 4);
+  assert.deepEqual(before.routing.providerPreferencePoints, {
+    codex: 3,
+    claude: 2,
+    antigravity: 1,
+    cursor: 0,
+    openrouter: 0,
+    lmstudio: 0
+  });
+
+  const pointsSaved = await fetch(`${BASE}/api/settings`, {
+    method: "PUT",
+    headers: authHeaders(),
+    body: JSON.stringify({ routing: { providerPreferencePoints: { codex: 4.5, claude: 1.5 } } })
+  });
+  assert.equal(pointsSaved.status, 200);
+  assert.equal((await pointsSaved.json()).settings.routing.providerPreferencePoints.codex, 4.5);
 
   const saved = await fetch(`${BASE}/api/settings`, {
     method: "PUT",
@@ -397,11 +413,16 @@ test("17/18. the routing priority is settable through the one settings surface a
   });
   assert.equal(bad.status, 400);
 
-  // Restore the default for any later test.
+  // Restore the defaults for any later test.
   await fetch(`${BASE}/api/settings`, {
     method: "PUT",
     headers: authHeaders(),
     body: JSON.stringify({ routing: { priority: "balanced" } })
+  });
+  await fetch(`${BASE}/api/settings`, {
+    method: "PUT",
+    headers: authHeaders(),
+    body: JSON.stringify({ routing: { providerPreferencePoints: { codex: 3, claude: 2 } } })
   });
 });
 
