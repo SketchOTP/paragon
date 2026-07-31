@@ -511,6 +511,8 @@ test("the Model Ranking reflects the kind of work it was asked about", async () 
 
   assert.equal(trivial.rankedFor.complexity, "trivial");
   assert.equal(extreme.rankedFor.complexity, "extreme");
+  assert.equal(trivial.rankedFor.estimatedRequiredContextTokens, 4000);
+  assert.equal(extreme.rankedFor.estimatedRequiredContextTokens, 300000);
   // The same model is scored differently for different work, which is why the
   // table states what it ranked for rather than implying one absolute order.
   const t = trivial.rows.find((r) => r.routable);
