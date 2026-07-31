@@ -685,6 +685,8 @@ function emptyRankingRow() {
     cost: null,
     contextWindow: null,
     contextConfidence: null,
+    contextRequirementTokens: null,
+    contextFit: null,
     capabilities: null,
     benchmark: null,
     telemetry: null,
@@ -901,6 +903,10 @@ app.get("/api/models/ranking", async (req, res) => {
         // --- context and capability evidence
         contextWindow: candidate?.contextModel?.effectiveUsableContextWindow ?? null,
         contextConfidence: candidate?.contextModel?.contextConfidence ?? null,
+        contextRequirementTokens: components?.contextRequirementTokens ?? null,
+        contextFit: components
+          ? { alignment: components.contextFitAlignment, surplusRatio: components.contextFitSurplusRatio, term: components.contextFitTerm, source: components.contextFitSource }
+          : null,
         capabilities: candidate?.capabilities ?? null,
 
         // --- external and observed evidence
@@ -929,7 +935,8 @@ app.get("/api/models/ranking", async (req, res) => {
       complexity: taskProfile.complexity,
       reasoningDemand: taskProfile.reasoningDemand,
       contextBand: taskProfile.contextBand,
-      estimatedInputTokens: taskProfile.estimatedInputTokens
+      estimatedInputTokens: taskProfile.estimatedInputTokens,
+      estimatedRequiredContextTokens: taskProfile.estimatedRequiredContextTokens
     },
     totals: {
       models: rows.length,

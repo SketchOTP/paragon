@@ -36,6 +36,31 @@ export const LATENCY_PREFERENCES = ["interactive", "normal", "batch"];
 export const QUALITY_PREFERENCES = ["economy", "balanced", "maximum"];
 export const COST_SENSITIVITIES = ["low", "normal", "high"];
 
+const CONTEXT_DEMAND_BY_WORK_TYPE = Object.freeze({
+  quick: 4_000,
+  explain: 16_000,
+  documentation: 32_000,
+  code: 150_000,
+  debug: 150_000,
+  review: 100_000,
+  planning: 64_000,
+  architecture: 200_000,
+  data_analysis: 100_000,
+  unknown: 16_000
+});
+
+const CONTEXT_COMPLEXITY_MULTIPLIER = Object.freeze({ trivial: 0.5, normal: 1, complex: 1.25, extreme: 1.5 });
+const CONTEXT_RISK_MULTIPLIER = Object.freeze({ low: 1, normal: 1, production: 1.15, security_critical: 1.25 });
+
+/** Estimates the working context a task usually needs, independently of the prompt's current size. */
+export function estimatedContextRequirementTokens({ workType, complexity, risk, estimatedInputTokens = null, requestedMaxOutputTokens = null } = {}) {
+  const taskDemand = (CONTEXT_DEMAND_BY_WORK_TYPE[workType] ?? CONTEXT_DEMAND_BY_WORK_TYPE.unknown)
+    * (CONTEXT_COMPLEXITY_MULTIPLIER[complexity] ?? 1)
+    * (CONTEXT_RISK_MULTIPLIER[risk] ?? 1);
+  const requestDemand = Math.max(0, Number(estimatedInputTokens) || 0) + Math.max(0, Number(requestedMaxOutputTokens) || 0);
+  return Math.ceil(Math.max(taskDemand, requestDemand));
+}
+
 /**
  * Work-type signals. Unlike the old classifier these are *scored*, not
  * first-match: every pattern that hits contributes, and the highest total
@@ -159,6 +184,8 @@ export function buildTaskProfile({ prompt = "", body = {}, estimatedInputTokens 
   else reasoningDemand = derivedReasoningDemand(workType, complexity, risk);
 
   const outputContract = outputContractFor(body) ?? (workType === "code" || workType === "debug" ? "code" : "prose");
+  const requestedMaxOutputTokens = Number.isFinite(body?.max_tokens) ? body.max_tokens : null;
+  const estimatedRequiredContextTokens = estimatedContextRequirementTokens({ workType, complexity, risk, estimatedInputTokens, requestedMaxOutputTokens });
 
   /**
    * HARD requirements: capabilities PARAGON cannot emulate or verify after the
@@ -217,7 +244,8 @@ export function buildTaskProfile({ prompt = "", body = {}, estimatedInputTokens 
     qualityPreference,
     costSensitivity,
     estimatedInputTokens: estimatedInputTokens ?? null,
-    requestedMaxOutputTokens: Number.isFinite(body?.max_tokens) ? body.max_tokens : null,
+    requestedMaxOutputTokens,
+    estimatedRequiredContextTokens,
     profileSource: "deterministic_v1"
     ,v2
   };
