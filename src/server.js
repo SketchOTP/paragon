@@ -881,6 +881,7 @@ app.get("/api/models/ranking", async (req, res) => {
               billingUnit: cost.billingUnit,
               pricingSource: cost.pricingSource,
               pricingAsOf: cost.pricingAsOf,
+              apiPricing: candidate.publishedPricing?.apiPricing ?? null,
               quotaBurn: cost.estimatedQuotaBurn,
               quotaBurnSource: cost.quotaBurnSource,
               expectedInputTokens: cost.expectedInputTokens,

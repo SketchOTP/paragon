@@ -764,15 +764,21 @@ function costCell(row) {
   const cost = row.cost;
   if (!cost) return '<span class="muted">—</span>';
   const parts = [];
-  if (cost.monetary != null) {
+  if (cost.apiPricing?.inputPerMillion != null && cost.apiPricing?.completionPerMillion != null) {
+    parts.push(`API $${cost.apiPricing.inputPerMillion} / $${cost.apiPricing.completionPerMillion} per 1M`);
+  } else if (cost.monetary != null) {
     const value = cost.monetary < 0.01 ? cost.monetary.toFixed(5) : cost.monetary.toFixed(3);
     parts.push(cost.billingUnit?.startsWith("USD") ? `$${value}` : `${value} ${cost.billingUnit ?? "published units"}`);
+  } else if (cost.estimatedCodexCredits != null) {
+    parts.push(`${cost.estimatedCodexCredits.toFixed(3)} Codex credits estimated`);
   } else if (cost.unpricedMetered) {
     parts.push("not eligible: no published price");
   }
-  const sub = cost.pricingAvailable
-    ? `${cost.monetaryConfidence} confidence${cost.pricingAsOf ? ` · as of ${cost.pricingAsOf}` : ""}`
-    : "excluded until a dated published price is available";
+  const sub = cost.apiPricing
+    ? `${cost.apiPricing.source ?? "official API price"}${cost.apiPricing.asOf ? ` · as of ${cost.apiPricing.asOf}` : ""}`
+    : cost.pricingAvailable
+      ? `${cost.monetaryConfidence} confidence${cost.pricingAsOf ? ` · as of ${cost.pricingAsOf}` : ""}`
+      : "excluded until a dated published price is available";
   return `<strong>${escapeHtml(parts[0] ?? "—")}</strong><span class="cell-sub">${escapeHtml(sub)}</span>`;
 }
 
@@ -855,7 +861,7 @@ function renderRanking(data) {
 
       const planned = row.attemptOrder ? `<span class="ranking-planned" title="In the current attempt plan">plan ${row.attemptOrder}</span>` : "";
       return `<tr>
-        <td class="ranking-rank">${row.rank}${planned}</td>
+        <td class="ranking-rank">${row.rank ?? "—"}${planned}</td>
         <td>${escapeHtml(row.providerLabel)}</td>
         <td><code>${escapeHtml(row.model)}</code>${
           row.canonicalModel && row.canonicalModel !== row.model
