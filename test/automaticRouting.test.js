@@ -73,6 +73,21 @@ test("context capacity changes eligibility and rank according to task demand", (
   assert.ok(result.winner.components.contextFitTerm > 0);
 });
 
+test("unknown context capacity is not eligible for a high-context code task", () => {
+  const code = buildTaskProfile({ prompt: "implement a feature", estimatedInputTokens: 4000 });
+  const result = rankCandidates([{
+    provider: "openrouter",
+    providerModelId: "unknown-context-model",
+    catalogEligible: true,
+    health: "healthy",
+    isHttpProvider: true,
+    executionProfile: parseExecutionProfile("openrouter", "unknown-context-model"),
+    capabilities: { chatCompletions: true },
+    contextModel: { effectiveUsableContextWindow: null, contextConfidence: "none", outputTokenReserve: 4096 }
+  }], { taskProfile: code, unknownLargeContextThresholdTokens: 50000 });
+  assert.equal(result.ranked[0].reasonCode, "routing.unknownContextForLargeRequest");
+});
+
 test("provider preference points are configurable, scaled, and additive", () => {
   const candidate = (provider) => ({
     provider,
@@ -794,7 +809,7 @@ test("28/29. every routing-integrity invariant holds in the production engine", 
   };
   const catalog = defaultCatalog();
   replaceProviderModels(catalog, "cursor", [
-    { modelId: "good-model", displayName: "good", state: "validated", discoverySource: "cli_command" },
+    { modelId: "good-model", displayName: "good", state: "validated", discoverySource: "cli_command", metadata: { context_length: 200000 } },
     { modelId: "stale-configured-model", displayName: "stale", state: "rejected", discoverySource: "cli_command" },
     { modelId: "text-embedding-thing", displayName: "emb", state: "exposed", discoverySource: "http_models_endpoint" }
   ]);
