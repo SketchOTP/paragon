@@ -192,10 +192,31 @@ test("sparse success evidence is penalized but cannot disqualify a cheaper highe
   assert.ok(luna.rank != null, "sparse evidence must not remove the candidate from the primary ranking");
   assert.equal(luna.components.successSource, "measured_sparse");
   assert.equal(luna.components.sufficient, true);
-  assert.equal(luna.components.sufficiencySource, "sparse_evidence_non_blocking");
+  assert.equal(luna.components.sufficiencySource, "benchmark_and_pricing_baseline");
   assert.ok(luna.components.uncertaintyPenalty > 0);
 });
 
+test("valid benchmark and provider pricing are sufficient baseline evidence without first-party telemetry", () => {
+  const result = rankCandidates([{
+    provider: "claude",
+    providerModelId: "claude-sonnet-4-6",
+    catalogEligible: true,
+    health: "healthy",
+    executionProfile: { reasoningEffort: "unknown", speedMode: "unknown", canonicalModelId: "claude-sonnet-4-6" },
+    capabilities: { chatCompletions: true },
+    contextModel: { effectiveUsableContextWindow: 400000, contextConfidence: "high", outputTokenReserve: 4096 },
+    publishedPricing: { billingUnit: "USD per 1M tokens", inputPerMillion: 3, completionPerMillion: 15 },
+    benchmark: { matchMethod: "exact_normalized", matchConfidence: "high", row: { coding_index: 65 } }
+  }], {
+    taskProfile: { risk: "security_critical", complexity: "extreme", workType: "code", reasoningDemand: "high", estimatedInputTokens: 3000 },
+    unknownLargeContextThresholdTokens: 50000
+  });
+
+  const row = result.ranked[0];
+  assert.equal(row.components.sufficient, true);
+  assert.equal(row.components.sufficiencySource, "benchmark_and_pricing_baseline");
+  assert.ok(!row.components.uncertaintyReasons.includes("no outcome telemetry"));
+});
 test("sufficiency policy labels degraded routing", () => {
   assert.deepEqual(applySufficiencyPolicy(0.7, { risk: "production" }), { threshold: 0.94, probability: 0.7, sufficient: false, route: "degraded_sufficiency" });
 });

@@ -245,7 +245,8 @@ export function scoreCandidate(candidate, { taskProfile, weights = UTILITY_WEIGH
   });
 
   // --- uncertainty
-  const uncertainty = uncertaintyPenalty({ candidate, telemetry, cost, unknownContext, minimumSamplesForMeasuredEstimate });
+  const independentEvidenceBaseline = candidate.benchmark?.matchMethod !== "none" && cost.pricingAvailable;
+  const uncertainty = uncertaintyPenalty({ candidate, telemetry, cost, unknownContext, minimumSamplesForMeasuredEstimate, independentEvidenceBaseline });
 
   const costSensitivityScale = { low: 0.6, normal: 1, high: 1.8 }[taskProfile?.costSensitivity] ?? 1;
 
@@ -284,8 +285,12 @@ export function scoreCandidate(candidate, { taskProfile, weights = UTILITY_WEIGH
   // into the comparison pool. Dense evidence and zero-evidence priors retain
   // the normal sufficiency threshold.
   const sparseEvidence = successSource === "measured_sparse";
-  const sufficient = sparseEvidence || confidenceAdjustedSuccessProbability >= successThreshold;
-  const sufficiencySource = sparseEvidence ? "sparse_evidence_non_blocking" : "confidence_adjusted_probability";
+  const sufficient = independentEvidenceBaseline || sparseEvidence || confidenceAdjustedSuccessProbability >= successThreshold;
+  const sufficiencySource = independentEvidenceBaseline
+    ? "benchmark_and_pricing_baseline"
+    : sparseEvidence
+      ? "sparse_evidence_non_blocking"
+      : "confidence_adjusted_probability";
 
   const utilityBeforePreference =
     qualityTerm - costTerm - latencyTerm - quotaTerm - uncertaintyTerm + reasoningFitTerm + contextFitTerm + postVerifiedBonus;
@@ -321,6 +326,7 @@ export function scoreCandidate(candidate, { taskProfile, weights = UTILITY_WEIGH
       sufficiencyThreshold: successThreshold,
       sufficient,
       sufficiencySource,
+      independentEvidenceBaseline,
       expectedCostPerSuccessfulTask,
       finalDecisionValue: decisionValue,
       successSource,
@@ -384,7 +390,7 @@ export function scoreCandidate(candidate, { taskProfile, weights = UTILITY_WEIGH
   };
 }
 
-function uncertaintyPenalty({ candidate, telemetry, cost, unknownContext, minimumSamplesForMeasuredEstimate }) {
+function uncertaintyPenalty({ candidate, telemetry, cost, unknownContext, minimumSamplesForMeasuredEstimate, independentEvidenceBaseline = false }) {
   let penalty = 0;
   const reasons = [];
 
@@ -402,12 +408,14 @@ function uncertaintyPenalty({ candidate, telemetry, cost, unknownContext, minimu
     reasons.push(`${unknownCaps} capability field(s) unknown`);
   }
 
-  if (!telemetry || telemetry.sampleCount === 0) {
-    penalty += 0.25;
-    reasons.push("no outcome telemetry");
-  } else if (telemetry.sampleCount < minimumSamplesForMeasuredEstimate) {
-    penalty += 0.15;
-    reasons.push(`only ${telemetry.sampleCount} sample(s)`);
+  if (!independentEvidenceBaseline) {
+    if (!telemetry || telemetry.sampleCount === 0) {
+      penalty += 0.25;
+      reasons.push("no outcome telemetry");
+    } else if (telemetry.sampleCount < minimumSamplesForMeasuredEstimate) {
+      penalty += 0.15;
+      reasons.push(`only ${telemetry.sampleCount} sample(s)`);
+    }
   }
 
   if (cost.reasoningEstimateSource === "unknown") {
