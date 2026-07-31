@@ -97,6 +97,22 @@ test("Codex credits are estimated separately from monetary cost", () => {
   assert.equal(cost.pricingSource, "OpenAI Codex rate card");
 });
 
+test("scored candidates preserve official API pricing provenance", () => {
+  const price = publishedModelPricing({ provider: "codex", modelId: "gpt-5.6-terra" });
+  const candidate = {
+    provider: "codex",
+    providerModelId: "gpt-5.6-terra",
+    catalogEligible: true,
+    health: "healthy",
+    executionProfile: parseExecutionProfile("codex", "gpt-5.6-terra"),
+    capabilities: { chatCompletions: true, streaming: true, toolCalls: true },
+    contextModel: { effectiveUsableContextWindow: 200000, contextConfidence: "high", outputTokenReserve: 4096 },
+    publishedPricing: price
+  };
+  const result = rankCandidates([candidate], { taskProfile: buildTaskProfile({ prompt: "write code", estimatedInputTokens: 100 }) });
+  assert.equal(result.ranked[0].publishedPricing.apiPricing.inputPerMillion, 2);
+});
+
 // ---------------------------------------------------------------- Phase 1
 
 test("1. provider-specific reasoning suffix parsing separates identity from effort", () => {
