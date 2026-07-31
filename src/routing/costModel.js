@@ -241,16 +241,24 @@ export function estimateEffectiveCost({
   const reasoningTokens = reasoningUnknown ? conservativeReasoningFloor : (reasoning.expectedReasoningTokens ?? 0);
   const effectiveExpectedTokens = input + expectedVisibleOutputTokens + reasoningTokens;
 
-  // --- monetary
-  const pricing = publishedPricing ?? benchmarkPricing;
+  // --- provider-owned pricing
+  // Benchmark prices are OpenRouter prices. They are never a fallback for a
+  // native CLI or a different HTTP provider.
+  const pricing = publishedPricing ?? (provider === "openrouter" ? benchmarkPricing : null);
   const promptPrice = priceNumber(pricing?.prompt) ?? (priceNumber(pricing?.inputPerMillion) != null ? priceNumber(pricing.inputPerMillion) / 1_000_000 : null);
   const completionPrice = priceNumber(pricing?.completion) ?? (priceNumber(pricing?.completionPerMillion) != null ? priceNumber(pricing.completionPerMillion) / 1_000_000 : promptPrice);
   const cacheReadPrice = priceNumber(pricing?.input_cache_read ?? pricing?.cache_read) ?? (priceNumber(pricing?.cacheReadPerMillion) != null ? priceNumber(pricing.cacheReadPerMillion) / 1_000_000 : null);
-  const reasoningPrice = priceNumber(benchmarkPricing?.internal_reasoning ?? benchmarkPricing?.reasoning) ?? completionPrice;
+  const reasoningPrice = priceNumber(pricing?.internal_reasoning ?? pricing?.reasoning) ?? completionPrice;
 
+  const isCodexCredits = String(pricing?.billingUnit ?? "").toLowerCase().startsWith("codex credits");
   let estimatedMonetaryCost = null;
+  let estimatedCreditsConsumed = null;
   let monetaryConfidence = "none";
-  if (promptPrice != null) {
+  if (isCodexCredits && promptPrice != null) {
+    estimatedCreditsConsumed =
+      input * promptPrice + expectedVisibleOutputTokens * (completionPrice ?? promptPrice) + reasoningTokens * (reasoningPrice ?? promptPrice);
+    monetaryConfidence = "high";
+  } else if (promptPrice != null) {
     estimatedMonetaryCost =
       input * promptPrice + expectedVisibleOutputTokens * (completionPrice ?? promptPrice) + reasoningTokens * (reasoningPrice ?? promptPrice);
     monetaryConfidence = reasoning.reasoningCostConfidence === "high" ? "medium" : "low";
@@ -284,7 +292,11 @@ export function estimateEffectiveCost({
   // axis. Exposed as a named constant rather than buried so it can be
   // recalibrated from shadow evidence.
   const MONETARY_TO_RESOURCE_UNITS = 1000;
-  let monetaryUnits = estimatedMonetaryCost != null ? estimatedMonetaryCost * MONETARY_TO_RESOURCE_UNITS : 0;
+  let monetaryUnits = isCodexCredits
+    ? (estimatedCreditsConsumed ?? 0)
+    : estimatedMonetaryCost != null
+      ? estimatedMonetaryCost * MONETARY_TO_RESOURCE_UNITS
+      : 0;
 
   // PARAGON-D-004E (Phase 1): a metered provider with no pricing evidence is
   // not a free provider. Without this, an unpriced HTTP endpoint scored zero
@@ -313,8 +325,10 @@ export function estimateEffectiveCost({
     effectiveExpectedTokens,
 
     estimatedMonetaryCost,
+    estimatedCreditsConsumed,
     monetaryCostConfidence: monetaryConfidence,
     pricingAvailable: promptPrice != null,
+    pricingConfidence: pricing?.confidence ?? "unknown",
     cacheReadPriceKnown: cacheReadPrice != null,
     // PARAGON-D-004E: surfaced so Diagnostics can show *why* a cost figure is
     // soft, and so a reviewer can prove unknown usage was penalized rather

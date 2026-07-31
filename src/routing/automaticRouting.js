@@ -271,6 +271,7 @@ export function selectAutomaticRoute({
     maxCostClass: hints?.maxCostClass ?? null,
     quotaScarcity: quotaState?.scarcity ? quotaState.scarcity(config) : (settings.quotaScarcity ?? 0),
     providerPreferencePoints: settings.providerPreferencePoints ?? config?.automaticRouting?.providerPreferencePoints ?? {},
+    providerPreferenceScale: settings.providerPreferenceScale ?? config?.automaticRouting?.providerPreferenceScale ?? 3,
     quotaState,
     explicitlyForced: Boolean(hints?.forceProvider)
   });

@@ -116,9 +116,18 @@ test("antigravity can be chosen by automatic routing once it has a real candidat
   // selection, not just "nothing to choose from".
   config.providers.antigravity.models = [{ id: "antigravity-test-model", name: "antigravity-test-model" }];
   config.providers.antigravity.model = "antigravity-test-model";
-  // Bias every task route toward antigravity.
-  // Automatic routing consumes no provider preference; eligibility comes from
-  // the seeded catalog alone.
+  // This hermetic fixture intentionally has no published model price; the
+  // production default remains strict and excludes such a tuple.
+  config.automaticRouting.requirePublishedPricing = false;
+  // Bias the explicit provider-preference term toward antigravity.
+  config.automaticRouting.providerPreferencePoints = {
+    codex: 0,
+    claude: 0,
+    antigravity: 100,
+    cursor: 0,
+    openrouter: 0,
+    lmstudio: 0
+  };
   await fetch(`${BASE}/api/config`, { method: "PUT", headers: authHeaders(), body: JSON.stringify(config) });
 
   const res = await fetch(`${BASE}/v1/chat/completions`, {

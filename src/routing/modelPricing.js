@@ -19,6 +19,7 @@ const USD = (input, output, cachedInput, sourceUrl) => ({
   inputPerMillion: input,
   completionPerMillion: output,
   cacheReadPerMillion: cachedInput,
+  confidence: "official",
   sourceUrl,
   asOf: PRICING_CATALOG_AS_OF
 });
@@ -28,13 +29,15 @@ const CREDITS = (input, output, cachedInput) => ({
   inputPerMillion: input,
   completionPerMillion: output,
   cacheReadPerMillion: cachedInput,
+  source: "OpenAI Codex rate card",
+  confidence: "official",
   sourceUrl: CODEX_RATE_CARD,
   asOf: PRICING_CATALOG_AS_OF
 });
 
 const CODEX_PRICES = [
-  [/^gpt-5\.6-luna(?:$|[-.])/i, CREDITS(25, 150, 2.5)],
-  [/^gpt-5\.6-terra(?:$|[-.])/i, CREDITS(62.5, 375, 6.25)],
+  [/^gpt-5\.6-luna(?:$|[-.])/i, CREDITS(5, 30, 0.5)],
+  [/^gpt-5\.6-terra(?:$|[-.])/i, CREDITS(50, 300, 5)],
   [/^gpt-5\.6-sol(?:$|[-.])/i, CREDITS(125, 750, 12.5)],
   [/^gpt-5\.5(?:$|[-.])/i, CREDITS(125, 750, 12.5)],
   [/^gpt-5\.4-mini(?:$|[-.])/i, CREDITS(18.75, 113, 1.875)],
@@ -66,10 +69,29 @@ function lookup(patterns, modelId) {
   return match ? { ...match[1] } : null;
 }
 
-/** Resolve explicit provider pricing. Benchmark pricing remains valid for HTTP models. */
+/**
+ * Resolve provider-owned pricing. Benchmark rows can describe quality for
+ * every provider, but their prices belong exclusively to OpenRouter tuples.
+ */
 export function publishedModelPricing({ provider, modelId, benchmarkPricing = null, metadata = null } = {}) {
   const id = String(modelId ?? "");
-  if (benchmarkPricing?.prompt != null && benchmarkPricing?.completion != null) {
+  if (provider === "codex") {
+    return lookup(CODEX_PRICES, id);
+  }
+  if (provider === "claude") {
+    return lookup(CLAUDE_PRICES, id);
+  }
+  if (provider === "antigravity") {
+    return lookup(GEMINI_PRICES, id);
+  }
+  if (provider !== "openrouter" && metadata?.pricing?.prompt != null && metadata?.pricing?.completion != null) {
+    return {
+      ...metadata.pricing,
+      source: metadata.pricing.source ?? "provider metadata",
+      asOf: metadata.pricing.asOf ?? PRICING_CATALOG_AS_OF
+    };
+  }
+  if (provider === "openrouter" && benchmarkPricing?.prompt != null && benchmarkPricing?.completion != null) {
     const prompt = Number(benchmarkPricing.prompt);
     const completion = Number(benchmarkPricing.completion ?? benchmarkPricing.prompt);
     return {
@@ -79,15 +101,10 @@ export function publishedModelPricing({ provider, modelId, benchmarkPricing = nu
       inputPerMillion: prompt * 1_000_000,
       completionPerMillion: completion * 1_000_000,
       source: "OpenRouter benchmark pricing",
+      confidence: "benchmark",
       sourceUrl: "https://openrouter.ai/api/v1/benchmarks",
       asOf: PRICING_CATALOG_AS_OF
     };
   }
-  if (metadata?.pricing?.prompt != null && metadata?.pricing?.completion != null) {
-    return publishedModelPricing({ provider, modelId, benchmarkPricing: metadata.pricing });
-  }
-  if (provider === "codex") return lookup(CODEX_PRICES, id);
-  if (provider === "claude") return lookup(CLAUDE_PRICES, id);
-  if (provider === "antigravity") return lookup(GEMINI_PRICES, id);
   return null;
 }
