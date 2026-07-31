@@ -151,11 +151,11 @@ export function checkContextFit({
   const required = Math.max(literalRequest, Math.max(0, Number(requiredContextTokens) || 0));
 
   if (contextModel?.effectiveUsableContextWindow == null) {
-    if (input >= unknownLargeContextThresholdTokens) {
+    if (required >= unknownLargeContextThresholdTokens) {
       return {
         ok: false,
         reasonCode: "routing.unknownContextForLargeRequest",
-        detail: `context capacity unknown and estimated input ${input} >= threshold ${unknownLargeContextThresholdTokens}`
+        detail: `context capacity unknown and required context ${required} >= threshold ${unknownLargeContextThresholdTokens}`
       };
     }
     return { ok: true, unknownContext: true };
