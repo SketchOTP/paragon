@@ -24,6 +24,7 @@ import { estimateEffectiveCost, reasoningFit } from "./costModel.js";
 import { checkRequiredCapabilities } from "./capabilityProfile.js";
 import { checkContextFit } from "./contextModel.js";
 import { isCircuitOpen, circuitStateSnapshot } from "../orchestration/liveEnforcement.js";
+import { sufficiencyThreshold } from "./sufficiencyPolicy.js";
 
 export const CONFIDENCE_LEVELS = ["high", "medium", "low", "only_eligible", "explicit_validated"];
 
@@ -47,7 +48,7 @@ export const UTILITY_WEIGHTS = {
 };
 
 /** Neutral prior when there is no measured success history at all. */
-const PRIOR_SUCCESS_PROBABILITY = 0.85;
+const PRIOR_SUCCESS_PROBABILITY = 0.9;
 
 /**
  * Quality priors by benchmark index, normalized to 0..1. Only used when a
@@ -172,7 +173,8 @@ export function scoreCandidate(candidate, { taskProfile, weights = UTILITY_WEIGH
   const W = { ...UTILITY_WEIGHTS, ...weights };
 
   // --- probability of successful completion
-  let probabilityOfSuccessfulCompletion = PRIOR_SUCCESS_PROBABILITY;
+  const priorForRisk = { low: 0.9, normal: 0.9, production: 0.95, security_critical: 0.98 };
+  let probabilityOfSuccessfulCompletion = priorForRisk[taskProfile?.risk] ?? PRIOR_SUCCESS_PROBABILITY;
   let successSource = "prior";
   if (telemetry?.smoothedSuccessProbability != null && telemetry.sampleCount > 0) {
     probabilityOfSuccessfulCompletion = telemetry.smoothedSuccessProbability;
@@ -251,9 +253,16 @@ export function scoreCandidate(candidate, { taskProfile, weights = UTILITY_WEIGH
   const configuredProviderPreference = Number(providerPreferencePoints?.[candidate.provider] ?? 0) || 0;
   const preferenceScale = Number(providerPreferenceScale ?? W.providerPreferenceScale ?? 3) || 0;
   const providerPreferenceTerm = configuredProviderPreference * preferenceScale;
+  const successThreshold = sufficiencyThreshold(taskProfile);
+  const confidenceAdjustedSuccessProbability = Math.max(0, Math.min(1, probabilityOfSuccessfulCompletion + fit.alignment * 0.1));
+  const sufficient = confidenceAdjustedSuccessProbability >= successThreshold;
 
   const utilityBeforePreference =
     qualityTerm - costTerm - latencyTerm - quotaTerm - uncertaintyTerm + reasoningFitTerm + postVerifiedBonus;
+  // Satisfactory candidates are compared by expected cost per successful task;
+  // the legacy utility remains visible for backwards-compatible diagnostics.
+  const expectedCostPerSuccessfulTask = cost.estimatedTotalResourceCost / Math.max(0.000001, confidenceAdjustedSuccessProbability);
+  const decisionValue = sufficient ? -expectedCostPerSuccessfulTask + providerPreferenceTerm : -1000 + confidenceAdjustedSuccessProbability;
   const expectedUtility = utilityBeforePreference + providerPreferenceTerm;
 
   return {
@@ -277,6 +286,11 @@ export function scoreCandidate(candidate, { taskProfile, weights = UTILITY_WEIGH
     components: {
       utilityBeforePreference,
       probabilityOfSuccessfulCompletion,
+      confidenceAdjustedSuccessProbability,
+      sufficiencyThreshold: successThreshold,
+      sufficient,
+      expectedCostPerSuccessfulTask,
+      finalDecisionValue: decisionValue,
       successSource,
       expectedTaskQuality,
       qualitySource,
@@ -398,7 +412,7 @@ function measuredEvidenceShare({ successSource, qualitySource, cost, latency }) 
  * factor — that was an undocumented routing weight.
  */
 export function compareCandidates(a, b) {
-  const utilityDelta = b.expectedUtility - a.expectedUtility;
+  const utilityDelta = (b.components?.finalDecisionValue ?? b.expectedUtility) - (a.components?.finalDecisionValue ?? a.expectedUtility);
   if (Math.abs(utilityDelta) > 1e-9) return utilityDelta;
 
   const byEvidence = (b.components.successSource === "measured" ? 1 : 0) - (a.components.successSource === "measured" ? 1 : 0);
@@ -507,9 +521,13 @@ export function rankCandidates(candidates, options) {
     scored.push(scoreCandidate(candidate, { ...options, unknownContext: eligibility.unknownContext }));
   }
 
-  const eligible = scored.filter((c) => !c.excluded).sort(compareCandidates);
+  const admissible = scored.filter((c) => !c.excluded);
+  const satisfactory = admissible.filter((c) => c.components?.sufficient);
+  const pool = satisfactory.length ? satisfactory : admissible;
+  const eligible = pool.sort(compareCandidates);
   const excluded = scored.filter((c) => c.excluded);
-  const ranked = [...eligible, ...excluded];
+  const belowThreshold = admissible.filter((c) => !c.components?.sufficient && satisfactory.length).sort(compareCandidates);
+  const ranked = [...eligible, ...belowThreshold, ...excluded];
   eligible.forEach((c, index) => {
     c.rank = index + 1;
     c.of = eligible.length;
@@ -519,6 +537,7 @@ export function rankCandidates(candidates, options) {
     ranked,
     winner: eligible[0] ?? null,
     confidence: routingConfidence(ranked, { explicitlyForced: Boolean(options?.explicitlyForced) }),
+    routeStatus: satisfactory.length ? "satisfactory" : eligible.length ? "degraded_sufficiency" : "no_eligible_model",
     circuitStates: circuitStateSnapshot(),
     weights: { ...UTILITY_WEIGHTS, ...(options?.weights ?? {}) }
   };

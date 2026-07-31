@@ -114,6 +114,11 @@ const els = {
   settingFunnelPort: document.querySelector("#setting-funnel-port"),
   priorityPicker: document.querySelector("#priority-picker"),
   providerPreferencePoints: document.querySelector("#provider-preference-points"),
+  settingArtificialAnalysisKey: document.querySelector("#setting-artificial-analysis-key"),
+  artificialAnalysisStatus: document.querySelector("#artificial-analysis-status"),
+  testArtificialAnalysis: document.querySelector("#test-artificial-analysis"),
+  refreshArtificialAnalysis: document.querySelector("#refresh-artificial-analysis"),
+  removeArtificialAnalysis: document.querySelector("#remove-artificial-analysis"),
   settingRetentionDays: document.querySelector("#setting-retention-days"),
   clearActivity: document.querySelector("#clear-activity"),
   clearActivityStatus: document.querySelector("#clear-activity-status"),
@@ -936,6 +941,10 @@ function renderSettings() {
       <input type="number" min="-100" max="100" step="0.1" data-provider-preference="${escapeAttr(provider)}" value="${escapeAttr(points)}" />`;
     els.providerPreferencePoints.appendChild(row);
   }
+  els.settingArtificialAnalysisKey.value = "";
+  els.settingArtificialAnalysisKey.placeholder = settings.integrations?.artificialAnalysisApiKeyConfigured ? "unchanged" : "not set";
+  const aa = settings.integrations?.artificialAnalysis ?? {};
+  els.artificialAnalysisStatus.textContent = `Status: ${aa.connected ? "Connected" : aa.configured ? "Not connected" : "not configured"}${aa.tier ? ` · Tier: ${aa.tier}` : ""}${aa.modelsLoaded != null ? ` · Models imported: ${aa.modelsLoaded}` : ""}`;
 }
 
 function openSettings() {
@@ -973,6 +982,8 @@ async function saveSettings() {
   if (apiKey) {
     payload.server.apiKey = apiKey;
   }
+  const artificialAnalysisApiKey = els.settingArtificialAnalysisKey.value.trim();
+  if (artificialAnalysisApiKey) payload.integrations = { artificialAnalysisApiKey };
 
   try {
     const response = await apiFetch("/api/settings", {
@@ -1016,6 +1027,14 @@ async function clearActivityHistory() {
   } finally {
     els.clearActivity.disabled = false;
   }
+}
+
+async function artificialAnalysisAction(action) {
+  const response = await apiFetch(`/api/integrations/artificial-analysis/${action}`, { method: "POST" });
+  const body = await response.json();
+  if (!response.ok) throw new Error(body.error?.message || body.error || "Artificial Analysis request failed");
+  settings.integrations = { ...(settings.integrations ?? {}), artificialAnalysis: body };
+  renderSettings();
 }
 
 // ---------------------------------------------------------------- Diagnostics
@@ -1894,6 +1913,9 @@ function wire() {
   els.settingsClose.addEventListener("click", () => els.settingsDialog.close());
   els.settingsCloseX.addEventListener("click", () => els.settingsDialog.close());
   els.clearActivity.addEventListener("click", clearActivityHistory);
+  els.testArtificialAnalysis.addEventListener("click", () => artificialAnalysisAction("test").catch((e) => { els.artificialAnalysisStatus.textContent = `Status: ${e.message}`; }));
+  els.refreshArtificialAnalysis.addEventListener("click", () => artificialAnalysisAction("refresh").catch((e) => { els.artificialAnalysisStatus.textContent = `Status: ${e.message}`; }));
+  els.removeArtificialAnalysis.addEventListener("click", () => artificialAnalysisAction("remove").catch((e) => { els.artificialAnalysisStatus.textContent = `Status: ${e.message}`; }));
   els.openDiagnostics.addEventListener("click", openDiagnostics);
 
   els.diagnosticsClose.addEventListener("click", () => els.diagnosticsDialog.close());

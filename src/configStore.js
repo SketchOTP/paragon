@@ -60,6 +60,10 @@ function applyEnvOverrides(config) {
   if (modelCatalogEnabled !== undefined) {
     config.modelCatalog = { ...config.modelCatalog, enabled: modelCatalogEnabled !== "0" && modelCatalogEnabled !== "false" };
   }
+  const artificialAnalysisApiKey = getEnv("ARTIFICIAL_ANALYSIS_API_KEY");
+  if (artificialAnalysisApiKey !== undefined) {
+    config.integrations = { ...config.integrations, artificialAnalysisApiKey };
+  }
   return config;
 }
 

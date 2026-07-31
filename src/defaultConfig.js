@@ -126,9 +126,9 @@ export const defaultConfig = {
     requirePublishedPricing: true,
     /** Additive frontier preference points; zero means no provider preference. */
     providerPreferencePoints: {
-      codex: 3,
-      claude: 2,
-      antigravity: 1,
+      codex: 0,
+      claude: 0,
+      antigravity: 0,
       cursor: 0,
       openrouter: 0,
       lmstudio: 0
@@ -149,6 +149,7 @@ export const defaultConfig = {
     // Analysis / Design Arena, via OpenRouter's benchmarks API) in the
     // Model Routing panel. Without it, task-fit ranking stays
     // internal-only (see src/routing/expectedUtility.js).
-    openrouterApiKey: ""
+    openrouterApiKey: "",
+    artificialAnalysisApiKey: ""
   }
 };

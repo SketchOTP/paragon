@@ -33,10 +33,37 @@ import {
 } from "./routing/routingPriority.js";
 import { circuitStateSnapshot } from "./orchestration/liveEnforcement.js";
 import { AVATAR_DIR, AVATAR_ROUTE, removeProviderAvatar, saveProviderAvatar } from "./providerAvatars.js";
+import { createArtificialAnalysisClient, ARTIFICIAL_ANALYSIS_ATTRIBUTION } from "./routing/evidence/artificialAnalysisClient.js";
+import { createEvidenceStore } from "./routing/evidence/evidenceStore.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 let cachedConfig = await readConfig();
 let cachedCatalog = await loadCatalog();
+const artificialAnalysisEvidence = createEvidenceStore();
+await artificialAnalysisEvidence.load().catch(() => {});
+let artificialAnalysisStatus = { configured: false, connected: false, tier: null, lastAttemptAt: null, lastSuccessfulFetchAt: null, dataAgeMs: null, stale: true, modelsLoaded: 0, rateLimitRemaining: null, rateLimitReset: null };
+
+function artificialAnalysisKey(config) { return getEnv("ARTIFICIAL_ANALYSIS_API_KEY") ?? config.integrations?.artificialAnalysisApiKey ?? ""; }
+
+async function refreshArtificialAnalysis(config, { testOnly = false } = {}) {
+  const key = artificialAnalysisKey(config);
+  const at = new Date().toISOString();
+  artificialAnalysisStatus = { ...artificialAnalysisStatus, configured: Boolean(key), lastAttemptAt: at };
+  if (!key) return artificialAnalysisStatus;
+  try {
+    const client = createArtificialAnalysisClient({ apiKey: key });
+    const result = await client.fetchModels({ tier: "free" });
+    const rows = result.rows ?? [];
+    if (!testOnly) {
+      artificialAnalysisEvidence.replace(rows.map((row) => ({ source: "artificial_analysis", sourceRecordId: row.id ?? row.model_id ?? row.model_permaslug, canonicalModelId: row.model_permaslug ?? row.id, provider: row.provider ?? null, metric: "model_record", value: row, unit: "record", methodologyVersion: row.methodology_version ?? null, observedAt: row.observed_at ?? at, expiresAt: new Date(Date.now() + 48 * 60 * 60 * 1000).toISOString(), confidence: "medium", attributionRequired: true, raw: row })));
+      await artificialAnalysisEvidence.save();
+    }
+    artificialAnalysisStatus = { ...artificialAnalysisStatus, configured: true, connected: true, tier: result.tier ?? "free", lastSuccessfulFetchAt: at, dataAgeMs: 0, stale: false, modelsLoaded: rows.length, rateLimitRemaining: result.rateLimitRemaining, rateLimitReset: result.rateLimitReset };
+  } catch (error) {
+    artificialAnalysisStatus = { ...artificialAnalysisStatus, configured: true, connected: false, error: error.message, errorKind: error.kind ?? "request_failed", retryAfter: error.retryAfter ?? null, stale: true };
+  }
+  return artificialAnalysisStatus;
+}
 
 /**
  * Single in-process view of the persisted model catalog. recordResult() is the
@@ -348,6 +375,10 @@ app.put("/api/settings", async (req, res) => {
     if (incoming.integrations.openrouterApiKey !== undefined) {
       integrations.openrouterApiKey = String(incoming.integrations.openrouterApiKey).trim();
     }
+    if (incoming.integrations.artificialAnalysisApiKey !== undefined) {
+      const value = String(incoming.integrations.artificialAnalysisApiKey).trim();
+      if (value) integrations.artificialAnalysisApiKey = value;
+    }
   }
 
   if (incoming.data && typeof incoming.data === "object") {
@@ -387,13 +418,34 @@ function productSettings(config) {
       providerPreferencePoints: { ...(config.automaticRouting?.providerPreferencePoints ?? {}) },
       providerPreferenceScale: config.automaticRouting?.providerPreferenceScale ?? 3
     },
-    integrations: { openrouterApiKeyConfigured: Boolean(config.integrations?.openrouterApiKey) },
+    integrations: { openrouterApiKeyConfigured: Boolean(config.integrations?.openrouterApiKey), artificialAnalysisApiKeyConfigured: Boolean(artificialAnalysisKey(config)), artificialAnalysis: { ...artificialAnalysisStatus, key: undefined } },
     data: { activityRetentionDays: config.automaticRouting?.telemetryRetentionDays ?? 30 }
   };
 }
 
 app.get("/api/settings", async (_req, res) => {
   res.json(productSettings(await getConfig()));
+});
+
+app.get("/api/integrations/artificial-analysis/status", async (_req, res) => {
+  const config = await getConfig();
+  const now = Date.now();
+  const last = artificialAnalysisStatus.lastSuccessfulFetchAt ? Date.parse(artificialAnalysisStatus.lastSuccessfulFetchAt) : 0;
+  res.json({ ...artificialAnalysisStatus, configured: Boolean(artificialAnalysisKey(config)), dataAgeMs: last ? now - last : null, stale: !last || now - last > 48 * 60 * 60 * 1000, key: undefined, attribution: ARTIFICIAL_ANALYSIS_ATTRIBUTION });
+});
+app.post("/api/integrations/artificial-analysis/test", async (_req, res) => {
+  const result = await refreshArtificialAnalysis(await getConfig(), { testOnly: true });
+  res.status(result.connected ? 200 : 502).json({ ...result, key: undefined });
+});
+app.post("/api/integrations/artificial-analysis/refresh", async (_req, res) => {
+  const result = await refreshArtificialAnalysis(await getConfig());
+  res.status(result.connected ? 200 : 502).json({ ...result, key: undefined });
+});
+app.post("/api/integrations/artificial-analysis/remove", async (_req, res) => {
+  const config = await getConfig();
+  cachedConfig = await writeConfig({ ...config, integrations: { ...config.integrations, artificialAnalysisApiKey: "" } });
+  artificialAnalysisStatus = { configured: false, connected: false, tier: null, lastAttemptAt: null, lastSuccessfulFetchAt: null, dataAgeMs: null, stale: true, modelsLoaded: 0, rateLimitRemaining: null, rateLimitReset: null };
+  res.json({ ok: true, status: artificialAnalysisStatus });
 });
 
 app.get("/api/status", async (req, res) => {

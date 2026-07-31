@@ -13,6 +13,8 @@
  * request produced.
  */
 
+import { buildTaskProfileV2 } from "./taskProfileV2.js";
+
 export const WORK_TYPES = [
   "quick",
   "explain",
@@ -200,6 +202,7 @@ export function buildTaskProfile({ prompt = "", body = {}, estimatedInputTokens 
   // inference from the prompt text.
   const costSensitivity = hints?.maxCostClass === "economy" ? "high" : qualityPreference === "maximum" ? "low" : "normal";
 
+  const v2 = buildTaskProfileV2({ prompt: text, body, estimatedInputTokens, hints });
   return {
     workType,
     workTypeScores,
@@ -216,6 +219,7 @@ export function buildTaskProfile({ prompt = "", body = {}, estimatedInputTokens 
     estimatedInputTokens: estimatedInputTokens ?? null,
     requestedMaxOutputTokens: Number.isFinite(body?.max_tokens) ? body.max_tokens : null,
     profileSource: "deterministic_v1"
+    ,v2
   };
 }
 

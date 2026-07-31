@@ -268,7 +268,7 @@ export function estimateEffectiveCost({
   // Subscription providers: the scarce resource is the allowance, not
   // dollars. Burn is proportional to total tokens including reasoning,
   // which is precisely what a `max` profile inflates.
-  const isSubscription = false;
+  const isSubscription = SUBSCRIPTION_PROVIDERS.has(provider);
   const measuredQuota = Number(telemetry?.averageQuotaBurn);
   const samples = Number(telemetry?.sampleCount ?? 0);
   let estimatedQuotaBurn = 0;
@@ -337,7 +337,7 @@ export function estimateEffectiveCost({
     conservativeReasoningFloorTokens: reasoningUnknown ? conservativeReasoningFloor : null,
     unpricedMeteredProvider,
 
-    isSubscriptionProvider: false,
+    isSubscriptionProvider: isSubscription,
     billingUnit: pricing?.billingUnit ?? null,
     pricingSource: pricing?.source ?? pricing?.sourceUrl ?? null,
     pricingAsOf: pricing?.asOf ?? null,

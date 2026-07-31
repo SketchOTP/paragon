@@ -38,6 +38,7 @@ import { classifyChatCapability } from "../modelCapability.js";
 import { resolveUtilityWeights, normalizeRoutingPriority } from "./routingPriority.js";
 import { executionMethodFor, expertTupleId } from "./expertTuple.js";
 import { publishedModelPricing } from "./modelPricing.js";
+import { optimizeFallbackPlan, evaluatePlan } from "./planOptimizer.js";
 
 const ECONOMY_HINTS = /haiku|mini|flash|-low\b|small/i;
 const PREMIUM_HINTS = /opus|mythos|fable|-pro\b|-high\b|-max\b|ultra/i;
@@ -286,9 +287,16 @@ export function selectAutomaticRoute({
     );
   }
 
-  const attemptPlan = buildAttemptPlan(result.ranked, config, {
-    maximumAttempts: settings.maximumAttempts ?? 4
+  const optimization = optimizeFallbackPlan(result.ranked.filter((c) => !c.excluded), {
+    maximumAttempts: settings.maximumAttempts ?? 4,
+    minimumAttempts: Math.min(2, settings.maximumAttempts ?? 4),
+    successTarget: taskProfile?.sufficiencyThreshold,
+    failureProbability: (candidate) => 1 - Number(candidate.components?.confidenceAdjustedSuccessProbability ?? candidate.components?.probabilityOfSuccessfulCompletion ?? 0.85),
+    attemptCost: (candidate) => Number(candidate.components?.expectedCostPerSuccessfulTask ?? candidate.components?.expectedTotalResourceCost ?? 0),
+    providerFailureProbability: (candidate) => candidate.components?.providerFailureProbability ?? 0
   });
+  const optimizedRanked = optimization?.plan?.length ? optimization.plan : result.ranked;
+  const attemptPlan = buildAttemptPlan(optimizedRanked, config, { maximumAttempts: settings.maximumAttempts ?? 4 });
 
   return {
     ...result,
@@ -296,6 +304,7 @@ export function selectAutomaticRoute({
     reasonCode: hints.forceProvider ? "hint.forceProvider" : "automatic.expectedUtility",
     attemptPlan,
     attemptPlanSummary: summarizeAttemptPlan(attemptPlan),
+    planOptimization: optimization ? { ...optimization.score, route: optimization.route ?? result.routeStatus } : null,
     benchmarkCoverage,
     rejectedAliases,
     candidateCount: candidates.length,
