@@ -815,6 +815,7 @@ app.get("/api/models/ranking", async (req, res) => {
               totalResourceCost: cost.estimatedTotalResourceCost,
               term: components?.costTerm ?? null,
               monetary: cost.estimatedMonetaryCost,
+              estimatedCodexCredits: cost.estimatedCreditsConsumed,
               monetaryConfidence: cost.monetaryCostConfidence,
               pricingAvailable: cost.pricingAvailable,
               unpricedMetered: cost.unpricedMeteredProvider,
