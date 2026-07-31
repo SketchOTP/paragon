@@ -164,7 +164,7 @@ export function buildTaskProfile({ prompt = "", body = {}, estimatedInputTokens 
    */
   const requiredCapabilities = ["chatCompletions"];
   if (body?.stream) requiredCapabilities.push("streaming");
-  if (Array.isArray(body?.tools) && body.tools.length) requiredCapabilities.push("toolCalls");
+  if (Array.isArray(body?.tools) && body.tools.length) requiredCapabilities.push("toolExecution");
   if (hasImageContent(body)) requiredCapabilities.push("visionInput");
   if (hasAudioContent(body)) requiredCapabilities.push("audioInput");
 

@@ -283,7 +283,7 @@ test("13. unknown tool capability cannot satisfy a tool request", () => {
   assert.equal(gate.observed, "unknown", "unknown must never be treated as supported");
 });
 
-test("13b. builtin CLI providers report toolCalls false structurally, since PARAGON invokes them tools-disabled", () => {
+test("13b. builtin CLI providers expose native agent tools separately from OpenAI tool calls", () => {
   const profile = buildCapabilityProfile({ provider: "claude", providerModelId: "claude-opus-5", catalogEntry: { state: "validated", lastSuccessAt: "now" } });
   assert.equal(profile.toolCalls, false);
   assert.equal(profile.chatCompletions, true);
@@ -304,7 +304,7 @@ test("13b. HTTP model metadata can positively establish native tool-call support
   assert.equal(profile.toolCalls, true);
 });
 
-test("13b-2. tool-enabled requests route only to a positively tool-capable HTTP model", () => {
+test("13b-2. tool-enabled requests route to a verified execution-capable expert", () => {
   const catalog = defaultCatalog();
   replaceProviderModels(catalog, "claude", [{
     modelId: "claude-opus-5",
@@ -336,9 +336,9 @@ test("13b-2. tool-enabled requests route only to a positively tool-capable HTTP 
     }),
     settings: config.automaticRouting
   });
-  assert.equal(route.winner.provider, "lmstudio");
-  assert.equal(route.winner.capabilities.toolCalls, true);
-  assert.ok(route.attemptPlan.every((attempt) => attempt.name === "lmstudio"));
+  assert.equal(route.winner.provider, "claude");
+  assert.equal(route.winner.capabilities.nativeAgentTools, true);
+  assert.ok(route.attemptPlan.every((attempt) => attempt.name === "claude"));
 });
 
 test("13c. a parsed reasoning effort is itself evidence that the provider exposes reasoning controls", () => {
@@ -424,7 +424,7 @@ test("17c. required capabilities are derived from the actual request shape", () 
     body: { stream: true, tools: [{ type: "function" }], response_format: { type: "json_schema" } }
   });
   assert.ok(profile.requiredCapabilities.includes("streaming"));
-  assert.ok(profile.requiredCapabilities.includes("toolCalls"));
+  assert.ok(profile.requiredCapabilities.includes("toolExecution"));
   assert.equal(profile.outputContract, "json_schema");
   // PARAGON-D-004E: structured output is verified after the fact (parse the
   // response, escalate if invalid), so it is a scoring preference rather than

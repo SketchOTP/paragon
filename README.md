@@ -360,7 +360,7 @@ Read **[SECURITY.md](SECURITY.md)** before exposing PARAGON on the public intern
 - Never commit `data/config.json` (contains keys and hostnames).
 - Tailscale Funnel exposes the full app — protect with key + ACLs.
 
-Built-in CLIs run in read-only / ask modes where supported; custom CLIs run whatever you configure.
+Built-in CLIs use their native agent tools for tool-enabled requests; custom CLIs run whatever you configure.
 
 ## Development
 

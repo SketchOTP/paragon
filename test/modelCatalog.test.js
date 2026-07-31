@@ -37,6 +37,7 @@ test("MODEL_STATES includes every state the directive requires, and only exposed
 
 test("classifyModelFailure recognizes each documented failure category", () => {
   assert.equal(classifyModelFailure(new Error("Model not found: gpt-9")), "MODEL_NOT_FOUND");
+  assert.equal(classifyModelFailure(new Error("qwen/a-model-that-does-not-exist is not a valid model ID")), "MODEL_NOT_FOUND");
   assert.equal(classifyModelFailure(new Error("unsupported model requested")), "MODEL_REJECTED");
   assert.equal(classifyModelFailure(new Error("model is currently unavailable")), "MODEL_UNAVAILABLE");
   assert.equal(classifyModelFailure(new Error("401 unauthorized, not logged in")), "AUTHENTICATION_FAILED");

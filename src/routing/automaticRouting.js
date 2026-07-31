@@ -36,6 +36,7 @@ import { rankCandidates } from "./expectedUtility.js";
 import { buildAttemptPlan, summarizeAttemptPlan } from "./attemptPlan.js";
 import { classifyChatCapability } from "../modelCapability.js";
 import { resolveUtilityWeights, normalizeRoutingPriority } from "./routingPriority.js";
+import { executionMethodFor, expertTupleId } from "./expertTuple.js";
 
 const ECONOMY_HINTS = /haiku|mini|flash|-low\b|small/i;
 const PREMIUM_HINTS = /opus|mythos|fable|-pro\b|-high\b|-max\b|ultra/i;
@@ -121,6 +122,9 @@ export function buildRoutingCandidates({
         operatorMapping: settings.capabilityMappings?.[`${provider}/${providerModelId}`] ?? null,
         isHttpProvider
       });
+      const reasoningProfile = executionProfile.reasoningEffort ?? "unknown";
+      const executionMethod = executionMethodFor(provider, isHttpProvider);
+      const executionPath = isHttpProvider ? "openai-compatible-http" : "native-agent-cli";
 
       const telemetrySelector = {
         provider,
@@ -162,7 +166,11 @@ export function buildRoutingCandidates({
         capabilities,
         contextModel,
         benchmark: benchmark.row ? benchmark : null,
-        telemetry
+        telemetry,
+        reasoningProfile,
+        executionMethod,
+        executionPath,
+        expertId: expertTupleId({ provider, canonicalModelId: executionProfile.canonicalModelId, reasoningProfile, executionMethod })
       });
     }
   }

@@ -86,7 +86,7 @@ export function classifyModelFailure(error) {
   const text = `${message} ${detail}`;
 
   if (
-    /model not found|unknown model|no such model|invalid model|does not exist|may not exist|issue with the selected model/.test(
+    /model not found|unknown model|no such model|invalid model|not a valid model|does not exist|may not exist|issue with the selected model/.test(
       text
     )
   ) {
