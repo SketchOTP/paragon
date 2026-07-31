@@ -156,6 +156,46 @@ test("zero provider preference has exactly zero term", () => {
   assert.equal(result.winner.components.providerPreferenceTerm, 0);
 });
 
+test("sparse success evidence is penalized but cannot disqualify a cheaper higher-quality candidate", () => {
+  const candidate = (modelId, benchmarkIndex, pricing, telemetry = null) => ({
+    provider: "codex",
+    providerModelId: modelId,
+    catalogEligible: true,
+    health: "healthy",
+    executionProfile: { reasoningEffort: "unknown", speedMode: "unknown", canonicalModelId: modelId },
+    capabilities: { chatCompletions: true },
+    contextModel: { effectiveUsableContextWindow: 400000, contextConfidence: "high", outputTokenReserve: 4096 },
+    publishedPricing: pricing,
+    telemetry,
+    benchmark: { matchMethod: "exact_normalized", matchConfidence: "high", row: { coding_index: benchmarkIndex } }
+  });
+
+  const sparseHigherQuality = candidate(
+    "gpt-5.6-luna",
+    71,
+    { billingUnit: "Codex credits per 1M tokens", inputPerMillion: 5, completionPerMillion: 30 },
+    { smoothedSuccessProbability: 0.75, sampleCount: 1, measurementConfidence: "low" }
+  );
+  const priorLowerQuality = candidate(
+    "gpt-5.4-mini",
+    56,
+    { billingUnit: "Codex credits per 1M tokens", inputPerMillion: 18.75, completionPerMillion: 113 },
+    null
+  );
+
+  const result = rankCandidates([sparseHigherQuality, priorLowerQuality], {
+    taskProfile: { risk: "normal", complexity: "normal", workType: "code", reasoningDemand: "medium", estimatedInputTokens: 3000 },
+    unknownLargeContextThresholdTokens: 50000
+  });
+
+  const luna = result.ranked.find((row) => row.providerModelId === "gpt-5.6-luna");
+  assert.ok(luna.rank != null, "sparse evidence must not remove the candidate from the primary ranking");
+  assert.equal(luna.components.successSource, "measured_sparse");
+  assert.equal(luna.components.sufficient, true);
+  assert.equal(luna.components.sufficiencySource, "sparse_evidence_non_blocking");
+  assert.ok(luna.components.uncertaintyPenalty > 0);
+});
+
 test("sufficiency policy labels degraded routing", () => {
   assert.deepEqual(applySufficiencyPolicy(0.7, { risk: "production" }), { threshold: 0.94, probability: 0.7, sufficient: false, route: "degraded_sufficiency" });
 });
