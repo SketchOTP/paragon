@@ -290,6 +290,7 @@ export function selectAutomaticRoute({
   const optimization = optimizeFallbackPlan(result.ranked.filter((c) => !c.excluded), {
     maximumAttempts: settings.maximumAttempts ?? 4,
     minimumAttempts: Math.min(2, settings.maximumAttempts ?? 4),
+    pinFirst: true,
     successTarget: taskProfile?.sufficiencyThreshold,
     failureProbability: (candidate) => 1 - Number(candidate.components?.confidenceAdjustedSuccessProbability ?? candidate.components?.probabilityOfSuccessfulCompletion ?? 0.85),
     attemptCost: (candidate) => Number(candidate.components?.expectedCostPerSuccessfulTask ?? candidate.components?.expectedTotalResourceCost ?? 0),
