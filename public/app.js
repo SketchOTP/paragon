@@ -113,6 +113,7 @@ const els = {
   settingServePort: document.querySelector("#setting-serve-port"),
   settingFunnelPort: document.querySelector("#setting-funnel-port"),
   priorityPicker: document.querySelector("#priority-picker"),
+  providerPreferencePoints: document.querySelector("#provider-preference-points"),
   settingRetentionDays: document.querySelector("#setting-retention-days"),
   clearActivity: document.querySelector("#clear-activity"),
   clearActivityStatus: document.querySelector("#clear-activity-status"),
@@ -925,6 +926,16 @@ function renderSettings() {
       </span>`;
     els.priorityPicker.appendChild(wrapper);
   }
+
+  els.providerPreferencePoints.querySelectorAll(".provider-preference-row").forEach((node) => node.remove());
+  for (const [provider, points] of Object.entries(settings.routing.providerPreferencePoints ?? {})) {
+    const row = document.createElement("label");
+    row.className = "field provider-preference-row";
+    row.innerHTML = `
+      <span class="field-label">${escapeHtml(provider)}</span>
+      <input type="number" min="-100" max="100" step="0.1" data-provider-preference="${escapeAttr(provider)}" value="${escapeAttr(points)}" />`;
+    els.providerPreferencePoints.appendChild(row);
+  }
 }
 
 function openSettings() {
@@ -949,7 +960,10 @@ async function saveSettings() {
       tailscaleFunnelPort: Number(els.settingFunnelPort.value)
     },
     routing: {
-      priority: els.priorityPicker.querySelector('input[name="routing-priority"]:checked')?.value ?? settings.routing.priority
+      priority: els.priorityPicker.querySelector('input[name="routing-priority"]:checked')?.value ?? settings.routing.priority,
+      providerPreferencePoints: Object.fromEntries(
+        [...els.providerPreferencePoints.querySelectorAll("[data-provider-preference]")].map((input) => [input.dataset.providerPreference, Number(input.value)])
+      )
     },
     data: { activityRetentionDays: Number(els.settingRetentionDays.value) }
   };

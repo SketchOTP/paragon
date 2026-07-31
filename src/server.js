@@ -317,6 +317,23 @@ app.put("/api/settings", async (req, res) => {
         routingSection.priority = requested;
       }
     }
+    if (incoming.routing.providerPreferencePoints !== undefined) {
+      const points = incoming.routing.providerPreferencePoints;
+      if (!points || typeof points !== "object" || Array.isArray(points)) {
+        errors.push("routing.providerPreferencePoints must be an object");
+      } else {
+        const nextPoints = { ...(automaticRouting.providerPreferencePoints ?? {}) };
+        for (const [provider, rawValue] of Object.entries(points)) {
+          const value = Number(rawValue);
+          if (!Number.isFinite(value) || value < -100 || value > 100) {
+            errors.push(`routing.providerPreferencePoints.${provider} must be between -100 and 100`);
+          } else {
+            nextPoints[provider] = value;
+          }
+        }
+        automaticRouting.providerPreferencePoints = nextPoints;
+      }
+    }
   }
 
   if (incoming.integrations && typeof incoming.integrations === "object") {
@@ -358,7 +375,8 @@ function productSettings(config) {
     },
     routing: {
       priority: normalizeRoutingPriority(config.routing?.priority),
-      options: routingPriorityOptions()
+      options: routingPriorityOptions(),
+      providerPreferencePoints: { ...(config.automaticRouting?.providerPreferencePoints ?? {}) }
     },
     integrations: { openrouterApiKeyConfigured: Boolean(config.integrations?.openrouterApiKey) },
     data: { activityRetentionDays: config.automaticRouting?.telemetryRetentionDays ?? 30 }
