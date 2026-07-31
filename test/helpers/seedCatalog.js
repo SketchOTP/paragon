@@ -31,7 +31,7 @@ export function seedCatalogFile(cwd, providerModels) {
         discoverySource: "documented_candidate",
         // Test-only published price so fixture providers exercise routing;
         // production candidates must carry vendor/OpenRouter pricing.
-        metadata: { context_length: 200000, pricing: { prompt: "0.000001", completion: "0.000003" } }
+        metadata: { context_length: 400000, pricing: { prompt: "0.000001", completion: "0.000003" } }
       }))
     );
   }

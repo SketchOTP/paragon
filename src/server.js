@@ -21,7 +21,7 @@ import { defaultProbe, refreshProviderCatalog } from "./modelCatalogRefresh.js";
 import { startModelCatalogScheduler } from "./modelCatalogScheduler.js";
 import { loadTelemetry, saveTelemetry, recordOutcome as recordTelemetryOutcome, pruneTelemetry } from "./routing/outcomeTelemetry.js";
 import { selectAutomaticRoute } from "./routing/automaticRouting.js";
-import { buildTaskProfile } from "./routing/taskProfile.js";
+import { buildTaskProfile, estimatedContextRequirementTokens } from "./routing/taskProfile.js";
 import { providerGrammarSummary } from "./routing/executionProfile.js";
 import { createRouteActivityStore } from "./routing/routeActivity.js";
 import { createQuotaStateStore } from "./routing/quotaState.js";
@@ -709,6 +709,10 @@ app.get("/api/models/ranking", async (req, res) => {
   for (const field of ["workType", "complexity", "reasoningDemand", "latencyPreference", "costSensitivity", "qualityPreference"]) {
     if (req.query[field]) taskProfile[field] = String(req.query[field]);
   }
+  // Query overrides define the dashboard's actual "Ranked for" reason, so
+  // recompute task context demand after applying them rather than retaining
+  // the default prompt's code-demand estimate.
+  taskProfile.estimatedRequiredContextTokens = estimatedContextRequirementTokens(taskProfile);
 
   const benchmarks = await getBenchmarkData(config.integrations?.openrouterApiKey);
   const route = selectAutomaticRoute({
