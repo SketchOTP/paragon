@@ -280,6 +280,7 @@ export function scoreCandidate(candidate, { taskProfile, weights = UTILITY_WEIGH
     // provenance without re-deriving the registry a second time.
     modelState: candidate.modelState ?? null,
     costClass: candidate.costClass ?? null,
+    publishedPricing: candidate.publishedPricing ?? null,
     excluded: false,
 
     expectedUtility,
