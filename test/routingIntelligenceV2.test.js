@@ -217,7 +217,6 @@ test("valid benchmark and provider pricing are sufficient baseline evidence with
   assert.equal(row.components.sufficiencySource, "benchmark_and_pricing_baseline");
   assert.ok(!row.components.uncertaintyReasons.includes("no outcome telemetry"));
 });
-
 test("sufficiency policy labels degraded routing", () => {
   assert.deepEqual(applySufficiencyPolicy(0.7, { risk: "production" }), { threshold: 0.94, probability: 0.7, sufficient: false, route: "degraded_sufficiency" });
 });
