@@ -10,7 +10,7 @@ import { classifyError, boundedDiagnostic } from "./orchestration/errorClassific
 import { classifyModelFailure } from "./modelCatalog.js";
 import { selectAutomaticRoute, verifyPlanAgainstCandidates } from "./routing/automaticRouting.js";
 import { extractRoutingHints, requiresJsonValidation, isValidJson } from "./routing/hints.js";
-import { getBenchmarkData, matchBenchmarkRow } from "./routing/benchmarks.js";
+import { getCachedBenchmarkData, matchBenchmarkRow } from "./routing/benchmarks.js";
 import { buildTaskProfile } from "./routing/taskProfile.js";
 import { unknownUsage } from "./routing/usageEvidence.js";
 import {
@@ -240,7 +240,7 @@ export function registerOpenAiRoutes(app, getConfig, orchestration, getStatuses 
       // path. Empty rows when no OpenRouter key is configured. Stale data
       // (past MAX_USABLE_AGE_MS since the last *successful* fetch) is withheld
       // from scoring entirely rather than silently applied.
-      const benchmarks = await safely(() => getBenchmarkData(config.integrations?.openrouterApiKey), { rows: [], stale: true });
+      const benchmarks = getCachedBenchmarkData(config.integrations?.openrouterApiKey);
       const benchmarkRows = benchmarks?.stale ? [] : (benchmarks?.rows ?? []);
       if (benchmarks?.enabled && benchmarks?.stale) {
         addLog({

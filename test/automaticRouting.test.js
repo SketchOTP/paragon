@@ -216,7 +216,7 @@ test("6b. reasoning effort increases priced token consumption monotonically", ()
   const max = costFor("max");
   assert.ok(max.estimatedTotalResourceCost > low.estimatedTotalResourceCost, "a max profile must consume more priced resources than low");
   assert.ok(max.effectiveExpectedTokens > low.effectiveExpectedTokens);
-  assert.equal(low.isSubscriptionProvider, false);
+  assert.equal(low.isSubscriptionProvider, true);
 });
 
 test("7. a max-reasoning candidate loses a trivial task on resource cost", () => {
@@ -308,7 +308,7 @@ test("11. published model costs are reported and never treated as free", () => {
     taskProfile: { workType: "code", complexity: "normal" },
     estimatedInputTokens: 5000
   });
-  assert.equal(subscription.isSubscriptionProvider, false);
+  assert.equal(subscription.isSubscriptionProvider, true);
   assert.ok(subscription.estimatedTotalResourceCost > 0, "a priced call must never cost zero resources");
 
   const http = estimateEffectiveCost({

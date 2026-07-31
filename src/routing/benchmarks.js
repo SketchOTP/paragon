@@ -224,6 +224,12 @@ export async function getBenchmarkData(apiKey, { force = false } = {}) {
   return snapshot();
 }
 
+/** Read-only hot-path snapshot. It never initiates a fetch. */
+export function getCachedBenchmarkData(apiKey) {
+  if (!apiKey || cache.apiKeyUsed !== apiKey) return { enabled: Boolean(apiKey), rows: [], stale: true, error: null, dataAgeMs: null };
+  return snapshot();
+}
+
 /**
  * Attaches a matched external benchmark to each registry entry, with full
  * attribution (method, both ids, confidence, fetch time) so a score can

@@ -275,6 +275,21 @@
           </div>
         </div>
 
+        <h3 class="settings-group">Model intelligence data</h3>
+        <div class="settings-grid">
+          <label class="field field-span">
+            <span class="field-label">Artificial Analysis API key</span>
+            <input id="setting-artificial-analysis-key" type="password" autocomplete="new-password" placeholder="unchanged" />
+            <span class="field-hint">Stored server-side. Data attribution: Artificial Analysis.</span>
+          </label>
+          <div class="field field-span" id="artificial-analysis-status">Status: not configured</div>
+          <div class="field">
+            <button type="button" class="btn ghost" id="test-artificial-analysis">Test connection</button>
+            <button type="button" class="btn ghost" id="refresh-artificial-analysis">Refresh now</button>
+            <button type="button" class="btn ghost" id="remove-artificial-analysis">Remove</button>
+          </div>
+        </div>
+
         <h3 class="settings-group">Data</h3>
         <div class="settings-grid">
           <label class="field">

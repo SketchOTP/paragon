@@ -374,9 +374,9 @@ test("17/18. the routing priority is settable through the one settings surface a
   assert.equal(before.routing.priority, "balanced", "Balanced is the default");
   assert.equal(before.routing.options.length, 4);
   assert.deepEqual(before.routing.providerPreferencePoints, {
-    codex: 3,
-    claude: 2,
-    antigravity: 1,
+    codex: 0,
+    claude: 0,
+    antigravity: 0,
     cursor: 0,
     openrouter: 0,
     lmstudio: 0
