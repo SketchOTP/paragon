@@ -23,6 +23,9 @@ export const CAPABILITY_FIELDS = [
   "chatCompletions",
   "streaming",
   "toolCalls",
+  "nativeAgentTools",
+  "openAIToolCalls",
+  "toolExecution",
   "structuredOutput",
   "jsonSchema",
   "visionInput",
@@ -54,23 +57,22 @@ const SOURCE_CONFIDENCE = {
  * integration, not inferences about the model, which is why they can be
  * asserted without per-model evidence:
  *
- *  - Every builtin provider is driven as a single-shot text completion with
- *    tools disabled (see src/cli.js providerSpecs, PARAGON-D-004B-R). So
- *    `toolCalls` is *structurally* false for them regardless of whether the
- *    underlying model supports tool calling — PARAGON cannot surface it.
+ *  - Builtin providers expose native agent tools through their own CLI
+ *    runtime. `toolCalls` remains false because it describes the OpenAI wire
+ *    protocol; `nativeAgentTools` and `toolExecution` describe execution.
  *  - `streaming` is implemented by PARAGON for every provider
  *    (runProcess/onChunk and SSE for HTTP), so it is true at the gateway
  *    level.
  */
 const PROVIDER_STRUCTURAL_CAPABILITIES = {
-  claude: { streaming: true, toolCalls: false, reasoningControls: false },
-  codex: { streaming: true, toolCalls: false, reasoningControls: false },
-  cursor: { streaming: true, toolCalls: false, reasoningControls: true },
-  antigravity: { streaming: true, toolCalls: false, reasoningControls: false },
+  claude: { streaming: true, toolCalls: false, nativeAgentTools: true, openAIToolCalls: false, toolExecution: true, reasoningControls: false },
+  codex: { streaming: true, toolCalls: false, nativeAgentTools: true, openAIToolCalls: false, toolExecution: true, reasoningControls: false },
+  cursor: { streaming: true, toolCalls: false, nativeAgentTools: true, openAIToolCalls: false, toolExecution: true, reasoningControls: true },
+  antigravity: { streaming: true, toolCalls: false, nativeAgentTools: true, openAIToolCalls: false, toolExecution: true, reasoningControls: false },
 };
 
 /** HTTP providers are OpenAI-compatible; capability depends on the server, not on PARAGON. */
-const HTTP_STRUCTURAL_CAPABILITIES = { streaming: true, toolCalls: "unknown", reasoningControls: "unknown" };
+const HTTP_STRUCTURAL_CAPABILITIES = { streaming: true, toolCalls: "unknown", nativeAgentTools: false, openAIToolCalls: "unknown", toolExecution: "unknown", reasoningControls: "unknown" };
 
 /**
  * Any other command-line provider (an operator-added `generic-cli`). PARAGON
@@ -82,7 +84,7 @@ const HTTP_STRUCTURAL_CAPABILITIES = { streaming: true, toolCalls: "unknown", re
  * it was excluded from *every* streaming request. Streaming is implemented by
  * the gateway, not the provider, so leaving it unknown was wrong.
  */
-const GENERIC_CLI_STRUCTURAL_CAPABILITIES = { streaming: true, toolCalls: false, reasoningControls: "unknown" };
+const GENERIC_CLI_STRUCTURAL_CAPABILITIES = { streaming: true, toolCalls: false, nativeAgentTools: true, openAIToolCalls: false, toolExecution: true, reasoningControls: "unknown" };
 
 function metadataCapability(metadata, field) {
   if (!metadata || typeof metadata !== "object") {

@@ -36,6 +36,8 @@ import { rankCandidates } from "./expectedUtility.js";
 import { buildAttemptPlan, summarizeAttemptPlan } from "./attemptPlan.js";
 import { classifyChatCapability } from "../modelCapability.js";
 import { resolveUtilityWeights, normalizeRoutingPriority } from "./routingPriority.js";
+import { executionMethodFor, expertTupleId } from "./expertTuple.js";
+import { publishedModelPricing } from "./modelPricing.js";
 
 const ECONOMY_HINTS = /haiku|mini|flash|-low\b|small/i;
 const PREMIUM_HINTS = /opus|mythos|fable|-pro\b|-high\b|-max\b|ultra/i;
@@ -121,6 +123,9 @@ export function buildRoutingCandidates({
         operatorMapping: settings.capabilityMappings?.[`${provider}/${providerModelId}`] ?? null,
         isHttpProvider
       });
+      const reasoningProfile = executionProfile.reasoningEffort ?? "unknown";
+      const executionMethod = executionMethodFor(provider, isHttpProvider);
+      const executionPath = isHttpProvider ? "openai-compatible-http" : "native-agent-cli";
 
       const telemetrySelector = {
         provider,
@@ -148,6 +153,13 @@ export function buildRoutingCandidates({
         aliasIndex
       });
       benchmarkResolutions.push(benchmark);
+      const publishedPricing = publishedModelPricing({
+        provider,
+        modelId: executionProfile.canonicalModelId,
+        benchmarkPricing: benchmark.row?.pricing ?? null,
+        metadata: entry.metadata
+      });
+      if (!publishedPricing && config?.automaticRouting?.requirePublishedPricing === true && settings.requirePublishedPricing !== false) continue;
 
       candidates.push({
         provider,
@@ -162,7 +174,12 @@ export function buildRoutingCandidates({
         capabilities,
         contextModel,
         benchmark: benchmark.row ? benchmark : null,
-        telemetry
+        publishedPricing,
+        telemetry,
+        reasoningProfile,
+        executionMethod,
+        executionPath,
+        expertId: expertTupleId({ provider, canonicalModelId: executionProfile.canonicalModelId, reasoningProfile, executionMethod })
       });
     }
   }
@@ -253,6 +270,7 @@ export function selectAutomaticRoute({
     unknownLargeContextThresholdTokens: settings.unknownLargeContextThresholdTokens ?? 50000,
     maxCostClass: hints?.maxCostClass ?? null,
     quotaScarcity: quotaState?.scarcity ? quotaState.scarcity(config) : (settings.quotaScarcity ?? 0),
+    providerPreferencePoints: settings.providerPreferencePoints ?? config?.automaticRouting?.providerPreferencePoints ?? {},
     quotaState,
     explicitlyForced: Boolean(hints?.forceProvider)
   });

@@ -189,6 +189,7 @@ export function estimateEffectiveCost({
   executionProfile,
   taskProfile,
   benchmarkPricing = null,
+  publishedPricing = null,
   telemetry = null,
   estimatedInputTokens = 0,
   minimumSamplesForMeasuredEstimate = 10,
@@ -241,9 +242,10 @@ export function estimateEffectiveCost({
   const effectiveExpectedTokens = input + expectedVisibleOutputTokens + reasoningTokens;
 
   // --- monetary
-  const promptPrice = priceNumber(benchmarkPricing?.prompt);
-  const completionPrice = priceNumber(benchmarkPricing?.completion) ?? promptPrice;
-  const cacheReadPrice = priceNumber(benchmarkPricing?.input_cache_read ?? benchmarkPricing?.cache_read);
+  const pricing = publishedPricing ?? benchmarkPricing;
+  const promptPrice = priceNumber(pricing?.prompt) ?? (priceNumber(pricing?.inputPerMillion) != null ? priceNumber(pricing.inputPerMillion) / 1_000_000 : null);
+  const completionPrice = priceNumber(pricing?.completion) ?? (priceNumber(pricing?.completionPerMillion) != null ? priceNumber(pricing.completionPerMillion) / 1_000_000 : promptPrice);
+  const cacheReadPrice = priceNumber(pricing?.input_cache_read ?? pricing?.cache_read) ?? (priceNumber(pricing?.cacheReadPerMillion) != null ? priceNumber(pricing.cacheReadPerMillion) / 1_000_000 : null);
   const reasoningPrice = priceNumber(benchmarkPricing?.internal_reasoning ?? benchmarkPricing?.reasoning) ?? completionPrice;
 
   let estimatedMonetaryCost = null;
@@ -258,7 +260,7 @@ export function estimateEffectiveCost({
   // Subscription providers: the scarce resource is the allowance, not
   // dollars. Burn is proportional to total tokens including reasoning,
   // which is precisely what a `max` profile inflates.
-  const isSubscription = !isHttpProvider && SUBSCRIPTION_PROVIDERS.has(provider);
+  const isSubscription = false;
   const measuredQuota = Number(telemetry?.averageQuotaBurn);
   const samples = Number(telemetry?.sampleCount ?? 0);
   let estimatedQuotaBurn = 0;
@@ -290,7 +292,7 @@ export function estimateEffectiveCost({
   // absence of information, which would beat every honestly-priced candidate.
   // Charge it the same token-proportional relative cost a subscription
   // provider pays, so missing pricing is neutral rather than advantageous.
-  const unpricedMeteredProvider = !isSubscription && promptPrice == null;
+  const unpricedMeteredProvider = promptPrice == null;
   if (unpricedMeteredProvider) {
     monetaryUnits = effectiveExpectedTokens / 1000;
   }
@@ -321,7 +323,10 @@ export function estimateEffectiveCost({
     conservativeReasoningFloorTokens: reasoningUnknown ? conservativeReasoningFloor : null,
     unpricedMeteredProvider,
 
-    isSubscriptionProvider: isSubscription,
+    isSubscriptionProvider: false,
+    billingUnit: pricing?.billingUnit ?? null,
+    pricingSource: pricing?.source ?? pricing?.sourceUrl ?? null,
+    pricingAsOf: pricing?.asOf ?? null,
     estimatedQuotaBurn,
     quotaBurnSource: quotaSource,
     quotaScarcityPenalty,

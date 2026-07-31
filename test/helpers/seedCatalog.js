@@ -28,7 +28,10 @@ export function seedCatalogFile(cwd, providerModels) {
         modelId,
         displayName: modelId,
         state: "validated",
-        discoverySource: "documented_candidate"
+        discoverySource: "documented_candidate",
+        // Test-only published price so fixture providers exercise routing;
+        // production candidates must carry vendor/OpenRouter pricing.
+        metadata: { pricing: { prompt: "0.000001", completion: "0.000003" } }
       }))
     );
   }

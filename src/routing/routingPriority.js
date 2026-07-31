@@ -35,7 +35,7 @@ export const ROUTING_PRIORITY_LABELS = {
   },
   cost: {
     label: "Lower cost",
-    summary: "Favors cheaper models and conserves subscription allowance."
+    summary: "Favors cheaper models while accounting for published token costs."
   },
   speed: {
     label: "Faster",

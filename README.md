@@ -277,7 +277,7 @@ The only routing setting is **Routing priority** in Settings:
 |---|---|
 | **Balanced** (default) | Weighs quality, cost, speed and confidence evenly. |
 | **Best quality** | Favors the most capable model, and higher reasoning where justified. |
-| **Lower cost** | Favors cheaper models and conserves subscription allowance. |
+| **Lower cost** | Favors cheaper models using dated published token prices. |
 | **Faster** | Favors models that respond quickly. |
 
 A priority can only reorder models that are already eligible — it can never
@@ -360,7 +360,7 @@ Read **[SECURITY.md](SECURITY.md)** before exposing PARAGON on the public intern
 - Never commit `data/config.json` (contains keys and hostnames).
 - Tailscale Funnel exposes the full app — protect with key + ACLs.
 
-Built-in CLIs run in read-only / ask modes where supported; custom CLIs run whatever you configure.
+Built-in CLIs use their native agent tools for tool-enabled requests; custom CLIs run whatever you configure.
 
 ## Development
 

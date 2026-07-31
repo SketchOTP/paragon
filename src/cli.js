@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import fs from "node:fs";
 import { authFlowFor } from "./authFlows.js";
 import { clearAuthSession, getAuthSession, ingestAuthOutput } from "./authSessions.js";
 import { discoverClaudeModels } from "./claudeModels.js";
@@ -17,10 +18,9 @@ export { getAuthSession };
 // no ability to write to a real project — Cursor (or any other client)
 // supplies only messages and owns applying any edits itself. Flags
 // verified against each CLI's real --help output, not assumed:
-//  - claude: --tools "" fully disables every tool.
-//  - codex: --ask-for-approval never is always non-interactive;
-//    --sandbox read-only keeps it from writing anywhere, including its
-//    own isolated cwd.
+//  - claude: --tools default enables Claude's native tools for agent tasks.
+//  - codex: --json/--ephemeral provide a machine-readable native-agent
+//    stream; --sandbox read-only keeps non-agent calls read-only.
 //  - cursor: --mode ask is documented read-only Q&A, no --force.
 const providerSpecs = {
   claude: {
@@ -35,14 +35,16 @@ const providerSpecs = {
     // runProvider to unwrap `result` back to prose, so callers (including
     // streaming ones) never see the envelope.
     structuredOutput: true,
-    runArgs: ({ model }) => [
+    runArgs: ({ model, reasoningProfile, toolExecution = false, cwd }) => [
+      ...(cwd ? ["--add-dir", cwd] : []),
       "-p",
       "--output-format",
       "json",
       "--permission-mode",
-      "dontAsk",
+      toolExecution ? "acceptEdits" : "dontAsk",
       "--tools",
-      "",
+      toolExecution ? "default" : "",
+      ...(reasoningProfile && reasoningProfile !== "unknown" ? ["--effort", reasoningProfile] : []),
       ...modelArg("--model", model)
     ]
   },
@@ -50,13 +52,15 @@ const providerSpecs = {
     authArgs: ["login", "--device-auth"],
     statusArgs: ["login", "status"],
     modelsArgs: null,
-    runArgs: ({ model }) => [
-      "--ask-for-approval",
-      "never",
+    runArgs: ({ model, reasoningProfile, toolExecution = false, cwd }) => [
+      ...(cwd ? ["--cd", cwd] : []),
       "exec",
+      "--json",
+      "--ephemeral",
       "--skip-git-repo-check",
       "--sandbox",
-      "read-only",
+      toolExecution ? "workspace-write" : "read-only",
+      ...(reasoningProfile && reasoningProfile !== "unknown" ? ["-c", `model_reasoning_effort=${reasoningProfile}`] : []),
       ...modelArg("--model", model),
       "-"
     ]
@@ -65,7 +69,12 @@ const providerSpecs = {
     authArgs: ["login"],
     statusArgs: ["status"],
     modelsArgs: ["models"],
-    runArgs: ({ model }) => ["--print", "--trust", "--mode", "ask", ...modelArg("--model", model)]
+    runArgs: ({ model, toolExecution = false }) => [
+      "--print",
+      "--trust",
+      ...(toolExecution ? ["--force"] : ["--mode", "ask"]),
+      ...modelArg("--model", model)
+    ],
   },
   // Real CLI contract verified by hand against the installed `agy` binary
   // (--help, and live --print tests) — not inferred from docs. Two things
@@ -82,11 +91,13 @@ const providerSpecs = {
     authArgs: [],
     statusArgs: ["models"],
     modelsArgs: ["models"],
-    runArgs: ({ model, prompt }) => [
+    runArgs: ({ model, prompt, reasoningProfile, cwd }) => [
       "--print",
       prompt ?? "",
+      ...(cwd ? ["--add-dir", cwd] : []),
       "--dangerously-skip-permissions",
       "--sandbox",
+      ...(reasoningProfile && reasoningProfile !== "unknown" ? ["--effort", reasoningProfile] : []),
       "--output-format",
       "text",
       ...modelArg("--model", model)
@@ -148,6 +159,39 @@ function authEnvForProvider(provider) {
 
 function modelArg(flag, model) {
   return model ? [flag, model] : [];
+}
+
+/** Prefer the installed Codex ELF over the /snap/bin launcher. */
+function executableFor(provider, command) {
+  if (provider !== "codex") return command;
+  if (command !== "codex" && command !== "/snap/bin/codex") return command;
+  const snapBinary = "/snap/codex/current/bin/codex";
+  return fs.existsSync(snapBinary) ? snapBinary : command;
+}
+
+export function parseCodexJsonlEvents(stdout) {
+  const events = [];
+  const failedToolEvents = [];
+  for (const line of String(stdout ?? "").split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    try {
+      const event = JSON.parse(trimmed);
+      events.push(event);
+      if (
+        event.type === "item.completed" &&
+        (event.item?.status === "failed" ||
+          (event.item?.type === "command_execution" && event.item?.exit_code != null && event.item.exit_code !== 0) ||
+          (event.item?.type === "file_change" && event.item?.status !== "completed"))
+      ) {
+        failedToolEvents.push(event);
+      }
+    } catch {
+      // Preserve non-JSON diagnostics as raw stdout; never infer success from
+      // an unparsable stream.
+    }
+  }
+  return { events, failedToolEvents };
 }
 
 export function getProviderSpec(provider, providerConfig) {
@@ -458,7 +502,7 @@ function sortCursorModels(models) {
   });
 }
 
-export async function runProvider(provider, providerConfig, prompt, onChunk, { onSpawn, cwd, requestBody } = {}) {
+export async function runProvider(provider, providerConfig, prompt, onChunk, { onSpawn, cwd, requestBody, toolExecution = false } = {}) {
   const type = providerType(provider, providerConfig);
 
   if (type === "http") {
@@ -477,7 +521,7 @@ export async function runProvider(provider, providerConfig, prompt, onChunk, { o
     const result = await runProcess({
       provider,
       command: providerConfig.command,
-      args: spec.runArgs({ model: providerConfig.model, prompt }),
+      args: spec.runArgs({ model: providerConfig.model, prompt, reasoningProfile: providerConfig.reasoningProfile, toolExecution, cwd }),
       stdinText: stdinMode === "none" ? undefined : prompt,
       timeoutMs: providerConfig.timeoutMs,
       logType: "completion",
@@ -499,7 +543,7 @@ export async function runProvider(provider, providerConfig, prompt, onChunk, { o
     // trailing CLI argument (e.g. antigravity's `--print <prompt>`) —
     // providers that take the prompt via stdin instead simply destructure
     // only `{ model }` and ignore it.
-    args: spec.runArgs({ model: providerConfig.model, prompt }),
+    args: spec.runArgs({ model: providerConfig.model, prompt, reasoningProfile: providerConfig.reasoningProfile, toolExecution, cwd }),
     stdinText: stdinMode === "none" ? undefined : prompt,
     timeoutMs: providerConfig.timeoutMs,
     logType: "completion",
@@ -517,7 +561,8 @@ export async function runProvider(provider, providerConfig, prompt, onChunk, { o
 
 function runProcess({ provider, command, args, stdinText, timeoutMs, logType, onChunk, onSpawn, quiet = false, cwd }) {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
+    const executable = executableFor(provider, command);
+    const child = spawn(executable, args, {
       cwd: cwd ?? getNeutralExecutionDir(),
       env: envForProvider(provider),
       stdio: ["pipe", "pipe", "pipe"]
@@ -585,7 +630,7 @@ function runProcess({ provider, command, args, stdinText, timeoutMs, logType, on
       clearTimeout(timer);
       if (settled) return;
       settled = true;
-      const summary = `${command} exited ${code}; stdout ${stdout.length} chars; stderr ${stderr.length} chars`;
+      const summary = `${executable} exited ${code}; stdout ${stdout.length} chars; stderr ${stderr.length} chars`;
       const shouldLog = !quiet || logType !== "status" || code !== 0;
       if (shouldLog) {
         addLog({
@@ -596,9 +641,20 @@ function runProcess({ provider, command, args, stdinText, timeoutMs, logType, on
         });
       }
       if (code === 0) {
-        resolve({ stdout: stdout.trim(), stderr: stderr.trim(), code });
+        const codexEvents = provider === "codex" ? parseCodexJsonlEvents(stdout) : null;
+        if (codexEvents?.failedToolEvents.length) {
+          const error = new Error(`${provider} reported ${codexEvents.failedToolEvents.length} failed tool event(s) despite exit code 0`);
+          error.code = "TOOL_EVENT_FAILED_BUT_EXIT_ZERO";
+          error.stdout = stdout;
+          error.stderr = stderr;
+          error.codexEvents = codexEvents.events;
+          error.failedToolEvents = codexEvents.failedToolEvents;
+          reject(error);
+          return;
+        }
+        resolve({ stdout: stdout.trim(), stderr: stderr.trim(), code, codexEvents: codexEvents?.events ?? undefined });
       } else {
-        const error = new Error(stderr.trim() || `${command} exited with code ${code}`);
+        const error = new Error(stderr.trim() || `${executable} exited with code ${code}`);
         error.stdout = stdout;
         error.stderr = stderr;
         error.code = code;

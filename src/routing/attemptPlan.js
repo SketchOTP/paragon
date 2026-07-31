@@ -63,9 +63,27 @@ export function buildAttemptPlan(ranked, config, { maximumAttempts = 4, maxPerPr
       executionProfile: candidate.executionProfile ?? "default",
       reasoningEffort: candidate.reasoningEffort,
       speedMode: candidate.speedMode,
+      // Ranked candidates expose the normalized effort as `reasoningEffort`;
+      // the original candidate carries the richer execution-profile object.
+      // Preserve either representation so a ranked tuple cannot silently
+      // dispatch with an `unknown` reasoning profile.
+      reasoningProfile: candidate.reasoningProfile
+        ?? candidate.reasoningEffort
+        ?? candidate.executionProfile?.reasoningEffort
+        ?? "unknown",
+      executionMethod: candidate.executionMethod ?? (candidate.isHttpProvider ? "openai_compatible_http" : "native_agent_cli"),
+      executionPath: candidate.executionPath ?? (candidate.isHttpProvider ? "openai-compatible-http" : "native-agent-cli"),
+      expertId: candidate.expertId ?? `${candidate.provider}|${candidate.canonicalModelId ?? candidate.providerModelId}`,
       expectedUtility: candidate.expectedUtility,
       alternateIndexForProvider: used,
-      config: { ...providerConfig, model: providerDefault ? "" : candidate.providerModelId }
+      config: {
+        ...providerConfig,
+        model: providerDefault ? "" : candidate.providerModelId,
+        reasoningProfile: candidate.reasoningProfile
+          ?? candidate.reasoningEffort
+          ?? providerConfig.reasoningProfile
+          ?? "unknown"
+      }
     });
   }
 
@@ -121,6 +139,10 @@ export function summarizeAttemptPlan(plan) {
     providerModelId: a.registryModel,
     canonicalModelId: a.canonicalModelId,
     reasoningEffort: a.reasoningEffort,
+    reasoningProfile: a.reasoningProfile,
+    executionMethod: a.executionMethod,
+    executionPath: a.executionPath,
+    expertId: a.expertId,
     speedMode: a.speedMode,
     providerDefault: a.providerDefault,
     alternateForProvider: a.alternateIndexForProvider > 0,

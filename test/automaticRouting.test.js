@@ -26,9 +26,43 @@ import { selectAutomaticRoute, verifyPlanAgainstCandidates } from "../src/routin
 import { createRouteActivityStore } from "../src/routing/routeActivity.js";
 import { defaultCatalog, replaceProviderModels } from "../src/modelCatalog.js";
 import { resetForTests } from "../src/orchestration/liveEnforcement.js";
+import { publishedModelPricing } from "../src/routing/modelPricing.js";
 
 test.beforeEach(() => {
   resetForTests();
+});
+
+test("published pricing uses the current Codex Luna rate and never labels it subscription", () => {
+  const price = publishedModelPricing({ provider: "codex", modelId: "gpt-5.6-luna" });
+  assert.equal(price.inputPerMillion, 25);
+  assert.equal(price.completionPerMillion, 150);
+  assert.equal(price.billingUnit, "Codex credits per 1M tokens");
+  assert.equal(price.asOf, "2026-07-30");
+});
+
+test("provider preference points are configurable and additive", () => {
+  const candidate = (provider) => ({
+    provider,
+    providerModelId: `${provider}-model`,
+    catalogEligible: true,
+    health: "healthy",
+    isHttpProvider: provider === "openrouter",
+    executionProfile: parseExecutionProfile(provider, provider === "codex" ? "gpt-5.6-luna" : "claude-sonnet-5"),
+    capabilities: { chatCompletions: true, streaming: true, toolCalls: true },
+    contextModel: { effectiveUsableContextWindow: 200000, contextConfidence: "high", outputTokenReserve: 4096 },
+    telemetry: null,
+    benchmark: null,
+    publishedPricing: { inputPerMillion: 1, completionPerMillion: 6, billingUnit: "USD per 1M tokens" }
+  });
+  const taskProfile = buildTaskProfile({ prompt: "write code", estimatedInputTokens: 100 });
+  const result = rankCandidates([candidate("claude"), candidate("codex")], {
+    taskProfile,
+    unknownLargeContextThresholdTokens: 50000,
+    providerPreferencePoints: { claude: 2, codex: 3 }
+  });
+  assert.equal(result.winner.provider, "codex");
+  assert.equal(result.winner.components.providerPreferenceBonus, 3);
+  assert.equal(result.ranked.find((row) => row.provider === "claude").components.providerPreferenceBonus, 2);
 });
 
 // ---------------------------------------------------------------- Phase 1
@@ -141,7 +175,7 @@ test("6. reasoning effort increases expected token consumption monotonically", (
   assert.equal(reasoningEffortRank("unknown"), null);
 });
 
-test("6b. reasoning effort increases quota burn monotonically for a subscription provider", () => {
+test("6b. reasoning effort increases priced token consumption monotonically", () => {
   const costFor = (reasoningEffort) =>
     estimateEffectiveCost({
       provider: "cursor",
@@ -151,9 +185,9 @@ test("6b. reasoning effort increases quota burn monotonically for a subscription
     });
   const low = costFor("low");
   const max = costFor("max");
-  assert.ok(max.estimatedQuotaBurn > low.estimatedQuotaBurn, "a max profile must burn more allowance than low");
+  assert.ok(max.estimatedTotalResourceCost > low.estimatedTotalResourceCost, "a max profile must consume more priced resources than low");
   assert.ok(max.effectiveExpectedTokens > low.effectiveExpectedTokens);
-  assert.equal(low.isSubscriptionProvider, true);
+  assert.equal(low.isSubscriptionProvider, false);
 });
 
 test("7. a max-reasoning candidate loses a trivial task on resource cost", () => {
@@ -237,7 +271,7 @@ test("10. unknown reasoning burn receives an uncertainty penalty and is not assu
   assert.ok(cost.costUncertainty >= 0.5);
 });
 
-test("11. subscription-backed calls receive a quota-burn cost and are never reported free", () => {
+test("11. published model costs are reported and never treated as free", () => {
   const subscription = estimateEffectiveCost({
     provider: "claude",
     isHttpProvider: false,
@@ -245,9 +279,8 @@ test("11. subscription-backed calls receive a quota-burn cost and are never repo
     taskProfile: { workType: "code", complexity: "normal" },
     estimatedInputTokens: 5000
   });
-  assert.equal(subscription.isSubscriptionProvider, true);
-  assert.ok(subscription.estimatedQuotaBurn > 0);
-  assert.ok(subscription.estimatedTotalResourceCost > 0, "a subscription call must never cost zero resources");
+  assert.equal(subscription.isSubscriptionProvider, false);
+  assert.ok(subscription.estimatedTotalResourceCost > 0, "a priced call must never cost zero resources");
 
   const http = estimateEffectiveCost({
     provider: "lmstudio",
@@ -283,7 +316,7 @@ test("13. unknown tool capability cannot satisfy a tool request", () => {
   assert.equal(gate.observed, "unknown", "unknown must never be treated as supported");
 });
 
-test("13b. builtin CLI providers report toolCalls false structurally, since PARAGON invokes them tools-disabled", () => {
+test("13b. builtin CLI providers expose native agent tools separately from OpenAI tool calls", () => {
   const profile = buildCapabilityProfile({ provider: "claude", providerModelId: "claude-opus-5", catalogEntry: { state: "validated", lastSuccessAt: "now" } });
   assert.equal(profile.toolCalls, false);
   assert.equal(profile.chatCompletions, true);
@@ -304,7 +337,7 @@ test("13b. HTTP model metadata can positively establish native tool-call support
   assert.equal(profile.toolCalls, true);
 });
 
-test("13b-2. tool-enabled requests route only to a positively tool-capable HTTP model", () => {
+test("13b-2. tool-enabled requests route to a verified execution-capable expert", () => {
   const catalog = defaultCatalog();
   replaceProviderModels(catalog, "claude", [{
     modelId: "claude-opus-5",
@@ -336,9 +369,9 @@ test("13b-2. tool-enabled requests route only to a positively tool-capable HTTP 
     }),
     settings: config.automaticRouting
   });
-  assert.equal(route.winner.provider, "lmstudio");
-  assert.equal(route.winner.capabilities.toolCalls, true);
-  assert.ok(route.attemptPlan.every((attempt) => attempt.name === "lmstudio"));
+  assert.equal(route.winner.provider, "claude");
+  assert.equal(route.winner.capabilities.nativeAgentTools, true);
+  assert.ok(route.attemptPlan.every((attempt) => attempt.name === "claude"));
 });
 
 test("13c. a parsed reasoning effort is itself evidence that the provider exposes reasoning controls", () => {
@@ -424,7 +457,7 @@ test("17c. required capabilities are derived from the actual request shape", () 
     body: { stream: true, tools: [{ type: "function" }], response_format: { type: "json_schema" } }
   });
   assert.ok(profile.requiredCapabilities.includes("streaming"));
-  assert.ok(profile.requiredCapabilities.includes("toolCalls"));
+  assert.ok(profile.requiredCapabilities.includes("toolExecution"));
   assert.equal(profile.outputContract, "json_schema");
   // PARAGON-D-004E: structured output is verified after the fact (parse the
   // response, escalate if invalid), so it is a scoring preference rather than

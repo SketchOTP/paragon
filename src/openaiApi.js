@@ -300,7 +300,7 @@ export function registerOpenAiRoutes(app, getConfig, orchestration, getStatuses 
       // bounded 503 rather than a dispatch of something unvalidated.
       if (!route?.winner || !plan.length) {
         const message = taskProfile.requiredCapabilities.includes("toolCalls")
-          ? "No tool-capable model is currently available. Cursor tool requests require an HTTP provider whose model advertises verified native tool-call support; text-only CLI providers are intentionally excluded."
+          ? "No execution-capable expert is currently available. Native CLI agent tools and positively verified HTTP tool calls are both eligible."
           : "No eligible model is currently available. Every candidate was excluded by catalog eligibility, provider health, circuit state, context limits, cost ceiling, usage limits, or chat-capability gates.";
         addLog({ type: "route", provider: "paragon", level: "error", message: `routing.noEligibleModel: ${message}` });
         res.set({ "X-Paragon-Route-Reason": "routing.noEligibleModel", "X-Paragon-Route-Model": "" });
@@ -418,6 +418,7 @@ export function registerOpenAiRoutes(app, getConfig, orchestration, getStatuses 
         // HTTP tool-capable providers receive the original OpenAI request;
         // CLI providers continue to use the flattened prompt path.
         requestBody: req.body,
+        toolExecution: taskProfile.requiredCapabilities.includes("toolExecution"),
         // Only meaningful when the caller actually asked for structured output;
         // otherwise there is no contract to check and compliance stays unrecorded.
         validateResponse: requiresJsonValidation(req.body)
@@ -550,7 +551,8 @@ function recordSuccessfulRoute({ routing, outcome, durationMs, plan }) {
   routing?.routeActivity?.recordExecuted({
     provider: outcome.provider,
     model: outcome.attempt.providerDefault ? "provider-default" : outcome.attempt.registryModel,
-    providerDefault: Boolean(outcome.attempt.providerDefault)
+    providerDefault: Boolean(outcome.attempt.providerDefault),
+    expertId: outcome.attempt.expertId
   });
   const firstFailure = outcome.failures[0] ?? null;
   routing?.routeActivity?.recordRequest({
@@ -582,7 +584,7 @@ function recordSuccessfulRoute({ routing, outcome, durationMs, plan }) {
  * beyond its bounded retry budget, so no provider-model is ever executed twice.
  */
 async function runPlan(initialPlan, prompt, context = {}) {
-  const { onChunk, orchestration, runId, policy, isLive, cwd, catalogStore, recordOutcome, routing, validateResponse, requestBody } = context;
+  const { onChunk, orchestration, runId, policy, isLive, cwd, catalogStore, recordOutcome, routing, validateResponse, requestBody, toolExecution = false } = context;
   const attemptKey = (attempt) => `${attempt.name}/${attempt.registryModel}/${attempt.executionProfile ?? "default"}`;
 
   let plan = [...initialPlan];
@@ -618,7 +620,7 @@ async function runPlan(initialPlan, prompt, context = {}) {
         providerConfig,
         prompt,
         onChunk ? (chunk) => pendingChunks.push(chunk) : undefined,
-        { onSpawn, cwd, requestBody }
+        { onSpawn, cwd, requestBody, toolExecution }
       );
 
       if (onChunk) {
@@ -705,7 +707,8 @@ async function runPlan(initialPlan, prompt, context = {}) {
       routing?.routeActivity?.recordFailed({
         provider: name,
         model: attempt.registryModel,
-        reason: failureReason
+        reason: failureReason,
+        expertId: attempt.expertId
       });
 
       if (catalogStore && providerConfig.model) {

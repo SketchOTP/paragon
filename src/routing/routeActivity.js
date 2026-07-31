@@ -41,6 +41,7 @@ function normalizePlan(plan) {
     order: entry.order ?? index + 1,
     provider: entry.provider ?? entry.name ?? null,
     model: entry.model ?? entry.providerModelId ?? entry.registryModel ?? null,
+    expertId: entry.expertId ?? entry.expert_id ?? null,
     providerDefault: Boolean(entry.providerDefault),
     alternateForProvider: Boolean(entry.alternateForProvider)
   }));
@@ -76,22 +77,22 @@ export function createRouteActivityStore({ activityLimit = DEFAULT_ACTIVITY_LIMI
     },
 
     /** Records the provider-model that actually produced the response. */
-    recordExecuted({ provider, model, providerDefault = false, at = new Date().toISOString() } = {}) {
+    recordExecuted({ provider, model, providerDefault = false, expertId = null, at = new Date().toISOString() } = {}) {
       if (!provider) {
         return;
       }
-      lastExecutedByProvider.set(provider, { model: model ?? null, providerDefault: Boolean(providerDefault), at });
+      lastExecutedByProvider.set(provider, { model: model ?? null, expertId, providerDefault: Boolean(providerDefault), at });
     },
 
     /**
      * Records a provider-model that failed. Kept separate from executed so a
      * failed attempt can never be reported as the provider's last used model.
      */
-    recordFailed({ provider, model, reason = null, at = new Date().toISOString() } = {}) {
+    recordFailed({ provider, model, reason = null, expertId = null, at = new Date().toISOString() } = {}) {
       if (!provider) {
         return;
       }
-      lastFailureByProvider.set(provider, { model: model ?? null, reason, at });
+      lastFailureByProvider.set(provider, { model: model ?? null, expertId, reason, at });
     },
 
     /**
