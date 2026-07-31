@@ -39,6 +39,9 @@ test("published pricing uses the current Codex Luna rate and never labels it sub
   assert.equal(price.cacheReadPerMillion, 0.5);
   assert.equal(price.billingUnit, "Codex credits per 1M tokens");
   assert.equal(price.asOf, "2026-07-30");
+  assert.equal(price.apiPricing.inputPerMillion, 0.2);
+  assert.equal(price.apiPricing.completionPerMillion, 1.2);
+  assert.equal(price.apiPricing.sourceUrl, "https://developers.openai.com/api/docs/models/compare");
 });
 
 test("provider preference points are configurable, scaled, and additive", () => {

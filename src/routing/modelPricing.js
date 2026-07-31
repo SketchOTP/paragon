@@ -9,7 +9,7 @@
 
 export const PRICING_CATALOG_AS_OF = "2026-07-30";
 
-const OPENAI_API = "https://openai.com/index/gpt-5-6/";
+const OPENAI_API = "https://developers.openai.com/api/docs/models/compare";
 const CODEX_RATE_CARD = "https://help.openai.com/en/articles/20001106-codex-rate-card";
 const ANTHROPIC_PRICING = "https://docs.anthropic.com/en/docs/about-claude/pricing";
 const GOOGLE_PRICING = "https://ai.google.dev/gemini-api/docs/pricing";
@@ -24,7 +24,7 @@ const USD = (input, output, cachedInput, sourceUrl) => ({
   asOf: PRICING_CATALOG_AS_OF
 });
 
-const CREDITS = (input, output, cachedInput) => ({
+const CREDITS = (input, output, cachedInput, apiInput, apiOutput, apiCachedInput) => ({
   billingUnit: "Codex credits per 1M tokens",
   inputPerMillion: input,
   completionPerMillion: output,
@@ -32,16 +32,30 @@ const CREDITS = (input, output, cachedInput) => ({
   source: "OpenAI Codex rate card",
   confidence: "official",
   sourceUrl: CODEX_RATE_CARD,
-  asOf: PRICING_CATALOG_AS_OF
+  asOf: PRICING_CATALOG_AS_OF,
+  ...(apiInput != null && apiOutput != null
+    ? {
+        apiPricing: {
+          billingUnit: "USD per 1M tokens",
+          inputPerMillion: apiInput,
+          completionPerMillion: apiOutput,
+          cacheReadPerMillion: apiCachedInput,
+          confidence: "official",
+          source: "OpenAI API model pricing",
+          sourceUrl: OPENAI_API,
+          asOf: PRICING_CATALOG_AS_OF
+        }
+      }
+    : {})
 });
 
 const CODEX_PRICES = [
-  [/^gpt-5\.6-luna(?:$|[-.])/i, CREDITS(5, 30, 0.5)],
-  [/^gpt-5\.6-terra(?:$|[-.])/i, CREDITS(50, 300, 5)],
-  [/^gpt-5\.6-sol(?:$|[-.])/i, CREDITS(125, 750, 12.5)],
+  [/^gpt-5\.6-luna(?:$|[-.])/i, CREDITS(5, 30, 0.5, 0.2, 1.2, 0.02)],
+  [/^gpt-5\.6-terra(?:$|[-.])/i, CREDITS(50, 300, 5, 2, 12, 0.2)],
+  [/^gpt-5\.6-sol(?:$|[-.])/i, CREDITS(125, 750, 12.5, 5, 30, 0.5)],
   [/^gpt-5\.5(?:$|[-.])/i, CREDITS(125, 750, 12.5)],
-  [/^gpt-5\.4-mini(?:$|[-.])/i, CREDITS(18.75, 113, 1.875)],
-  [/^gpt-5\.4(?:$|[-.])/i, CREDITS(62.5, 375, 6.25)],
+  [/^gpt-5\.4-mini(?:$|[-.])/i, CREDITS(18.75, 113, 1.875, 0.75, 4.5, 0.075)],
+  [/^gpt-5\.4(?:$|[-.])/i, CREDITS(62.5, 375, 6.25, 2.5, 15, 0.25)],
   [/^gpt-5\.(?:3-codex|2)(?:$|[-.])/i, CREDITS(43.75, 350, 4.375)]
 ];
 
