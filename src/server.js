@@ -587,6 +587,7 @@ function emptyRankingRow() {
     reasoningFit: null,
     reasoningFitReason: null,
     expectedUtility: null,
+    providerPreferenceBonus: 0,
     quality: null,
     successProbability: null,
     latency: null,
