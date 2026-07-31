@@ -757,17 +757,14 @@ function costCell(row) {
   if (!cost) return '<span class="muted">—</span>';
   const parts = [];
   if (cost.monetary != null) {
-    parts.push(`$${cost.monetary < 0.01 ? cost.monetary.toFixed(5) : cost.monetary.toFixed(3)}`);
-  } else if (cost.subscription) {
-    parts.push("subscription");
+    const value = cost.monetary < 0.01 ? cost.monetary.toFixed(5) : cost.monetary.toFixed(3);
+    parts.push(cost.billingUnit?.startsWith("USD") ? `$${value}` : `${value} ${cost.billingUnit ?? "published units"}`);
   } else if (cost.unpricedMetered) {
-    parts.push("price unknown");
+    parts.push("not eligible: no published price");
   }
-  const sub = cost.subscription
-    ? `${cost.quotaBurn.toFixed(1)} allowance units`
-    : cost.pricingAvailable
-      ? `${cost.monetaryConfidence} confidence`
-      : "charged conservatively";
+  const sub = cost.pricingAvailable
+    ? `${cost.monetaryConfidence} confidence${cost.pricingAsOf ? ` · as of ${cost.pricingAsOf}` : ""}`
+    : "excluded until a dated published price is available";
   return `<strong>${escapeHtml(parts[0] ?? "—")}</strong><span class="cell-sub">${escapeHtml(sub)}</span>`;
 }
 

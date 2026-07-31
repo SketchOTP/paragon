@@ -171,7 +171,7 @@ export function checkHardEligibility(candidate, { taskProfile, unknownLargeConte
 /**
  * Scores one admissible candidate. Returns the full component breakdown.
  */
-export function scoreCandidate(candidate, { taskProfile, weights = UTILITY_WEIGHTS, minimumSamplesForMeasuredEstimate = 10, quotaScarcity = 0, unknownContext = false }) {
+export function scoreCandidate(candidate, { taskProfile, weights = UTILITY_WEIGHTS, minimumSamplesForMeasuredEstimate = 10, quotaScarcity = 0, unknownContext = false, providerPreferencePoints = {} }) {
   const telemetry = candidate.telemetry ?? null;
   // Routing priority resolves to a weight set (see routingPriority.js). It can
   // only reorder admissible candidates — hard eligibility was already decided.
@@ -208,6 +208,7 @@ export function scoreCandidate(candidate, { taskProfile, weights = UTILITY_WEIGH
     executionProfile: candidate.executionProfile,
     taskProfile,
     benchmarkPricing: candidate.benchmark?.row?.pricing ?? null,
+    publishedPricing: candidate.publishedPricing ?? null,
     telemetry,
     estimatedInputTokens: taskProfile?.estimatedInputTokens ?? 0,
     minimumSamplesForMeasuredEstimate,
@@ -251,9 +252,10 @@ export function scoreCandidate(candidate, { taskProfile, weights = UTILITY_WEIGH
   const quotaTerm = cost.quotaScarcityPenalty * W.quotaScarcityScale;
   const uncertaintyTerm = uncertainty.penalty * W.uncertaintyScale;
   const reasoningFitTerm = fit.alignment * W.reasoningFitScale;
+  const providerPreferenceBonus = Number(providerPreferencePoints?.[candidate.provider] ?? 0) || 0;
 
   const expectedUtility =
-    qualityTerm - costTerm - latencyTerm - quotaTerm - uncertaintyTerm + reasoningFitTerm + postVerifiedBonus;
+    qualityTerm - costTerm - latencyTerm - quotaTerm - uncertaintyTerm + reasoningFitTerm + postVerifiedBonus + providerPreferenceBonus;
 
   return {
     provider: candidate.provider,
@@ -295,6 +297,7 @@ export function scoreCandidate(candidate, { taskProfile, weights = UTILITY_WEIGH
       reasoningFitTerm,
       postVerifiedBonus,
       postVerifiedReasons,
+      providerPreferenceBonus,
       // The weight set this candidate was scored with, so Diagnostics can
       // prove which routing priority produced a given ordering.
       appliedWeights: W

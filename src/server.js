@@ -758,6 +758,7 @@ app.get("/api/models/ranking", async (req, res) => {
 
         // --- the score and every factor behind it
         expectedUtility: candidate?.expectedUtility ?? null,
+        providerPreferenceBonus: components?.providerPreferenceBonus ?? 0,
         quality: components
           ? { value: components.expectedTaskQuality, source: components.qualitySource, term: components.qualityTerm }
           : null,
@@ -781,7 +782,9 @@ app.get("/api/models/ranking", async (req, res) => {
               monetaryConfidence: cost.monetaryCostConfidence,
               pricingAvailable: cost.pricingAvailable,
               unpricedMetered: cost.unpricedMeteredProvider,
-              subscription: cost.isSubscriptionProvider,
+              billingUnit: cost.billingUnit,
+              pricingSource: cost.pricingSource,
+              pricingAsOf: cost.pricingAsOf,
               quotaBurn: cost.estimatedQuotaBurn,
               quotaBurnSource: cost.quotaBurnSource,
               expectedInputTokens: cost.expectedInputTokens,

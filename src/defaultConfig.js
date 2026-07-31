@@ -122,6 +122,17 @@ export const defaultConfig = {
     telemetryRetentionDays: 30,
     minimumSamplesForMeasuredEstimate: 10,
     maximumAttempts: 4,
+    /** Models without a dated published price are invalid for live routing. */
+    requirePublishedPricing: true,
+    /** Additive frontier preference points; zero means no provider preference. */
+    providerPreferencePoints: {
+      codex: 3,
+      claude: 2,
+      antigravity: 1,
+      cursor: 0,
+      openrouter: 0,
+      lmstudio: 0
+    },
     /** Reviewed alias records (see benchmarkCanonical.js normalizeAliasRecord). */
     canonicalAliasMappings: [],
     /** Operator-reviewed execution-profile overrides, keyed "provider/providerModelId". */

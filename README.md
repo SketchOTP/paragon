@@ -277,7 +277,7 @@ The only routing setting is **Routing priority** in Settings:
 |---|---|
 | **Balanced** (default) | Weighs quality, cost, speed and confidence evenly. |
 | **Best quality** | Favors the most capable model, and higher reasoning where justified. |
-| **Lower cost** | Favors cheaper models and conserves subscription allowance. |
+| **Lower cost** | Favors cheaper models using dated published token prices. |
 | **Faster** | Favors models that respond quickly. |
 
 A priority can only reorder models that are already eligible — it can never
