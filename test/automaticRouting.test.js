@@ -49,6 +49,19 @@ test("task context demand reflects the work being ranked", () => {
   const quick = buildTaskProfile({ prompt: "quick answer: what is two plus two?", estimatedInputTokens: 4000 });
   assert.equal(code.estimatedRequiredContextTokens, 150000);
   assert.equal(quick.estimatedRequiredContextTokens, 4000);
+  const demands = [
+    ["explain this concept", "explain", 16000],
+    ["write documentation for this API", "documentation", 32000],
+    ["plan the implementation roadmap", "planning", 64000],
+    ["review this pull request diff", "review", 100000],
+    ["debug this production error", "debug", 172500],
+    ["design the system architecture", "architecture", 250000]
+  ];
+  for (const [prompt, workType, expectedDemand] of demands) {
+    const profile = buildTaskProfile({ prompt, estimatedInputTokens: 4000 });
+    assert.equal(profile.workType, workType);
+    assert.equal(profile.estimatedRequiredContextTokens, expectedDemand);
+  }
 });
 
 test("context capacity changes eligibility and rank according to task demand", () => {
