@@ -65,6 +65,10 @@ test("provider preference points are configurable, scaled, and additive", () => 
   assert.equal(result.winner.provider, "codex");
   assert.equal(result.winner.components.providerPreferenceTerm, 9);
   assert.equal(result.winner.components.providerPreferenceBonus, 9);
+  assert.equal(
+    result.winner.expectedUtility,
+    result.winner.components.utilityBeforePreference + result.winner.components.providerPreferenceTerm
+  );
   assert.equal(result.ranked.find((row) => row.provider === "claude").components.providerPreferenceTerm, 6);
 });
 

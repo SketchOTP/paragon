@@ -252,8 +252,9 @@ export function scoreCandidate(candidate, { taskProfile, weights = UTILITY_WEIGH
   const preferenceScale = Number(providerPreferenceScale ?? W.providerPreferenceScale ?? 3) || 0;
   const providerPreferenceTerm = configuredProviderPreference * preferenceScale;
 
-  const expectedUtility =
-    qualityTerm - costTerm - latencyTerm - quotaTerm - uncertaintyTerm + reasoningFitTerm + postVerifiedBonus + providerPreferenceTerm;
+  const utilityBeforePreference =
+    qualityTerm - costTerm - latencyTerm - quotaTerm - uncertaintyTerm + reasoningFitTerm + postVerifiedBonus;
+  const expectedUtility = utilityBeforePreference + providerPreferenceTerm;
 
   return {
     provider: candidate.provider,
@@ -274,6 +275,7 @@ export function scoreCandidate(candidate, { taskProfile, weights = UTILITY_WEIGH
 
     expectedUtility,
     components: {
+      utilityBeforePreference,
       probabilityOfSuccessfulCompletion,
       successSource,
       expectedTaskQuality,
